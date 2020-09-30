@@ -127,3 +127,7 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Optimus output and data folder
+Experimentation/output/
+Experimentation/data/
