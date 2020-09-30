@@ -129,5 +129,5 @@ dmypy.json
 .pyre/
 
 # Optimus output and data folder
-Experimentation/output/
-Experimentation/data/
+Experimentation/Optimus/output/
+Experimentation/Optimus/data/
