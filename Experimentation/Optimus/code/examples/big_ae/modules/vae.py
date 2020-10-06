@@ -64,7 +64,7 @@ class VAE(nn.Module):
         # pdb.set_trace()
         # mean, logvar = mean.squeeze(0), logvar.squeeze(0)
 
-        logvar.fill_(.0) # this makes it deterministic
+        logvar.fill_(.0) # C: this makes it deterministic
         # (batch, nsamples, nz)
         z = self.reparameterize(mean, logvar, nsamples)
         KL = 0.5 * (mean.pow(2) + logvar.exp() - logvar - 1).sum(dim=1)
@@ -84,7 +84,8 @@ class VAE(nn.Module):
             Sampled z with shape (batch, nsamples, nz)
         """
         batch_size, nz = mu.size()
-        # Interpret the output of the net as log(std^2)
+
+        # C: Interpret the output of the net as log(std^2) for the std and var to always be positive
         # since ln(std^2) = 2 ln(std) we need to exp(0.5 * 2 ln(std)) = std
         std = logvar.mul(0.5).exp()
 
@@ -103,7 +104,7 @@ class VAE(nn.Module):
         # logger.info(inputs)
         # logger.info(attention_mask)
         # logger.info(labels)
-        reconstrution_mask=(labels != 50257).float() # 50257 is the padding token for GPT2
+        reconstrution_mask = (labels != 50257).float() # 50257 is the padding token for GPT2
         sent_length = torch.sum(reconstrution_mask, dim=1)
 
         
@@ -115,7 +116,6 @@ class VAE(nn.Module):
             latent_z, loss_kl = self.connect(pooled_hidden_fea)
             latent_z = latent_z.squeeze(1)
 
-            
             # Decoding
             outputs = self.decoder(input_ids=labels, past=latent_z, labels=labels, label_ignore=self.pad_token_id)
             loss_rec = outputs[0]  # model outputs are always tuple in pytorch-transformers (see doc)
@@ -135,7 +135,7 @@ class VAE(nn.Module):
             outputs = self.decoder(input_ids=labels, past=latent_z, labels=labels, label_ignore=self.pad_token_id)
             loss_rec = outputs[0]  # model outputs are always tuple in pytorch-transformers (see doc)
 
-        elif self.args.fb_mode==2: 
+        elif self.args.fb_mode==2:
             # Connect hidden feature to the latent space
             latent_z, loss_kl = self.connect_deterministic(pooled_hidden_fea)
             latent_z = latent_z.squeeze(1)

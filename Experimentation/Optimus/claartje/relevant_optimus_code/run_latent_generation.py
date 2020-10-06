@@ -37,7 +37,6 @@ import sys
 
 sys.path.append('../..')
 sys.path.append('..')
-
 from pytorch_transformers import GPT2Config, OpenAIGPTConfig, XLNetConfig, TransfoXLConfig, BertConfig
 from pytorch_transformers import GPT2LMHeadModel, GPT2Tokenizer
 from pytorch_transformers import GPT2ForLatentConnector
@@ -51,8 +50,9 @@ from modules import VAE
 from examples.big_ae.utils import (TextDataset_Split, TextDataset_2Tokenizers, BucketingDataLoader)
 
 import pdb
-
-#
+SEED = 42
+np.random.seed(SEED)
+torch.manual_seed(SEED)
 
 # logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
 #                     datefmt='%m/%d/%Y %H:%M:%S',
@@ -171,8 +171,8 @@ def sample_sequence(model, length, context, num_samples=1, temperature=1, top_k=
             outputs = model(
                 **inputs)  # Note: we could also use 'past' with GPT-2/Transfo-XL/XLNet (cached hidden-states)
             next_token_logits = outputs[0][0, -1, :] / temperature  # take the last hidden state
-            filtered_logits = top_k_top_p_filtering(next_token_logits, top_k=top_k, top_p=top_p)
-            next_token = torch.multinomial(F.softmax(filtered_logits, dim=-1), num_samples=1)
+            # filtered_logits = top_k_top_p_filtering(next_token_logits, top_k=top_k, top_p=top_p)
+            next_token = torch.multinomial(F.softmax(next_token_logits, dim=-1), num_samples=1)
             generated = torch.cat((generated, next_token.unsqueeze(0)), dim=1)
     return generated
 
@@ -225,7 +225,8 @@ def latent_code_from_text(text, tokenizer_encoder, model_vae, device):
         # print("pooled_hidden_fea.shape", pooled_hidden_fea.shape)
         # whole = model_vae.encoder.linear(pooled_hidden_fea)
         # print("whole.shape", whole.shape, "<-- not used?")
-        mean, logvar = model_vae.encoder.linear(pooled_hidden_fea).chunk(2, -1)
+
+        mean, logvar = model_vae.encoder.linear(pooled_hidden_fea).chunk(2, -1) # C: this is similar to the connect function
         # print("mean.shape", mean.shape)
         # print("logvar.shape", logvar.shape)
         latent_z = mean.squeeze(1)

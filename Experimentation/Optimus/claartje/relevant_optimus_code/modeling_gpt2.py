@@ -628,6 +628,7 @@ class GPT2Model(GPT2PreTrainedModel):
             attention_output_shape = input_shape[:-1] + (-1,) + all_attentions[0].shape[-2:]
             all_attentions = tuple(t.view(*attention_output_shape) for t in all_attentions)
             outputs = outputs + (all_attentions,)
+
         return outputs  # last hidden state, presents, (all hidden_states), (attentions)
 
 
@@ -792,16 +793,34 @@ class GPT2ForLatentConnector(GPT2PreTrainedModel):
 
         lm_logits = self.lm_head(hidden_states)
 
+        # print("Test 1", lm_logits.shape)
+
         outputs = (lm_logits,) + transformer_outputs[1:]
+
+        # print("Test 2", outputs[0].shape)
+
+
         if labels is not None:
             # Shift so that tokens < n predict n
+
+            # print('logits outputs model', lm_logits.shape)
+            # print('labels.shape', labels.shape)
+
+            # C: The last token predicts for a token outside of the sequence, skip that one
             shift_logits = lm_logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
+            # print('after applying shift_logits = lm_logits[..., :-1, :].contiguous()', shift_logits.shape)
+            # C:
+            shift_labels = labels[..., 1:].contiguous() # shift the labels, so that BOS
+            # print('after applying shift_labels = labels[..., 1:].contiguous()', shift_labels.shape)
+            # print('label_ignore=', label_ignore)
             # Flatten the tokens
             loss_fct = CrossEntropyLoss(ignore_index=label_ignore,
                                         reduce=False)  # 50258 is the padding id, otherwise -1 is used for masked LM.
             loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)),
                             shift_labels.view(-1))
+
+            # print('applies loss fnc CrossEntropyLoss to shapes', shift_logits.view(-1, shift_logits.size(-1)).shape,
+            #       shift_labels.view(-1).shape)
             loss = torch.sum(loss.view(-1, shift_labels.shape[-1]), -1)
             outputs = (loss,) + outputs
 

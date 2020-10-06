@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 class VAE(nn.Module):
     """VAE with normal prior"""
-    def __init__(self, encoder, decoder,  tokenizer_encoder, tokenizer_decoder, args): # 
+    def __init__(self, encoder, decoder,  tokenizer_encoder, tokenizer_decoder, args):
         super(VAE, self).__init__()
         self.encoder = encoder
         self.decoder = decoder
@@ -26,7 +26,8 @@ class VAE(nn.Module):
         self.pad_token_id = tokenizer_decoder.convert_tokens_to_ids([tokenizer_decoder.pad_token])[0]
 
         # print("VAE | Decoder eos and pad token:", self.eos_token_id, self.pad_token_id)
-
+        self.tokenizer_encoder = tokenizer_encoder
+        self.tokenizer_decoder = tokenizer_decoder
 
         # connector: from Bert hidden units to the latent space
         # self.linear = nn.Linear(args.nz, 2 * args.nz, bias=False)
