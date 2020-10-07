@@ -11,6 +11,7 @@ import pickle
 import sys
 sys.path.append('../code')
 sys.path.append('../code/examples/big_ae')
+sys.path.append('../code/pytorch_transformers')
 
 from relevant_optimus_code.configuration_bert import BertConfig
 from relevant_optimus_code.configuration_gpt2 import GPT2Config
@@ -37,6 +38,7 @@ DECODER_MODEL_NAME = 'gpt2'
 
 # Device
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("DEVICE:", DEVICE)
 
 # Random seed
 SEED = 42
@@ -48,25 +50,29 @@ LATENT_SIZES = {'snli': 768, 'wikipedia': 32}
 DO_LOWERCASE = False
 
 # Paths to models
-PREFIX_PATH = '/Users/claartje/Dropbox (Persoonlijk)/Studie/Master AI/Thesis/code-thesis/Experimentation/Optimus/'
+CURRENT_DIR_PATH = os.path.dirname(os.path.abspath(__file__))
+PREFIX_PATH = CURRENT_DIR_PATH + '/../' # one up is the Optimus folder
 SNLI_MODEL_BASE_PATH = 'output/LM/Snli/768/philly_vae_snli_b{}_d5_r00.5_ra0.25_length_weighted/'
 WIKIPEDIA_MODEL_BASE_PATH = 'output/pretrain/philly_rr3_vc4_g8_base_vae_wikipedia_pretraining_beta_schedule_beta{' \
                             '}_d1.0_ro0.5_ra0.25_32_v2/'
 
 # Data
-SENTENCES_FILE = "sample_text.txt"
-MAX_SENTENCES = True
+SENTENCES_FILE = PREFIX_PATH + "claartje/sample_text.txt"
+MAX_SENTENCES = False
 MAX_N_SENTENCES = 200
 
 # Batch size
-BATCH_SIZE = 20
-N_BATCHES = 2  # -1 for all
+BATCH_SIZE = 48
+N_BATCHES = -1  # -1 for all
 
 # Decode sequence length
-MAX_DEC_SEQ_LEN = 10  # -1 for max_len
+MAX_DEC_SEQ_LEN = -1  # -1 for max_len
 
 # Results
 RESULT_DIR = 'evaluation-results'
+
+# Whether or not to use cached keys and value in the autoregressive generation
+USE_CACHE_AUTOREGRESS = True
 
 # -----------------------------------------------------------------
 
@@ -137,22 +143,20 @@ def get_model_vae(path, model_encoder, model_decoder, tokenizer_encoder, tokeniz
     return model_vae
 
 
-def load_all_models(model_paths):
+def load_model(model_paths, snli_wikipedia, beta):
     """
     Loads VAE models with all settings (snli, wikipedia) & all beta values.
     """
 
-    vae_models = {'snli': {}, 'wikipedia': {}}
+    paths = model_paths[snli_wikipedia][beta]
 
-    for snli_wikipedia in ['wikipedia', 'snli']:
-        for beta, paths in model_paths[snli_wikipedia].items():
+    model_encoder, tokenizer_encoder = get_model_tokenizer_encoder(paths['encoder_path'], snli_wikipedia)
+    model_decoder, tokenizer_decoder = get_model_tokenizer_decoder(paths['decoder_path'], snli_wikipedia)
 
-            model_encoder, tokenizer_encoder = get_model_tokenizer_encoder(paths['encoder_path'], snli_wikipedia)
-            model_decoder, tokenizer_decoder = get_model_tokenizer_decoder(paths['decoder_path'], snli_wikipedia)
+    vae_model = get_model_vae(paths['full_path'], model_encoder, model_decoder,
+                              tokenizer_encoder, tokenizer_decoder, snli_wikipedia)
 
-            vae_models[snli_wikipedia][beta] = get_model_vae(paths['full_path'], model_encoder, model_decoder,
-                                                             tokenizer_encoder, tokenizer_decoder, snli_wikipedia)
-    return vae_models
+    return vae_model
 
 
 def load_sentences(sentences_txt_file, max_N_sentences=False, N_sentences=200):
@@ -206,10 +210,10 @@ def tokenise_pad_sentences(sentences, tokenizer_encoder, tokenizer_decoder):
     pad_tok_sent_dec = pad_tok_sent_dec.to(DEVICE)
     pad_tok_sent_enc = pad_tok_sent_enc.to(DEVICE)
 
-    print("Padded decoder GPT2 input/laebl sequence batch shape:", pad_tok_sent_dec.shape)
+    print("Padded decoder GPT2 input/label sequence batch shape:", pad_tok_sent_dec.shape)
     print("Padded encoder BERT input sequence batch shape:", pad_tok_sent_enc.shape)
 
-    return pad_tok_sent_dec, pad_tok_sent_enc #, sent_lens, tok_sent_lens_enc, tok_sent_lens_dec, tok_sent_batch_enc, tok_sent_batch_dec
+    return pad_tok_sent_dec, pad_tok_sent_enc  #, sent_lens, tok_sent_lens_enc, tok_sent_lens_dec, tok_sent_batch_enc, tok_sent_batch_dec
 
 
 def teacher_force_decode(VAE_model, latent_z, labels_GPT2, train=False):
@@ -246,7 +250,7 @@ def teacher_force_decode(VAE_model, latent_z, labels_GPT2, train=False):
         return masked_pred, ce_loss
 
 
-def autoregressive_decode(VAE_model, latent_z, labels_GPT2, max_sent_len=-1, train=False):
+def autoregressive_decode(VAE_model, latent_z, labels_GPT2, max_sent_len=-1, train=False, use_cache=True):
     if (max_sent_len == -1):
         max_sent_len = labels_GPT2.shape[1] - 1  # -1 for BOS token
 
@@ -266,10 +270,22 @@ def autoregressive_decode(VAE_model, latent_z, labels_GPT2, max_sent_len=-1, tra
 
         logits_lm_so_far = []
 
+        past = None
         # Generate for the whole batch token per token (auto regressively)
         for i in range(max_sent_len):
+            print('pos i: {:01d}'.format(i), end='\r')
+
             # Outputs is a tuple (hidden, present)
-            outputs = VAE_model.decoder(generated_so_far, past=latent_z)
+            if not use_cache:
+                outputs = VAE_model.decoder(generated_so_far, past=latent_z)
+            else:
+                # there is no past yet
+                if not past:
+                    outputs = VAE_model.decoder(generated_so_far, past=latent_z, reshape_present=True)
+                else:
+                    outputs = VAE_model.decoder(generated_so_far, past=latent_z, actual_past=past, reshape_present=True)
+                past = outputs[1]
+
             logits_lm = outputs[0]
 
             # logits_lm is of dim B x N input_tokens x vocab size
@@ -283,8 +299,11 @@ def autoregressive_decode(VAE_model, latent_z, labels_GPT2, max_sent_len=-1, tra
             next_token_probs = F.softmax(next_token_logits, dim=1)
             next_token = torch.multinomial(next_token_probs, num_samples=1)
 
-            # The generated output can be concatted to the previous ouput
-            generated_so_far = torch.cat((generated_so_far, next_token), dim=1)
+            if use_cache:
+                generated_so_far = next_token
+            else:
+                # The generated output can be concatted to the previous ouput
+                generated_so_far = torch.cat((generated_so_far, next_token), dim=1)
 
         logits_sequence = torch.stack(logits_lm_so_far, dim=1)
 
@@ -295,7 +314,7 @@ def autoregressive_decode(VAE_model, latent_z, labels_GPT2, max_sent_len=-1, tra
         return generated_so_far[:, 1:], ce_loss
 
 
-def encode_reconstruct_auto_and_tf(VAE_model, inputs_BERT, labels_GPT2):
+def encode_reconstruct_auto_and_tf(VAE_model, inputs_BERT, labels_GPT2, use_cache=True):
     # Mask tokens that are 0 (PAD in BERT)
     attention_mask = (inputs_BERT > 0).float()
 
@@ -310,9 +329,11 @@ def encode_reconstruct_auto_and_tf(VAE_model, inputs_BERT, labels_GPT2):
     latent_z = mean.squeeze(1)
 
     # DECODE AUTO REGRESSIVE
-    gen_pred_auto, ce_loss_auto = autoregressive_decode(VAE_model, latent_z, labels_GPT2)
+    print('Autoregressive batch forward')
+    gen_pred_auto, ce_loss_auto = autoregressive_decode(VAE_model, latent_z, labels_GPT2, use_cache=use_cache)
 
     # DECODE TEACHER-FORCE
+    print('Teacher force batch forward')
     masked_pred_tf, ce_loss_tf = teacher_force_decode(VAE_model, latent_z, labels_GPT2)
 
     return gen_pred_auto, ce_loss_auto, masked_pred_tf, ce_loss_tf
@@ -320,11 +341,9 @@ def encode_reconstruct_auto_and_tf(VAE_model, inputs_BERT, labels_GPT2):
 
 if __name__ == "__main__":
     model_paths = get_all_model_paths()
-    VAE_models = load_all_models(model_paths)
 
-    # Tokenizers should be the same for all models? Not sure actually
-    tokenizer_encoder = VAE_models['snli'][1.0].tokenizer_encoder
-    tokenizer_decoder = VAE_models['snli'][1.0].tokenizer_decoder
+    tokenizer_encoder = MODEL_CLASSES[ENCODER_MODEL_TYPE][2].from_pretrained(ENCODER_MODEL_NAME, do_lower_case=DO_LOWERCASE)
+    _, tokenizer_decoder = get_model_tokenizer_decoder(model_paths['snli'][1.0]['decoder_path'], 'snli')
 
     sentences = load_sentences(SENTENCES_FILE, max_N_sentences=MAX_SENTENCES, N_sentences=MAX_N_SENTENCES)
     pad_tok_sent_dec, pad_tok_sent_enc = tokenise_pad_sentences(sentences, tokenizer_encoder, tokenizer_decoder)
@@ -332,31 +351,41 @@ if __name__ == "__main__":
     n_batches = int(np.ceil(pad_tok_sent_enc.shape[0] / BATCH_SIZE))
     N_BATCHES = n_batches if (N_BATCHES == - 1) else N_BATCHES
 
-    if (MAX_DEC_SEQ_LEN != -1):
+    if MAX_DEC_SEQ_LEN != -1:
         pad_tok_sent_enc = pad_tok_sent_enc[:, :MAX_DEC_SEQ_LEN]
         pad_tok_sent_dec = pad_tok_sent_dec[:, :MAX_DEC_SEQ_LEN]
 
     bert_sequence_batches = pad_tok_sent_enc.chunk(n_batches)
     gpt2_sequence_batches = pad_tok_sent_dec.chunk(n_batches)
 
-
-
     results_all_models = {}
 
     for snli_wikipedia in ['snli', 'wikipedia']:
         results_all_models[snli_wikipedia] = {}
 
-        for beta, VAE_model in VAE_models[snli_wikipedia].items():
+        for beta, VAE_model in model_paths[snli_wikipedia].items():
             print("-" * 30)
             print("Configuration: {} - beta: {}".format(snli_wikipedia, beta))
 
             pred_auto, ce_losses_auto, pred_tf, ce_losses_tf = [], [], [], []
 
+            VAE_model = load_model(model_paths, snli_wikipedia, beta)
+            VAE_model = VAE_model.to(DEVICE)
+
+            # Tokenizers should be the same for all models? Not sure actually
+            tokenizer_encoder = VAE_model.tokenizer_encoder
+            tokenizer_decoder = VAE_model.tokenizer_decoder
+
             for batch_i in range(n_batches):
                 print("Batch {}".format(batch_i), end='\r')
+
+                batch_inputs_bert = bert_sequence_batches[batch_i].to(DEVICE)
+                batch_labels_gpt2 = gpt2_sequence_batches[batch_i].to(DEVICE)
+
                 p_au, c_au, p_tf, c_tf = encode_reconstruct_auto_and_tf(VAE_model,
-                                                                        bert_sequence_batches[batch_i],
-                                                                        gpt2_sequence_batches[batch_i])
+                                                                        batch_inputs_bert,
+                                                                        batch_labels_gpt2,
+                                                                        use_cache=USE_CACHE_AUTOREGRESS)
 
                 pred_auto.append(p_au.cpu())
                 ce_losses_auto.append(c_au.cpu())

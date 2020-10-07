@@ -28,26 +28,23 @@ import random
 import torch
 import torch.nn.functional as F
 import numpy as np
-
-from torch.utils.data import DataLoader, Dataset, SequentialSampler, RandomSampler, TensorDataset
-from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
 
 import sys
+import os
+cur_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(cur_dir + '/../../code/')  # for pytorch_transformers
+sys.path.append(cur_dir + '/../../code/examples/big_ae/')  # for modules
+sys.path.append(cur_dir + '/../../code/examples/')  # for utils.py
 
-sys.path.append('../..')
-sys.path.append('..')
 from pytorch_transformers import GPT2Config, OpenAIGPTConfig, XLNetConfig, TransfoXLConfig, BertConfig
 from pytorch_transformers import GPT2LMHeadModel, GPT2Tokenizer
 from pytorch_transformers import GPT2ForLatentConnector
-# from pytorch_transformers import OpenAIGPTLMHeadModel, OpenAIGPTTokenizer
-# from pytorch_transformers import XLNetLMHeadModel, XLNetTokenizer
-# from pytorch_transformers import TransfoXLLMHeadModel, TransfoXLTokenizer
 from pytorch_transformers import BertForLatentConnector, BertTokenizer
 
 from collections import defaultdict
 from modules import VAE
-from examples.big_ae.utils import (TextDataset_Split, TextDataset_2Tokenizers, BucketingDataLoader)
+from utils import (TextDataset_Split, TextDataset_2Tokenizers, BucketingDataLoader)
 
 import pdb
 SEED = 42

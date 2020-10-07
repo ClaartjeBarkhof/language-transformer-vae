@@ -215,8 +215,9 @@ class Attention(nn.Module):
             key = torch.cat((past_key, key), dim=-1)
             value = torch.cat((past_value, value), dim=-2)
 
-
+        # print("ATTENTION key.shape, value.shape", key.shape, value.shape)
         present = torch.stack((key.transpose(-2, -1), value))  # transpose to have same shapes for stacking
+        # print("ATTENTION present.shape", present.shape)
 
         # if head_i is not None:
         #     if head_i == 0:
@@ -442,50 +443,23 @@ class GPT2Model(GPT2PreTrainedModel):
             self.h[layer].attn.prune_heads(heads)
 
     def forward(self, input_ids, past=None, attention_mask=None, token_type_ids=None, position_ids=None, head_mask=None,
-                latent_as_gpt_emb=False, latent_as_gpt_memory=True):
-
-        # print('GPT2')
-        # print("GPT2 | input ids", input_ids.shape, input_ids)
-        # if past is not None:
-        #     print("past", past.shape)
-        # else:
-        #     print("past is None")
-        # if attention_mask is not None:
-        #     print("attention mask", attention_mask.shape)
-        # else:
-        #     print("attention mask is none")
-        # if token_type_ids is not None:
-        #     print("token_type_ids", token_type_ids.shape)
-        # else:
-        #     print("token type ids is None")
-        # if position_ids is not None:
-        #     print("posistion ids", position_ids.shape)
-        # else:
-        #     print("position ids is None")
-        # if head_mask is not None:
-        #     print("head mask", head_mask.shape)
-        # else:
-        #     print("head mask is None")
-        #
-        # print("latent as gpt emb", latent_as_gpt_emb)
-        # print("latent as gpt memory", latent_as_gpt_memory)
+                latent_as_gpt_emb=False, latent_as_gpt_memory=True, reshape_present=False, actual_past=None):
+        """
+        C: I added parameters:
+            reshape_present: to give back the present as the past is given to forward so that these
+            shapes actually match with what is produced from the latent in this function in the "if latent_as_gpt_memory"
+            actual_past: not the latent, but actual past, possibly INCLUDING the latent as the first element
+        """
 
         if past is None:
-            # print("first forward")
             past_length = 0
             past = [None] * len(self.h)
         else:
-            # print("forward!", len(past))
             if latent_as_gpt_emb:
-                # print('add latent as embedding')
                 past_emb = self.linear_emb(past)  # used as embeddings to add on other three embeddings
-                # print("GPT2 | past", past.shape)
-                # print("GPT2 | past_emb", past_emb.shape)
 
-            if latent_as_gpt_memory:
-                # print('add latent as memory')
+            if latent_as_gpt_memory and not actual_past:  # C: create 'artificial past' from latent
                 past = self.linear(past)
-                # print("GPT2 | past after linear in memeory", past.shape)
                 share_latent = False
                 if share_latent:
                     # the same latent vector shared by all layers
@@ -495,11 +469,7 @@ class GPT2Model(GPT2PreTrainedModel):
                 else:
                     # different latent vectors for each layer
                     past_split = torch.split(past.unsqueeze(1), self.config.hidden_size, dim=2)
-                    # print("GPT2 | past split[0] shape", past_split[0].shape)
-                    # print("GPT2 | past split len", len(past_split))
                     past = list(zip(past_split, past_split))
-                    # print("GPT2 | past = list(zip(past_split, past_split))")
-
 
                     # past = past.view(batch_size,len(self.h),-1)
                     # past = [[past[:,i,:].unsqueeze(-2), past[:,i,:].unsqueeze(-2) ] for i in range(len(self.h))]
@@ -507,6 +477,9 @@ class GPT2Model(GPT2PreTrainedModel):
             else:
                 past_length = 0
                 past = [None] * len(self.h)
+
+            if actual_past:
+                past = actual_past
 
         if position_ids is None:
             position_ids = torch.arange(past_length, input_ids.size(-1) + past_length, dtype=torch.long,
@@ -555,12 +528,8 @@ class GPT2Model(GPT2PreTrainedModel):
 
         inputs_embeds = self.wte(input_ids)
         position_embeds = self.wpe(position_ids)
-        #
-        # print("GPT2 | input_embeds shape", inputs_embeds.shape)
-        # print("GPT2 | position embeds shape", position_embeds.shape)
 
         if token_type_ids is not None:
-            # print("GPT2 | tokentypeids not None")
             token_type_ids = token_type_ids.view(-1, token_type_ids.size(-1))
             token_type_embeds = self.wte(token_type_ids)
         else:
@@ -568,29 +537,19 @@ class GPT2Model(GPT2PreTrainedModel):
 
         hidden_states = inputs_embeds + position_embeds + token_type_embeds
 
-        # print("GPT2 | hidden states shape", hidden_states.shape)
-
         if latent_as_gpt_emb:
             # pdb.set_trace()
             hidden_states = hidden_states + past_emb.unsqueeze(1)
 
-        # print("GPT2 | embedding hidden states dropout")
         hidden_states = self.drop(hidden_states)
 
         output_shape = input_shape + (hidden_states.size(-1),)
 
-        # print("GPT2 | outputshape", output_shape)
-
         presents = ()
         all_attentions = []
         all_hidden_states = ()
-        for i, (block, layer_past) in enumerate(zip(self.h, past)):
-            # if i == 0:
-                # print('GPT2 | FORWARD {} | layer past 0 shape {}'.format(i, layer_past[0].shape))
-                # print('GPT2 | FORWARD {} | layer past 1 shape {}'.format(i, layer_past[1].shape))
-                # print('GPT2 | FORWARD {} | layer past 0 == layer past 1'.format(i, layer_past[0] == layer_past[1]))
-                # print('GPT2 | FORWARD {} hidden_states.shape {}'.format(i, hidden_states.shape))
 
+        for i, (block, layer_past) in enumerate(zip(self.h, past)):
             if self.output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states.view(*output_shape),)
 
@@ -602,19 +561,25 @@ class GPT2Model(GPT2PreTrainedModel):
 
             hidden_states, present = outputs[:2]
 
-            presents = presents + (present,)
+            if reshape_present:
+                # Claartje
+                # first make sure the (hidden/heads)dim and the (n_heads)dim are adjacent with permute
+                # then merge these two dimensions with view
+                present = present.permute(0, 1, 3, 2, 4).contiguous().view(present.shape[0], present.shape[1], present.shape[3], -1)
+                present = (present[0, :, :, :], present[1, :, :, :])  # k, v tuple
 
-            # print('GPT2 | FORWARD {} len(presents) {}'.format(i, len(presents)))
+            presents = presents + (present,)
 
             if self.output_attentions:
                 all_attentions.append(outputs[2])
 
         hidden_states = self.ln_f(hidden_states)
 
-        # print('GPT2 | hidden_state.shape', hidden_states.shape)
+        # Claartje
+        if reshape_present:
+            presents = list(presents)
 
         hidden_states = hidden_states.view(*output_shape)
-        # print('GPT2 | hidden_state.shape (after view)', hidden_states.shape)
 
         # Add last hidden state
         if self.output_hidden_states:
@@ -690,13 +655,15 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
                                    self.transformer.wte)
 
     def forward(self, input_ids, past=None, attention_mask=None, token_type_ids=None, position_ids=None, head_mask=None,
-                labels=None, label_ignore=None):
+                labels=None, label_ignore=None, reshape_present=False, actual_past=None):
         transformer_outputs = self.transformer(input_ids,
                                                past=past,
                                                attention_mask=attention_mask,
                                                token_type_ids=token_type_ids,
                                                position_ids=position_ids,
-                                               head_mask=head_mask)
+                                               head_mask=head_mask,
+                                               reshape_present=reshape_present,
+                                               actual_past=actual_past)
         hidden_states = transformer_outputs[0]
 
         lm_logits = self.lm_head(hidden_states)
@@ -779,7 +746,7 @@ class GPT2ForLatentConnector(GPT2PreTrainedModel):
                                    self.transformer.wte)
 
     def forward(self, input_ids, past=None, attention_mask=None, token_type_ids=None, position_ids=None, head_mask=None,
-                labels=None, label_ignore=None):
+                labels=None, label_ignore=None, reshape_present=False, actual_past=None):
         transformer_outputs = self.transformer(input_ids,
                                                past=past,
                                                attention_mask=attention_mask,
@@ -787,40 +754,25 @@ class GPT2ForLatentConnector(GPT2PreTrainedModel):
                                                position_ids=position_ids,
                                                head_mask=head_mask,
                                                latent_as_gpt_emb=self.latent_as_gpt_emb,
-                                               latent_as_gpt_memory=self.latent_as_gpt_memory)
+                                               latent_as_gpt_memory=self.latent_as_gpt_memory,
+                                               reshape_present=reshape_present,
+                                               actual_past=actual_past)
         hidden_states = transformer_outputs[0]
-        # print('Gpt2 connector hidden states', hidden_states.shape)
 
         lm_logits = self.lm_head(hidden_states)
-
-        # print("Test 1", lm_logits.shape)
-
         outputs = (lm_logits,) + transformer_outputs[1:]
-
-        # print("Test 2", outputs[0].shape)
-
 
         if labels is not None:
             # Shift so that tokens < n predict n
-
-            # print('logits outputs model', lm_logits.shape)
-            # print('labels.shape', labels.shape)
-
             # C: The last token predicts for a token outside of the sequence, skip that one
             shift_logits = lm_logits[..., :-1, :].contiguous()
-            # print('after applying shift_logits = lm_logits[..., :-1, :].contiguous()', shift_logits.shape)
-            # C:
             shift_labels = labels[..., 1:].contiguous() # shift the labels, so that BOS
-            # print('after applying shift_labels = labels[..., 1:].contiguous()', shift_labels.shape)
-            # print('label_ignore=', label_ignore)
             # Flatten the tokens
             loss_fct = CrossEntropyLoss(ignore_index=label_ignore,
                                         reduce=False)  # 50258 is the padding id, otherwise -1 is used for masked LM.
             loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)),
                             shift_labels.view(-1))
 
-            # print('applies loss fnc CrossEntropyLoss to shapes', shift_logits.view(-1, shift_logits.size(-1)).shape,
-            #       shift_labels.view(-1).shape)
             loss = torch.sum(loss.view(-1, shift_labels.shape[-1]), -1)
             outputs = (loss,) + outputs
 
