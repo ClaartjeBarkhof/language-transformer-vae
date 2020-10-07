@@ -7,6 +7,7 @@ from argparse import Namespace
 import torch.nn.functional as F
 from datetime import datetime
 import pickle
+import copy
 
 import sys
 sys.path.append('../code')
@@ -265,8 +266,10 @@ def autoregressive_decode(VAE_model, latent_z, labels_GPT2, max_sent_len=-1, tra
         # Start with BOS token
         generated_so_far = torch.tensor(VAE_model.tokenizer_decoder.added_tokens_encoder['<BOS>'],
                                         dtype=torch.long, device=DEVICE)
+
         # Make a batch of BOS tokens
         generated_so_far = generated_so_far.unsqueeze(0).repeat(latent_z.shape[0], 1)
+        next_token = copy.deepcopy(generated_so_far)
 
         logits_lm_so_far = []
 
@@ -281,9 +284,9 @@ def autoregressive_decode(VAE_model, latent_z, labels_GPT2, max_sent_len=-1, tra
             else:
                 # there is no past yet
                 if not past:
-                    outputs = VAE_model.decoder(generated_so_far, past=latent_z, reshape_present=True)
+                    outputs = VAE_model.decoder(next_token, past=latent_z, reshape_present=True)
                 else:
-                    outputs = VAE_model.decoder(generated_so_far, past=latent_z, actual_past=past, reshape_present=True)
+                    outputs = VAE_model.decoder(next_token, past=latent_z, actual_past=past, reshape_present=True)
                 past = outputs[1]
 
             logits_lm = outputs[0]
@@ -299,11 +302,8 @@ def autoregressive_decode(VAE_model, latent_z, labels_GPT2, max_sent_len=-1, tra
             next_token_probs = F.softmax(next_token_logits, dim=1)
             next_token = torch.multinomial(next_token_probs, num_samples=1)
 
-            if use_cache:
-                generated_so_far = next_token
-            else:
-                # The generated output can be concatted to the previous ouput
-                generated_so_far = torch.cat((generated_so_far, next_token), dim=1)
+            # The generated output can be concatted to the previous ouput
+            generated_so_far = torch.cat((generated_so_far, next_token), dim=1)
 
         logits_sequence = torch.stack(logits_lm_so_far, dim=1)
 
