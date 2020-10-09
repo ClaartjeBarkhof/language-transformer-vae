@@ -2,12 +2,11 @@
 import torch
 import numpy as np
 import os
-import csv
 from argparse import Namespace
 import torch.nn.functional as F
-from datetime import datetime
 import pickle
 import copy
+import random
 
 import sys
 sys.path.append('../code')
@@ -20,7 +19,6 @@ from relevant_optimus_code.tokenization_bert import BertTokenizer
 from relevant_optimus_code.tokenization_gpt2 import GPT2Tokenizer
 from relevant_optimus_code.modeling_bert import BertForLatentConnector
 from relevant_optimus_code.modeling_gpt2 import GPT2ForLatentConnector
-# Other functions that might be relevant: interpolate, latent_code_from_text, text_from_latent_code, top_k_top_p_filtering
 from relevant_optimus_code.run_latent_generation import add_special_tokens_to_decoder
 from relevant_optimus_code.vae import VAE
 
@@ -52,28 +50,26 @@ DO_LOWERCASE = False
 
 # Paths to models
 CURRENT_DIR_PATH = os.path.dirname(os.path.abspath(__file__))
-PREFIX_PATH = CURRENT_DIR_PATH + '/../' # one up is the Optimus folder
+PREFIX_PATH = CURRENT_DIR_PATH + '/../'  # one up is the Optimus folder
 SNLI_MODEL_BASE_PATH = 'output/LM/Snli/768/philly_vae_snli_b{}_d5_r00.5_ra0.25_length_weighted/'
 WIKIPEDIA_MODEL_BASE_PATH = 'output/pretrain/philly_rr3_vc4_g8_base_vae_wikipedia_pretraining_beta_schedule_beta{' \
                             '}_d1.0_ro0.5_ra0.25_32_v2/'
 
 # Data
-SENTENCES_FILE = PREFIX_PATH + "claartje/sample_text.txt"
-MAX_SENTENCES = False
-MAX_N_SENTENCES = 200
+SENTENCES_FILE = PREFIX_PATH + "claartje/snli_sentences.pickle"
+MAX_SENTENCES = True
+MAX_N_SENTENCES = 10000
 
 # Batch size
-BATCH_SIZE = 48
+BATCH_SIZE = 64
 N_BATCHES = -1  # -1 for all
-
-# Decode sequence length
-MAX_DEC_SEQ_LEN = -1  # -1 for max_len
 
 # Results
 RESULT_DIR = 'evaluation-results'
 
-# Whether or not to use cached keys and value in the autoregressive generation
+# Whether or not to use cached keys and value in the auto-regressive generation
 USE_CACHE_AUTOREGRESS = True
+
 
 # -----------------------------------------------------------------
 
@@ -103,7 +99,7 @@ def get_model_path(snli_wikipedia, beta):
 
 def get_all_model_paths():
     """
-    Returns a dict to all model paths.
+    Returns a dict to all model paths given all possible settings: snli-wiki and beta values.
     """
     MODEL_PATHS = {}
     for snli_wikipedia in ['snli', 'wikipedia']:
@@ -118,6 +114,9 @@ def get_all_model_paths():
 
 
 def get_model_tokenizer_encoder(path, snli_wikipedia):
+    """
+    Given a snli-wikipedia settings, return model encoder and encoder tokeniser.
+    """
     # Load a trained Encoder model and vocabulary that you have fine-tuned
     encoder_config_class, encoder_model_class, encoder_tokenizer_class = MODEL_CLASSES[ENCODER_MODEL_TYPE]
     model_encoder = encoder_model_class.from_pretrained(path, latent_size=LATENT_SIZES[snli_wikipedia])
@@ -126,6 +125,9 @@ def get_model_tokenizer_encoder(path, snli_wikipedia):
 
 
 def get_model_tokenizer_decoder(path, snli_wikipedia):
+    """
+    Given a snli-wikipedia settings, return model decoder and decoder tokeniser.
+    """
     # Load a trained Decoder model and vocabulary that you have fine-tuned
     decoder_config_class, decoder_model_class, decoder_tokenizer_class = MODEL_CLASSES[DECODER_MODEL_TYPE]
     model_decoder = decoder_model_class.from_pretrained(path, latent_size=LATENT_SIZES[snli_wikipedia])
@@ -135,6 +137,10 @@ def get_model_tokenizer_decoder(path, snli_wikipedia):
 
 
 def get_model_vae(path, model_encoder, model_decoder, tokenizer_encoder, tokenizer_decoder, snli_wikipedia):
+    """
+    Given a model path, encoder, decoder, tokenizer encoder, tokenizer decoder and snli-wiki setting,
+    return a full VAE model.
+    """
     checkpoint_full = torch.load(os.path.join(path, 'training.bin'),
                                  map_location=torch.device(DEVICE))
     args = {'latent_size': LATENT_SIZES[snli_wikipedia], 'device': DEVICE}
@@ -160,29 +166,20 @@ def load_model(model_paths, snli_wikipedia, beta):
     return vae_model
 
 
-def load_sentences(sentences_txt_file, max_N_sentences=False, N_sentences=200):
-    sentences = []
-    with open(sentences_txt_file, 'r') as fd:
-        reader = csv.reader(fd, delimiter='\t')
-        for i, row in enumerate(reader):
-            sentences.append(row[1])
-            sentences.append(row[2])
-            if max_N_sentences:
-                if (len(sentences) >= N_sentences):
-                    break
-    return sentences
-
-
 def tokenise_pad_sentences(sentences, tokenizer_encoder, tokenizer_decoder):
-    sent_batch = sentences  # [:20]
+    """
+    Given a list of string sentences, tokenise those and return as as list of
+    tensors of token_ids and a 2D tensor that includes the padded
+    tokenised batch of sentences.
+    """
+
     tok_sent_batch_enc = []
     tok_sent_batch_dec = []
 
-    sent_lens = []
     tok_sent_lens_enc = []
     tok_sent_lens_dec = []
 
-    for i, s in enumerate(sent_batch):
+    for i, s in enumerate(sentences):
         # Encoder BERT tokenise
         tok_enc = [101] + tokenizer_encoder.encode(s) + [102]  # add beginning of sentence and end of sentence
         tok_sent_lens_enc.append(len(tok_enc))
@@ -211,91 +208,100 @@ def tokenise_pad_sentences(sentences, tokenizer_encoder, tokenizer_decoder):
     pad_tok_sent_dec = pad_tok_sent_dec.to(DEVICE)
     pad_tok_sent_enc = pad_tok_sent_enc.to(DEVICE)
 
-    print("Padded decoder GPT2 input/label sequence batch shape:", pad_tok_sent_dec.shape)
-    print("Padded encoder BERT input sequence batch shape:", pad_tok_sent_enc.shape)
+    # print("Padded decoder GPT2 input/label sequence batch shape:", pad_tok_sent_dec.shape)
+    # print("Padded encoder BERT input sequence batch shape:", pad_tok_sent_enc.shape)
 
-    return pad_tok_sent_dec, pad_tok_sent_enc  #, sent_lens, tok_sent_lens_enc, tok_sent_lens_dec, tok_sent_batch_enc, tok_sent_batch_dec
+    return pad_tok_sent_dec, pad_tok_sent_enc, tok_sent_batch_dec, tok_sent_batch_enc
+
+
+def logits_to_prediction(logits, sample=True):
+    """
+    Given logits, make predictions by sampling or taking the maximum.
+    Sampling is recommended to decrease the risk for loops.
+    """
+
+    probs = F.softmax(logits, dim=-1)
+
+    if sample:
+        probs_reshape = probs.view(-1, probs.shape[-1])
+        preds = torch.multinomial(probs_reshape, num_samples=1).view(probs.shape[:-1])
+    else:
+        preds = torch.argmax(probs, dim=-1)
+
+    return preds
 
 
 def teacher_force_decode(VAE_model, latent_z, labels_GPT2, train=False):
-    with torch.set_grad_enabled(train):
-        # Calculate a mask of outputs that should be taken into account (shifted padding)
-        reconstruction_mask = (labels_GPT2 != 50257).float()
-        shift_reconstruction_mask = reconstruction_mask[:, 1:].contiguous()
+    """
+    Do a forward pass of the decoder in a teacher forced manner,
+    where the ground truth labels condition every step of the sequence.
+    It returns the sampled predictions (token ids) and the logits.
+    """
 
+    with torch.set_grad_enabled(train):
         # Decode
-        outputs = VAE_model.decoder(input_ids=labels_GPT2, past=latent_z, labels=labels_GPT2,
-                                    label_ignore=VAE_model.pad_token_id)
-        lm_logits = outputs[1]  # element 2 is transformer_outputs[1:], don't need that
+        outputs = VAE_model.decoder(input_ids=labels_GPT2, past=latent_z)
+        lm_logits = outputs[0]  # element 1 is transformer_outputs[1:], don't need that
 
-        # Align labels and outputs
-        shift_labels = labels_GPT2[:, 1:].contiguous()  # Shift labels to left, so that align with outputs
-        shift_lm_logits = lm_logits[:, :-1, :].contiguous()  # Skip last output, so that aligns with labels
+        # Make predictions
+        preds = logits_to_prediction(lm_logits, sample=True)
 
-        # Functions
-        softmax_fn = torch.nn.Softmax(dim=2)
-        ce_fn = torch.nn.CrossEntropyLoss(ignore_index=VAE_model.pad_token_id, reduction='none')
-
-        # Convert output to probability to token id prediction
-        probs = softmax_fn(shift_lm_logits)
-        pred = torch.argmax(probs, dim=2)  # take max over the vocab dimension (2)
-
-        # CE loss expects B x Vocab, so force sequence dim into B dim.
-        probs_resize = shift_lm_logits.view(-1, shift_lm_logits.size(-1))
-        ce_loss_resize = ce_fn(probs_resize, shift_labels.view(-1))
-        ce_loss = torch.sum(ce_loss_resize.view(-1, shift_labels.shape[-1]), -1)  # put seq. dim. back
-
-        # Mask predictions
-        masked_pred = (pred * shift_reconstruction_mask).int()
-
-        return masked_pred, ce_loss
+        return preds, lm_logits
 
 
-def autoregressive_decode(VAE_model, latent_z, labels_GPT2, max_sent_len=-1, train=False, use_cache=True):
-    if (max_sent_len == -1):
-        max_sent_len = labels_GPT2.shape[1] - 1  # -1 for BOS token
+def autoregressive_decode(VAE_model, latent_z, labels_GPT2,
+                          train=False, use_cache=True):
+    """
+    Do an auto-regressive forward pass in the decoder, given a latent vector z.
 
-    # Skip beginning of sentence token and respect max length
-    shift_labels = labels_GPT2[:, 1:max_sent_len + 1].contiguous()
+    :param VAE_model:
+    :param latent_z:       latent vector passed from the encoder
+    :param labels_GPT2:
+    :param train:          whether or not in train mode (grads enabled or not)
+    :param use_cache:      whether or not to save key, value vectors from previous
+                           forward passes, to be speed up the forward and reduce cuda memory.
+    :return:               - predictions for the whole sequence (token ids)
+                           - logits for the whole sequences
 
-    # Functions
-    softmax_fn = torch.nn.Softmax(dim=2)
-    ce_fn = torch.nn.CrossEntropyLoss(ignore_index=VAE_model.pad_token_id, reduction='none')
+    """
+    max_sent_len = labels_GPT2.shape[1]
+
+    # The first column of labels_GPT2 are <BOS> tokens, used to start decoding (first conditional)
+    generated_so_far = labels_GPT2[:, 0].unsqueeze(1)
+    prev_token = copy.deepcopy(generated_so_far)
+
+    all_logits = []
 
     with torch.set_grad_enabled(train):
-        # Start with BOS token
-        generated_so_far = torch.tensor(VAE_model.tokenizer_decoder.added_tokens_encoder['<BOS>'],
-                                        dtype=torch.long, device=DEVICE)
-
-        # Make a batch of BOS tokens
-        generated_so_far = generated_so_far.unsqueeze(0).repeat(latent_z.shape[0], 1)
-        next_token = copy.deepcopy(generated_so_far)
-
-        logits_lm_so_far = []
-
         past = None
-        # Generate for the whole batch token per token (auto regressively)
-        for i in range(max_sent_len):
-            print('pos i: {:01d}'.format(i), end='\r')
 
-            # Outputs is a tuple (hidden, present)
+        # Generate for the whole batch token per token (auto-regressively)
+        for i in range(max_sent_len):
+
+            # If no cache is used, the full sequence outputted so far is passed through the model
             if not use_cache:
                 outputs = VAE_model.decoder(generated_so_far, past=latent_z)
+
+            # Otherwise only the last prediction
             else:
-                # there is no past yet
+                # First forward, no cache yet, just latents
                 if not past:
-                    outputs = VAE_model.decoder(next_token, past=latent_z, reshape_present=True)
+                    outputs = VAE_model.decoder(prev_token, past=latent_z, reshape_present=True)
+                # Pass the cached 'past'
                 else:
-                    outputs = VAE_model.decoder(next_token, past=latent_z, actual_past=past, reshape_present=True)
+                    outputs = VAE_model.decoder(prev_token, past=latent_z,
+                                                actual_past=past, reshape_present=True)
+
+                # Outputs is a tuple (logits, present)
                 past = outputs[1]
 
+            # Outputs is a tuple (logits, present)
             logits_lm = outputs[0]
+            all_logits.append(logits_lm)
 
             # logits_lm is of dim B x N input_tokens x vocab size
             # we want the output for the last hidden state
             next_token_logits = logits_lm[:, -1, :]
-
-            logits_lm_so_far.append(next_token_logits)
 
             # No top_k, top_p filtering,
             # just apply softmax and sample woth that distribution
@@ -305,18 +311,32 @@ def autoregressive_decode(VAE_model, latent_z, labels_GPT2, max_sent_len=-1, tra
             # The generated output can be concatted to the previous ouput
             generated_so_far = torch.cat((generated_so_far, next_token), dim=1)
 
-        logits_sequence = torch.stack(logits_lm_so_far, dim=1)
+            # Current predictions becomes conditioning in next round (if cache is used)
+            prev_token = next_token
 
-        probs_resize = logits_sequence.view(-1, logits_sequence.size(-1))
-        ce_loss_resize = ce_fn(probs_resize, shift_labels.view(-1))
-        ce_loss = torch.sum(ce_loss_resize.view(-1, shift_labels.shape[-1]), -1)  # put seq. dim. back
+        # Get rid of the start token
+        predictions = generated_so_far[:, 1:]
 
-        return generated_so_far[:, 1:], ce_loss
+        # Concat all logits along the sequence dimension
+        all_logits = torch.cat(all_logits, dim=1)
+
+        return predictions, all_logits
 
 
 def encode_reconstruct_auto_and_tf(VAE_model, inputs_BERT, labels_GPT2, use_cache=True):
+    """
+    Given a VAE model, encode and decode a batch of tokenised sentences in two ways:
+        - Autoregressively
+        - Teacher forced
+
+    Return the logits and predictions of both methods.
+    """
+
     # Mask tokens that are 0 (PAD in BERT)
     attention_mask = (inputs_BERT > 0).float()
+
+    # Make a folder to store results
+    os.makedirs(RESULT_DIR, exist_ok=True)
 
     # ENCODE
     _, pooled_hidden_fea = VAE_model.encoder(inputs_BERT, attention_mask)
@@ -329,45 +349,104 @@ def encode_reconstruct_auto_and_tf(VAE_model, inputs_BERT, labels_GPT2, use_cach
     latent_z = mean.squeeze(1)
 
     # DECODE AUTO REGRESSIVE
-    print('Autoregressive batch forward')
-    gen_pred_auto, ce_loss_auto = autoregressive_decode(VAE_model, latent_z, labels_GPT2, use_cache=use_cache)
+    preds_auto, logits_auto = autoregressive_decode(VAE_model, latent_z, labels_GPT2, use_cache=use_cache)
 
     # DECODE TEACHER-FORCE
-    print('Teacher force batch forward')
-    masked_pred_tf, ce_loss_tf = teacher_force_decode(VAE_model, latent_z, labels_GPT2)
+    preds_tf, logits_tf = teacher_force_decode(VAE_model, latent_z, labels_GPT2)
 
-    return gen_pred_auto, ce_loss_auto, masked_pred_tf, ce_loss_tf
+    return preds_auto, logits_auto, preds_tf, logits_tf
+
+
+def get_masked_accuracy(preds, targets, mask):
+    """
+    Returns the masked accuracy given predictions for a batch of sequence predictions
+    and a mask. The accuracy (or fraction correct) is divided by the sequence length
+    and is thus proportional to the length.
+    """
+
+    correct = (preds == targets).float() * mask
+    correct_sum = correct.sum(dim=1)
+    frac_correct = correct_sum / mask.sum(dim=1)
+
+    return frac_correct
+
+
+def get_cross_entropy_perplexity(logits, targets, mask):
+    """
+    Returns the cross entropy and perplexity given a batch of logits, targets and a mask.
+    The cross entropy is calculated and masked and then summed and divided by sequence lengths.
+    The perplexity is taken as the exponent of the cross entropy (averaged over the sequence).
+    """
+
+    # Merge seq. dimension into batch dimension
+    logits_flat = logits.reshape(-1, logits.shape[-1])
+    targets_flat = targets.reshape(-1, 1)
+
+    # Calc cross entropy
+    log_probs_flat = F.log_softmax(logits_flat, dim=-1)
+    ce_losses_flat = - torch.gather(log_probs_flat, dim=1, index=targets_flat)
+    ce_loss = ce_losses_flat.view(*targets.size())
+    ce_loss = ce_loss * mask.float()
+
+    # Sum cross entropy over the sequence
+    ce_loss_sum = ce_loss.sum(dim=1)
+    ce_loss_prop = ce_loss_sum / mask.sum(dim=1)
+
+    # Perplexity as exp of cross entropy
+    # ppl_prop = (torch.exp(ce_loss) * mask).sum(dim=1) / mask.sum(dim=1)
+    ppl_prop = torch.exp(ce_loss_prop)
+
+    return ce_loss_prop, ppl_prop
+
+
+def load_sentences(shuffle=True):
+    """
+    Load sentences from a pickle defined in the global SENTENCES_FILE.
+    Respect the max length, shuffle if True and lowercase all the sentence strings.
+    """
+
+    sentences = pickle.load(open(SENTENCES_FILE, 'rb'))
+
+    # Shuffle for lengths to be mixed, the file has them sorted on length
+    if shuffle:
+        random.shuffle(sentences)
+
+    # Skip a part of the sentences if a maximum is provided.
+    if MAX_N_SENTENCES != -1:
+        sentences = sentences[:MAX_N_SENTENCES]
+
+    # Lowercase all strings for equal comparison between models
+    sentences = [s.lower() for s in sentences]
+
+    return sentences
 
 
 if __name__ == "__main__":
     model_paths = get_all_model_paths()
 
-    tokenizer_encoder = MODEL_CLASSES[ENCODER_MODEL_TYPE][2].from_pretrained(ENCODER_MODEL_NAME, do_lower_case=DO_LOWERCASE)
+    tokenizer_encoder = MODEL_CLASSES[ENCODER_MODEL_TYPE][2].from_pretrained(ENCODER_MODEL_NAME,
+                                                                             do_lower_case=DO_LOWERCASE)
     _, tokenizer_decoder = get_model_tokenizer_decoder(model_paths['snli'][1.0]['decoder_path'], 'snli')
 
-    sentences = load_sentences(SENTENCES_FILE, max_N_sentences=MAX_SENTENCES, N_sentences=MAX_N_SENTENCES)
-    pad_tok_sent_dec, pad_tok_sent_enc = tokenise_pad_sentences(sentences, tokenizer_encoder, tokenizer_decoder)
+    sentences = load_sentences()
 
-    n_batches = int(np.ceil(pad_tok_sent_enc.shape[0] / BATCH_SIZE))
+    n_batches = int(np.ceil(len(sentences) / BATCH_SIZE))
     N_BATCHES = n_batches if (N_BATCHES == - 1) else N_BATCHES
 
-    if MAX_DEC_SEQ_LEN != -1:
-        pad_tok_sent_enc = pad_tok_sent_enc[:, :MAX_DEC_SEQ_LEN]
-        pad_tok_sent_dec = pad_tok_sent_dec[:, :MAX_DEC_SEQ_LEN]
-
-    bert_sequence_batches = pad_tok_sent_enc.chunk(n_batches)
-    gpt2_sequence_batches = pad_tok_sent_dec.chunk(n_batches)
-
-    results_all_models = {}
-
     for snli_wikipedia in ['snli', 'wikipedia']:
-        results_all_models[snli_wikipedia] = {}
-
         for beta, VAE_model in model_paths[snli_wikipedia].items():
+
+            all_labels = []
+            all_preds_auto, all_preds_tf = [], []
+            all_accs_auto, all_accs_tf = [], []
+            all_ce_losses_auto, all_ce_losses_tf = [], []
+            all_prop_ppls_auto, all_prop_ppls_tf = [], []
+
+            setting_dir = RESULT_DIR + "/{}-{}/".format(snli_wikipedia, beta)
+            os.makedirs(setting_dir, exist_ok=True)
+
             print("-" * 30)
             print("Configuration: {} - beta: {}".format(snli_wikipedia, beta))
-
-            pred_auto, ce_losses_auto, pred_tf, ce_losses_tf = [], [], [], []
 
             VAE_model = load_model(model_paths, snli_wikipedia, beta)
             VAE_model = VAE_model.to(DEVICE)
@@ -376,33 +455,62 @@ if __name__ == "__main__":
             tokenizer_encoder = VAE_model.tokenizer_encoder
             tokenizer_decoder = VAE_model.tokenizer_decoder
 
-            for batch_i in range(n_batches):
+            for batch_i, idx in enumerate(range(0, len(sentences), BATCH_SIZE)):
                 print("Batch {}".format(batch_i), end='\r')
 
-                batch_inputs_bert = bert_sequence_batches[batch_i].to(DEVICE)
-                batch_labels_gpt2 = gpt2_sequence_batches[batch_i].to(DEVICE)
+                sentence_batch = sentences[idx:idx + BATCH_SIZE]
 
-                p_au, c_au, p_tf, c_tf = encode_reconstruct_auto_and_tf(VAE_model,
-                                                                        batch_inputs_bert,
-                                                                        batch_labels_gpt2,
-                                                                        use_cache=USE_CACHE_AUTOREGRESS)
+                batch_labels_gpt2, batch_inputs_bert, \
+                toks_gpt2, toks_bert = tokenise_pad_sentences(sentence_batch,
+                                                              tokenizer_encoder,
+                                                              tokenizer_decoder)
 
-                pred_auto.append(p_au.cpu())
-                ce_losses_auto.append(c_au.cpu())
-                pred_tf.append(p_tf.cpu())
-                ce_losses_tf.append(c_tf.cpu())
+                batch_inputs_bert = batch_inputs_bert.to(DEVICE)
+                batch_labels_gpt2 = batch_labels_gpt2.to(DEVICE)
+
+                preds_auto, logits_auto, preds_tf, logits_tf = encode_reconstruct_auto_and_tf(VAE_model,
+                                                                                              batch_inputs_bert,
+                                                                                              batch_labels_gpt2,
+                                                                                              use_cache=USE_CACHE_AUTOREGRESS)
+
+                logits_auto, logits_tf = logits_auto[:, :-1, :].cpu(), logits_tf[:, :-1, :].cpu()
+
+                batch_labels_gpt2 = batch_labels_gpt2[:, 1:].cpu()  # cut-off BOS token
+                preds_auto, preds_tf = preds_auto[:, :-1].cpu(), preds_tf[:,:-1].cpu()  # cut-off last token to make same size
+                mask = (batch_labels_gpt2 < 50257).float().cpu()  # where is not the padding or EOS token, put 1
+
+                accs_auto = get_masked_accuracy(preds_auto, batch_labels_gpt2, mask)
+                accs_tf = get_masked_accuracy(preds_tf, batch_labels_gpt2, mask)
+
+                ce_loss_prop_auto, ppl_prop_auto = get_cross_entropy_perplexity(logits_auto, batch_labels_gpt2, mask)
+                ce_loss_prop_tf, ppl_prop_tf = get_cross_entropy_perplexity(logits_tf, batch_labels_gpt2, mask)
 
                 if batch_i == (N_BATCHES - 1):
                     break
 
-            # Add results to dict with all configurations
-            results_all_models[snli_wikipedia][beta] = {'pred_auto_all': torch.cat(pred_auto),
-                                                        'ce_losses_auto_all': torch.cat(ce_losses_auto),
-                                                        'pred_tf_all': torch.cat(pred_tf),
-                                                        'ce_losses_tf_all': torch.cat(ce_losses_tf)}
+                all_labels.append(batch_labels_gpt2)
+                all_preds_auto.append(preds_auto)
+                all_preds_tf.append(preds_tf)
+                all_accs_auto.append(accs_auto)
+                all_accs_tf.append(accs_tf)
+                all_ce_losses_auto.append(ce_loss_prop_auto)
+                all_ce_losses_tf.append(ce_loss_prop_tf)
+                all_prop_ppls_auto.append(ppl_prop_auto)
+                all_prop_ppls_tf.append(ppl_prop_tf)
 
-    # Save results
-    os.makedirs(RESULT_DIR, exist_ok=True)
-    now = datetime.now().strftime("%d-%m-%Y--%H:%M:%S")
-    with open('{}/results-{}.pickle'.format(RESULT_DIR, now), 'wb') as handle:
-        pickle.dump(results_all_models, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            settings_result = {
+                'all_sentences': sentences,
+                'all_labels': all_labels,
+                'all_preds_auto': all_preds_auto,
+                'all_preds_tf' : all_preds_tf,
+                'all_accs_auto': torch.cat(all_accs_auto),
+                'all_accs_tf': torch.cat(all_accs_tf),
+                'all_ce_losses_auto': torch.cat(all_ce_losses_auto),
+                'all_ce_losses_tf': torch.cat(all_ce_losses_tf),
+                'all_prop_ppls_auto': torch.cat(all_prop_ppls_auto),
+                'all_prop_ppls_tf': torch.cat(all_prop_ppls_tf)
+            }
+
+            # Save results of setting
+            pickle.dump(settings_result, open(setting_dir + 'results.pickle', 'wb'),
+                        protocol=pickle.HIGHEST_PROTOCOL)

@@ -197,6 +197,8 @@ class Attention(nn.Module):
         key = self.split_heads(key, k=True)
         value = self.split_heads(value)
 
+        # print("ATTN FORWARD | query key value shapes", query.shape, key.shape, value.shape)
+
         if layer_past is not None:
             past_key, past_value = layer_past[0], layer_past[1]  # transpose back cf below
 
@@ -204,9 +206,15 @@ class Attention(nn.Module):
             #     if head_i == 0:
             #         print("GPT2 | attention forward | XX past_key.shape", past_key.shape)
             #         print("GPT2 | attention forward | XX past_value.shape", past_value.shape)
+            # print("ATTN FORWARD | past_key shape before split_heads", past_key.shape)
+            # print("ATTN FORWARD | past_value shape before split_heads", past_value.shape)
 
             past_key = self.split_heads(past_key, k=True)
             past_value = self.split_heads(past_value)
+
+            # print("ATTN FORWARD | past_key shape after split_heads", past_key.shape)
+            # print("ATTN FORWARD | past_value shape after split_heads", past_value.shape)
+
             # pdb.set_trace()
             # if head_i is not None:
             #     if head_i == 0:
@@ -215,8 +223,13 @@ class Attention(nn.Module):
             key = torch.cat((past_key, key), dim=-1)
             value = torch.cat((past_value, value), dim=-2)
 
+            # print("ATTN FORWARD | key shape after torch.cat((past_key, key), dim=-1):", key.shape)
+            # print("ATTN FORWARD | value shape after torch.cat((past_value, value), dim=-2)", value.shape)
+
         # print("ATTENTION key.shape, value.shape", key.shape, value.shape)
         present = torch.stack((key.transpose(-2, -1), value))  # transpose to have same shapes for stacking
+
+        # print("ATTN FORWARD | present.shape after torch.stack((key.transpose(-2, -1), value))", present.shape)
         # print("ATTENTION present.shape", present.shape)
 
         # if head_i is not None:
@@ -253,6 +266,10 @@ class Attention(nn.Module):
         #         print("GPT2 | attention forward | XX a.shape", a.shape)
         #         print("GPT2 | attention forward | XX present.shape", present.shape)
 
+        # print("BLOCK end | a shape", a.shape)
+        # print("BLOCK end | present shape", present.shape)
+        # print("BLOCK end | attn_outputs[1:]", attn_outputs[1:])
+
         outputs = [a, present] + attn_outputs[1:]
         return outputs  # a, present, (attentions)
 
@@ -288,12 +305,18 @@ class Block(nn.Module):
                                 head_mask=head_mask,
                                 head_i=head_i)
         a = output_attn[0]  # output_attn: a, present, (attentions)
+        # print("BLOCK | len(a):", len(a))
+        # print("BLOCK | output_attn[1:] (supposed to be 'present, (attentions)'", len(output_attn[1:]))
 
         x = x + a  # residual
         m = self.mlp(self.ln_2(x))
         x = x + m
 
         outputs = [x] + output_attn[1:]
+
+        # print("BLOCK | type outputs", type(outputs))
+        # print("BLOCK | type output_attn[1:]", type(output_attn[1:]))
+        # print("BLOCK | len(outputs)", len(outputs))
 
         # print("GPT2 | Block len(outputs)", len(outputs))
         # print("GPT2 | Block outputs[0].shape", outputs[0].shape)
@@ -460,6 +483,9 @@ class GPT2Model(GPT2PreTrainedModel):
 
             if latent_as_gpt_memory and not actual_past:  # C: create 'artificial past' from latent
                 past = self.linear(past)
+                # print("GPT2 | past.shape after linear", past.shape)
+                # print("GPT2 | after linear past[0, 0:10]", past[0, 0:10])
+
                 share_latent = False
                 if share_latent:
                     # the same latent vector shared by all layers
@@ -469,7 +495,13 @@ class GPT2Model(GPT2PreTrainedModel):
                 else:
                     # different latent vectors for each layer
                     past_split = torch.split(past.unsqueeze(1), self.config.hidden_size, dim=2)
+
+                    # print("GPT2 | len(past split)", len(past_split))
+                    # print("GPT2 | past_split[0].shape", past_split[0].shape)
+
                     past = list(zip(past_split, past_split))
+
+                    # print("GPT2 | past[0][0][0, 0, 0:10]", past[0][0][0, 0, 0:10])
 
                     # past = past.view(batch_size,len(self.h),-1)
                     # past = [[past[:,i,:].unsqueeze(-2), past[:,i,:].unsqueeze(-2) ] for i in range(len(self.h))]
@@ -479,6 +511,7 @@ class GPT2Model(GPT2PreTrainedModel):
                 past = [None] * len(self.h)
 
             if actual_past:
+                past_length = actual_past[0][0].shape[1]  # list of (k,v) tuples of size Batch, Past length, hid size
                 past = actual_past
 
         if position_ids is None:
@@ -489,7 +522,9 @@ class GPT2Model(GPT2PreTrainedModel):
 
         # Attention mask.
         if attention_mask is not None:
-            # print("GPT2 | attention mask not none")
+            print("XXXX")
+            print("GPT2 | XXX attention mask not none")
+            print("XXXX")
             # We create a 3D attention mask from a 2D tensor mask.
             # Sizes are [batch_size, 1, 1, to_seq_length]
             # So we can broadcast to [batch_size, num_heads, from_seq_length, to_seq_length]
@@ -510,7 +545,6 @@ class GPT2Model(GPT2PreTrainedModel):
         # attention_probs has shape bsz x n_heads x N x N
         # head_mask has shape n_layer x batch x n_heads x N x N
         if head_mask is not None:
-            # print("GPT2 | head mask not none")
             if head_mask.dim() == 1:
                 head_mask = head_mask.unsqueeze(0).unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
                 head_mask = head_mask.expand(self.config.n_layer, -1, -1, -1, -1)
@@ -537,9 +571,10 @@ class GPT2Model(GPT2PreTrainedModel):
 
         hidden_states = inputs_embeds + position_embeds + token_type_embeds
 
-        if latent_as_gpt_emb:
-            # pdb.set_trace()
-            hidden_states = hidden_states + past_emb.unsqueeze(1)
+        if past:
+            if latent_as_gpt_emb:
+                # pdb.set_trace()
+                hidden_states = hidden_states + past_emb.unsqueeze(1)
 
         hidden_states = self.drop(hidden_states)
 
@@ -548,6 +583,9 @@ class GPT2Model(GPT2PreTrainedModel):
         presents = ()
         all_attentions = []
         all_hidden_states = ()
+
+
+        # print("n layers len(self.h)", len(self.h))
 
         for i, (block, layer_past) in enumerate(zip(self.h, past)):
             if self.output_hidden_states:
@@ -586,6 +624,9 @@ class GPT2Model(GPT2PreTrainedModel):
             all_hidden_states = all_hidden_states + (hidden_states,)
 
         outputs = (hidden_states, presents)
+        # outputs = (hidden_states, past)
+        # print("----> only passing past, not present, past[0][0].shape", past[0][0].shape)
+
         if self.output_hidden_states:
             outputs = outputs + (all_hidden_states,)
         if self.output_attentions:
@@ -669,13 +710,14 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
         lm_logits = self.lm_head(hidden_states)
 
         outputs = (lm_logits,) + transformer_outputs[1:]
+
         if labels is not None:
             # Shift so that tokens < n predict n
             shift_logits = lm_logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens
             loss_fct = CrossEntropyLoss(ignore_index=label_ignore,
-                                        reduce=False)  # 50258 is the padding id, otherwise -1 is used for masked LM.
+                                        reduction='none')  # 50258 is the padding id, otherwise -1 is used for masked LM.
             loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)),
                             shift_labels.view(-1))
             loss = torch.sum(loss.view(-1, shift_labels.shape[-1]), -1)

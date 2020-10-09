@@ -119,7 +119,6 @@ class VAE(nn.Module):
             # Connect hidden feature to the latent space
             latent_z, loss_kl = self.connect(pooled_hidden_fea)
             latent_z = latent_z.squeeze(1)
-
             
             # Decoding
             outputs = self.decoder(input_ids=labels, past=latent_z, labels=labels, label_ignore=self.pad_token_id)
