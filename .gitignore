@@ -131,5 +131,6 @@ dmypy.json
 # Optimus output and data folder
 Experimentation/Optimus/output/
 Experimentation/Optimus/data/
+Experimentation/Optimus/claartje/evaluation-results/
 
 .idea/
