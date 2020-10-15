@@ -61,8 +61,8 @@ MAX_SENTENCES = True
 MAX_N_SENTENCES = 10000
 
 # Batch size
-BATCH_SIZE = 64
-N_BATCHES = -1  # -1 for all
+BATCH_SIZE = 2
+N_BATCHES = 2  # -1 for all
 
 # Results
 RESULT_DIR = 'evaluation-results'

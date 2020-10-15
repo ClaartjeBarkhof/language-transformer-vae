@@ -16,5 +16,4 @@ source $CONDA_PREFIX/etc/profile.d/conda.sh
 conda deactivate # just to make sure other envs are not active
 conda activate thesisenv # activat environment
 
-#source /home/cbarkhof/code-thesis/venv/bin/activate
-python /home/cbarkhof/code-thesis/Experimentation/Optimus/claartje/autoregressive_versus_teacher_forcing.py
+conda list

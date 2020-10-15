@@ -1,16 +1,19 @@
 #!/bin/bash
 #SBATCH -p gpu_short
 #SBATCH -t 0:50:00
-#SBATCH --mem=60G
+#SBATCH --mem=20G
 
-module load 2020
-module load Python/3.8.2-GCCcore-9.3.0
-module load CUDA/11.0.3-GCC-9.3.0
-module load cuDNN/8.0.3.33-gcccuda-2020a
+module purge  # unload all that are active
+module load 2019  # load 2019 software module for good python versions
+module load Anaconda3  # load anacoda
+module load CUDA/10.0.130  # load cuda
+module load cuDNN/7.6.3-CUDA-10.0.130  # load cudnn
+export LD_LIBRARY_PATH=/hpc/eb/Debian9/cuDNN/7.6.3-CUDA-10.0.130/lib64:$LD_LIBRARY_PATH
 
-#export PATH="/home/cbarkhof/code-thesis/Experimentation/Optimus/code:$PATH"
-#export PATH="/home/cbarkhof/code-thesis/Experimentation/Optimus/claartje:$PATH"
-#export PATH="/home/cbarkhof/code-thesis/Experimentation/Optimus/code/examples/big_ae:$PATH"
+CONDA_PREFIX=$(conda info --base)
+source $CONDA_PREFIX/etc/profile.d/conda.sh
 
-source /home/cbarkhof/code-thesis/venv/bin/activate
+conda deactivate # just to make sure other envs are not active
+conda activate thesisenv # activat environment
+
 python /home/cbarkhof/code-thesis/Experimentation/Benchmarking/benchmarking-models-claartje.py
