@@ -133,4 +133,7 @@ Experimentation/Optimus/output/
 Experimentation/Optimus/data/
 Experimentation/Optimus/claartje/evaluation-results/
 
+# Don't include data on Git
+Data/
+
 .idea/
