@@ -156,7 +156,6 @@ class VAE(nn.Module):
         return loss_rec, loss_kl, loss
 
 
-
     def encoder_sample(self, bert_fea, nsamples):
         """sampling from the encoder
         Returns: Tensor1

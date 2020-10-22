@@ -5,7 +5,8 @@ from torch.nn import functional as F
 from torch import nn
 from transformers import RobertaTokenizer, BertGenerationEncoder, BertGenerationDecoder
 from EncoderDecoderShareVAE import EncoderDecoderShareVAE
-
+import NewsVAEArguments
+from NewsData import NewsData
 
 class NewsVAE(pl.LightningModule):
     """
@@ -37,4 +38,10 @@ class NewsVAE(pl.LightningModule):
 
 
 if __name__ == "__main__":
-    NewsVAE()
+    args = NewsVAEArguments.preprare_parser()
+    NewsData = NewsData(args.dataset_name, args.tokenizer_name)
+    NewsVAE = NewsVAE()
+
+    for batch_idx, batch in enumerate(NewsData.dataloaders['train']):
+        print("Batch {:03d}".format(batch_idx), end="\r")
+

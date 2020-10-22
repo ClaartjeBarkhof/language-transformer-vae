@@ -1,3 +1,4 @@
+datasets
 transformers
 absl-py==0.7.1
 boto3==1.9.66

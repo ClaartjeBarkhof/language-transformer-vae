@@ -3,7 +3,7 @@ from transformers import RobertaTokenizer, RobertaConfig, AutoModelForCausalLM, 
 from utils import tie_weights
 from typing import Optional
 import torch
-
+import NewsVAEArguments
 
 class EncoderDecoderShareVAE(nn.Module):
     def __init__(self, config: Optional[PretrainedConfig] = None, roberta_ckpt_name: str = "roberta-base"):
@@ -60,7 +60,7 @@ class EncoderDecoderShareVAE(nn.Module):
         return kl_loss, recon_loss
 
     def train_step(self, batch):
-
+        pass
 
     def reparameterize(self, mu: torch.FloatTensor,
                        logvar: torch.FloatTensor):
@@ -120,6 +120,8 @@ if __name__ == "__main__":
     batch_inputs = model.tokenizer(test_sentences, padding=True, truncation=True, return_tensors="pt")
 
     # Add positional embeddings
+
+
 
     print(batch_inputs)
     model(batch_inputs)
