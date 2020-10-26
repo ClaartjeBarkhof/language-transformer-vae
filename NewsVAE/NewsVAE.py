@@ -1,12 +1,11 @@
 import pytorch_lightning as pl
 from typing import List, Dict
 import torch
-from torch.nn import functional as F
-from torch import nn
-from transformers import RobertaTokenizer, BertGenerationEncoder, BertGenerationDecoder
 from EncoderDecoderShareVAE import EncoderDecoderShareVAE
 import NewsVAEArguments
 from NewsData import NewsData
+from typing import Tuple
+
 
 class NewsVAE(pl.LightningModule):
     """
@@ -25,23 +24,36 @@ class NewsVAE(pl.LightningModule):
         optimizer = torch.optim.Adam(self.parameters(), lr=1e-5)
         return optimizer
 
-    def forward(self, article_batch: List[str]) -> Dict:
-        batch_inputs = self.encoder_decoder.tokenizer(article_batch, padding=True, truncation=True)
-        kl_loss, recon_loss = self.encoder_decoder(batch_inputs)
+    def forward(self, batch_inputs: Dict[str, torch.Tensor]) -> Tuple[float, float]:
+        # This step should implement inference (maybe latent -> sample?)
+        print("WARNING, IN FORWARD!")
+        kl_loss, recon_loss = self.encoder_decoder(*batch_inputs)
         return kl_loss, recon_loss
 
-    def training_step(self, article_batch: List[str]) -> Dict:
-        kl_loss, recon_loss = self(article_batch)
+    def training_step(self, article_batch: List[str], batch_idx: int) -> Dict:
+        kl_loss, recon_loss = self.encoder_decoder(*article_batch)
         loss = kl_loss + recon_loss  # TODO: add beta term
         logs = {'loss': loss, 'kl_loss': kl_loss, 'recon_loss': recon_loss}
         return {'loss': loss, 'logs': logs}
 
 
+def main(args):
+    news_data = NewsData(args.dataset_name, args.tokenizer_name,
+                         batch_size=args.batch_size, num_workers=args.num_workers)
+    # news_vae = NewsVAE()
+    #
+    # trainer = pl.Trainer()
+    # trainer.fit(news_vae, news_data.dataloaders['train'])  # TODO add val_step to pass , news_data.dataloaders['validation']
+
+    model = EncoderDecoderShareVAE('roberta-base')
+
+    for batch in news_data.dataloaders['train']:
+        kl_loss, recon_loss = model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])
+        break
+
 if __name__ == "__main__":
     args = NewsVAEArguments.preprare_parser()
-    NewsData = NewsData(args.dataset_name, args.tokenizer_name)
-    NewsVAE = NewsVAE()
+    main(args)
 
-    for batch_idx, batch in enumerate(NewsData.dataloaders['train']):
-        print("Batch {:03d}".format(batch_idx), end="\r")
+
 

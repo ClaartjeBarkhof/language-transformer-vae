@@ -1,12 +1,16 @@
 import torch.nn as nn
-from transformers import RobertaTokenizer, RobertaConfig, AutoModelForCausalLM, AutoModel, PretrainedConfig
-from utils import tie_weights
+from transformers import RobertaTokenizer, RobertaConfig, AutoModelForCausalLM, AutoModel  # type: ignore
+from utils_external import tie_weights  # type: ignore
+from transformers.modeling_outputs import BaseModelOutputWithPooling, CausalLMOutput
 from typing import Optional
 import torch
+import types
 import NewsVAEArguments
+from VAE_Decoder_Roberta import VAE_Decoder_RobertaForCausalLM
+
 
 class EncoderDecoderShareVAE(nn.Module):
-    def __init__(self, config: Optional[PretrainedConfig] = None, roberta_ckpt_name: str = "roberta-base"):
+    def __init__(self, roberta_ckpt_name: str = "roberta-base"):
         super(EncoderDecoderShareVAE, self).__init__()
 
         # Tokenizer
@@ -16,54 +20,55 @@ class EncoderDecoderShareVAE(nn.Module):
         config_encoder = RobertaConfig.from_pretrained(roberta_ckpt_name)
         config_encoder.return_dict = True
 
-        # TODO: carful, the pooling layer now is different from how it's done in the Optimus paper
+        # TODO: careful, the pooling layer now is different from how it's done in the Optimus paper
         # there they have a linear layer without non-linearity
         self.encoder = AutoModel.from_config(config_encoder)
 
-        print("ENCODER\n", self.encoder)
-
         # Decoder
-        config_decoder = RobertaConfig.from_pretrained(roberta_ckpt_name)
-        config_decoder.is_decoder = True
-        config_decoder.return_dict = True
-        self.decoder = AutoModelForCausalLM.from_config(config_decoder)
-
-        print("DECODER\n", self.decoder)
+        self.decoder = VAE_Decoder_RobertaForCausalLM.from_pretrained(roberta_ckpt_name)
 
         # Tie the weights of the Encoder and Decoder
         base_model_prefix = self.decoder.base_model_prefix
         tie_weights(self.encoder, self.decoder._modules[base_model_prefix], base_model_prefix)
 
-    def forward(self, batch):
+    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor):
         """
-        :param batch:
-        :return:
+
+        :param input_ids: batch of sequences of token ids
+        :param attention_mask: 2d attention mask, masking the padded tokens
+        :return: kl_loss and recon_loss
+                (kl divergence loss and reconstruction loss = cross entropy loss)
         """
+
         # Forward the encoder
-        encoder_outs = self.encoder(**batch)
+        encoder_outs = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
 
         # Pool the hidden features of the first token (classification token)
         pooled_output = encoder_outs.pooler_output
 
+        # Make use of the outputted features to sample a latent z vector
         latent_z, kl_loss = self.connect_encoder_decoder(pooled_output)
 
-        print("SHAPE OF LATENT", latent_z.shape)
-        print("kl_loss", kl_loss)
-
-        batch['labels'] = batch['input_ids']
         # TODO: make sure the attention mask does what it is supposed to d
         # TODO: connect latent to decoder
+        decoder_outs = self.decoder(input_ids=input_ids, attention_mask=attention_mask,
+                                    latent_z=latent_z, labels=input_ids)
 
-        decoder_outs = self.decoder(**batch)
+        # decoder_outs = self.decoder(input_ids, attention_mask)
+
         recon_loss = decoder_outs.loss
+
+        print("recon_loss", recon_loss)
+        print("kl_loss", kl_loss)
 
         return kl_loss, recon_loss
 
     def train_step(self, batch):
         pass
 
-    def reparameterize(self, mu: torch.FloatTensor,
-                       logvar: torch.FloatTensor):
+    @staticmethod
+    def reparameterize(mu: torch.Tensor,
+                       logvar: torch.Tensor) -> torch.Tensor:
         """
         Sample from posterior Gaussian family.
 
@@ -73,7 +78,7 @@ class EncoderDecoderShareVAE(nn.Module):
         :return: sampled_latent: sampled latent (batch_size x vae_latent_dim)
         """
         batch_size, nz = mu.size()
-        std = logvar.mul(0.5).exp()
+        std = torch.mul(logvar, 0.5).exp()
 
         mu_expd = mu.unsqueeze(1).expand(batch_size, 1, nz)
         std_expd = std.unsqueeze(1).expand(batch_size, 1, nz)
@@ -88,6 +93,8 @@ class EncoderDecoderShareVAE(nn.Module):
     def connect_encoder_decoder(self, encoder_pooled_output: torch.FloatTensor,
                                 deterministic: bool = False):
         """
+        This function connects the encoder to the decoder, either deterministically
+        or probabilistically, in which case a sample is drawn.
 
         :param encoder_pooled_output:
         :param deterministic:
@@ -107,6 +114,7 @@ class EncoderDecoderShareVAE(nn.Module):
             latent_z = self.reparameterize(mu, logvar)
 
         loss_kl = 0.5 * (mu.pow(2) + logvar.exp() - logvar - 1)
+
         # TODO: add mask on KL loss (find out what THRESH was self.args.dim_target_kl)
         kl_mask = (loss_kl > 3).float()
         loss_kl = (kl_mask * loss_kl).sum(dim=1)
@@ -116,12 +124,3 @@ class EncoderDecoderShareVAE(nn.Module):
 
 if __name__ == "__main__":
     model = EncoderDecoderShareVAE()
-    test_sentences = ["This is one test sentence.", "This is another test sentece!", "Okay, last test sentence"]
-    batch_inputs = model.tokenizer(test_sentences, padding=True, truncation=True, return_tensors="pt")
-
-    # Add positional embeddings
-
-
-
-    print(batch_inputs)
-    model(batch_inputs)

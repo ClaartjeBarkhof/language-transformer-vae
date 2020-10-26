@@ -1,13 +1,21 @@
+# type: ignore
+# Ignore type checking in this file as it contains copied code which throws a lot of errors I can't really fix
 from typing import List
 import torch.nn as nn
 
+"""
+This file contains functions from external sources, such as the Pytorch Library.
+"""
 
-# This function is copied from the PreTrainedModel definition https://huggingface.co/transformers/_modules/transformers/modeling_utils.html#PreTrainedModel
+
+# This function is copied from the PreTrainedModel definition :
+# https://huggingface.co/transformers/_modules/transformers/modeling_utils.html#PreTrainedModel
 def tie_weights(encoder, decoder, base_model_prefix):
     uninitialized_encoder_weights: List[str] = []
     if decoder.__class__ != encoder.__class__:
         print(
-            f"{decoder.__class__} and {encoder.__class__} are not equal. In this case make sure that all encoder weights are correctly initialized."
+            f"{decoder.__class__} and {encoder.__class__} are not equal. In this case make sure that all encoder "
+            f"weights are correctly initialized. "
         )
 
     def tie_encoder_to_decoder_recursively(
@@ -28,8 +36,9 @@ def tie_weights(encoder, decoder, base_model_prefix):
                 encoder_pointer.bias = decoder_pointer.bias
             return
 
-        encoder_modules = encoder_pointer._modules
-        decoder_modules = decoder_pointer._modules
+        encoder_modules = encoder_pointer._modules  # type: ignore
+        decoder_modules = decoder_pointer._modules  # type: ignore
+
         if len(decoder_modules) > 0:
             assert (
                     len(encoder_modules) > 0
@@ -54,7 +63,8 @@ def tie_weights(encoder, decoder, base_model_prefix):
                     continue
                 elif depth > 500:
                     raise ValueError(
-                        "Max depth of recursive function `tie_encoder_to_decoder` reached. It seems that there is a circular dependency between two or more `nn.Modules` of your model."
+                        "Max depth of recursive function `tie_encoder_to_decoder` reached. It seems that there is a "
+                        "circular dependency between two or more `nn.Modules` of your model. "
                     )
                 else:
                     decoder_name = encoder_name = name
@@ -75,4 +85,3 @@ def tie_weights(encoder, decoder, base_model_prefix):
         print(
             f"The following encoder weights were not tied to the decoder {uninitialized_encoder_weights}"
         )
-
