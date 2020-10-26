@@ -137,3 +137,5 @@ Experimentation/Optimus/claartje/evaluation-results/
 Data/
 
 .idea/
+/NewsVAE/lightning_logs/
+
