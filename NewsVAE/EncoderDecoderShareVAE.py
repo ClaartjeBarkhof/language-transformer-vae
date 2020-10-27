@@ -1,70 +1,73 @@
 import torch.nn as nn
-from transformers import RobertaTokenizer, RobertaConfig, AutoModelForCausalLM, AutoModel  # type: ignore
+from transformers import RobertaTokenizer, RobertaModel, RobertaConfig, AutoModelForCausalLM, AutoModel  # type: ignore
 from utils_external import tie_weights  # type: ignore
 from transformers.modeling_outputs import BaseModelOutputWithPooling, CausalLMOutput
 from typing import Optional
 import torch
+import argparse
+
+import numpy as np
 import types
 import NewsVAEArguments
-from VAE_Decoder_Roberta import VAE_Decoder_RobertaForCausalLM
+from VAE_Decoder_Roberta import VAE_Decoder_RobertaForCausalLM, VAE_Decoder_RobertaPooler
+import copy
 
 
 class EncoderDecoderShareVAE(nn.Module):
-    def __init__(self, roberta_ckpt_name: str = "roberta-base"):
+    def __init__(self, args, roberta_ckpt_name: str = "roberta-base"):
         super(EncoderDecoderShareVAE, self).__init__()
 
         # Tokenizer
         self.tokenizer = RobertaTokenizer.from_pretrained(roberta_ckpt_name)
 
         # Encoder
-        config_encoder = RobertaConfig.from_pretrained(roberta_ckpt_name)
-        config_encoder.return_dict = True
-
-        # TODO: careful, the pooling layer now is different from how it's done in the Optimus paper
-        # there they have a linear layer without non-linearity
-        self.encoder = AutoModel.from_config(config_encoder)
+        # Don't use the pre-trained pooler
+        self.encoder = RobertaModel.from_pretrained(roberta_ckpt_name, add_pooling_layer=False,
+                                                    return_dict=True)
+        # Add a fresh pooling layer
+        self.encoder.pooler = VAE_Decoder_RobertaPooler(self.encoder.config, args.latent_size)
 
         # Decoder
         self.decoder = VAE_Decoder_RobertaForCausalLM.from_pretrained(roberta_ckpt_name)
+        self.decoder.add_latent_projection_layers(args.latent_size, args.hidden_size, args.n_layers)
 
         # Tie the weights of the Encoder and Decoder
         base_model_prefix = self.decoder.base_model_prefix
         tie_weights(self.encoder, self.decoder._modules[base_model_prefix], base_model_prefix)
 
-    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor):
+    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor,
+                args: argparse.Namespace):
         """
+        Implements the forward pass of the shared Encoder-Decoder VAE.
 
+        :param args: configuration parameters of the VAE
         :param input_ids: batch of sequences of token ids
         :param attention_mask: 2d attention mask, masking the padded tokens
-        :return: kl_loss and recon_loss
-                (kl divergence loss and reconstruction loss = cross entropy loss)
+
+        :return: kl_loss (KL divergence) and recon_loss (cross-entropy loss)
         """
 
         # Forward the encoder
         encoder_outs = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
 
-        # Pool the hidden features of the first token (classification token)
-        pooled_output = encoder_outs.pooler_output
+        # Make use of the pooled features to sample a latent z vector
+        latent_z, kl_loss, hinge_kl_loss = self.connect_encoder_decoder(encoder_outs.pooler_output,
+                                                                        deterministic=args.deterministic_connect,
+                                                                        hinge_loss_lambda=args.hinge_loss_lambda)
 
-        # Make use of the outputted features to sample a latent z vector
-        latent_z, kl_loss = self.connect_encoder_decoder(pooled_output)
-
-        # TODO: make sure the attention mask does what it is supposed to d
-        # TODO: connect latent to decoder
+        # Forward the decoder
         decoder_outs = self.decoder(input_ids=input_ids, attention_mask=attention_mask,
-                                    latent_z=latent_z, labels=input_ids)
-
-        # decoder_outs = self.decoder(input_ids, attention_mask)
-
+                                    latent_z=latent_z, labels=copy.copy(input_ids),
+                                    add_latent_via_embeddings=args.add_latent_via_embeddings,
+                                    add_latent_via_memory=args.add_latent_via_memory)
         recon_loss = decoder_outs.loss
 
-        print("recon_loss", recon_loss)
-        print("kl_loss", kl_loss)
+        total_loss = hinge_kl_loss + (args.beta * recon_loss)
 
-        return kl_loss, recon_loss
+        losses = {'kl_loss': kl_loss, 'hinge_kl_loss': hinge_kl_loss,
+                  'recon_loss': recon_loss, 'total_loss': total_loss}
 
-    def train_step(self, batch):
-        pass
+        return losses
 
     @staticmethod
     def reparameterize(mu: torch.Tensor,
@@ -91,14 +94,17 @@ class EncoderDecoderShareVAE(nn.Module):
         return sampled_latent
 
     def connect_encoder_decoder(self, encoder_pooled_output: torch.FloatTensor,
-                                deterministic: bool = False):
+                                deterministic: bool = False,
+                                hinge_loss_lambda: float = 0.5):
         """
         This function connects the encoder to the decoder, either deterministically
         or probabilistically, in which case a sample is drawn.
 
-        :param encoder_pooled_output:
-        :param deterministic:
-        :return: latent_z
+        :param hinge_loss_lambda: maximum value the KL-loss elements can take (for hinge loss capping)
+        :param encoder_pooled_output: pooled features from the encoder
+        :param deterministic: whether or not to connect the encoder and decoder deterministically
+
+        :return: latent_z: the latent vector that can be injected in the decoder
         """
         # Interpret the latent to be mean, log variance vector
         # to ensure positivity for the standard deviation
@@ -113,14 +119,17 @@ class EncoderDecoderShareVAE(nn.Module):
         else:
             latent_z = self.reparameterize(mu, logvar)
 
-        loss_kl = 0.5 * (mu.pow(2) + logvar.exp() - logvar - 1)
+        kl_loss = 0.5 * (mu.pow(2) + logvar.exp() - logvar - 1)
 
-        # TODO: add mask on KL loss (find out what THRESH was self.args.dim_target_kl)
-        kl_mask = (loss_kl > 3).float()
-        loss_kl = (kl_mask * loss_kl).sum(dim=1)
+        # Cap the loss (hinge loss)
+        hinge_kl_loss = torch.clamp(kl_loss, 0, hinge_loss_lambda)
 
-        return latent_z, loss_kl
+        # Sum over the latent dimension and average over the batch dimension
+        hinge_kl_loss = hinge_kl_loss.sum(dim=1).mean(dim=0)
+        kl_loss = kl_loss.sum(dim=1).mean(dim=1)
+
+        return latent_z, kl_loss, hinge_kl_loss
 
 
 if __name__ == "__main__":
-    model = EncoderDecoderShareVAE()
+    print("Not implemented this main.")
