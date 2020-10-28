@@ -2,7 +2,7 @@ import pytorch_lightning as pl
 from pytorch_lightning import seed_everything
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning import loggers as pl_loggers
-from typing import List, Dict
+from typing import List, Dict, Any
 import torch
 from EncoderDecoderShareVAE import EncoderDecoderShareVAE
 import NewsVAEArguments
@@ -10,6 +10,7 @@ from NewsData import NewsDataModule
 import argparse
 import utils
 import os
+from datetime import datetime
 import numpy as np
 
 
@@ -27,6 +28,11 @@ class NewsVAE(pl.LightningModule):
         self.encoder_decoder = EncoderDecoderShareVAE(args, roberta_ckpt_name)
 
     def training_step(self, article_batch: Dict[str, torch.Tensor], batch_idx: int) -> Dict:
+
+        print('#'*40)
+        for k, v in article_batch.items():
+            print(k, type(v), v.device)
+
         losses = self.encoder_decoder(input_ids=article_batch['input_ids'],
                                       attention_mask=article_batch['attention_mask'],
                                       args=self.args)
@@ -35,12 +41,32 @@ class NewsVAE(pl.LightningModule):
         return {'loss': losses['total_loss']}
 
     def validation_step(self, article_batch: Dict[str, torch.Tensor], batch_idx: int) -> Dict:
+        print('#' * 40)
+        for k, v in article_batch.items():
+            print(k, type(v), v.device)
+
         losses = self.encoder_decoder(input_ids=article_batch['input_ids'],
                                       attention_mask=article_batch['attention_mask'],
                                       args=self.args)
         valid_losses = {'valid_' + k: v for k, v in losses.items()}
         self.log_dict(valid_losses, prog_bar=True, on_step=True, on_epoch=True, logger=True)
-        return valid_losses
+        return {'loss': losses['total_loss']}
+
+    def gather_outputs(self, outputs: List[Any], prefix) -> Dict[str, torch.Tensor]:
+        epoch_stats = {}
+        for loss_name in outputs[0].keys():
+            stacked_losses = torch.stack([o[loss_name] for o in outputs])
+            mean_loss = stacked_losses.mean()
+            epoch_stats[prefix + loss_name] = mean_loss
+        return epoch_stats
+
+    def training_epoch_end(self, outputs: List[Any]) -> None:
+        epoch_train_stats = self.gather_outputs(outputs, 'train_epoch_')
+        self.log_dict(epoch_train_stats, logger=True)
+
+    def validation_epoch_end(self, outputs: List[Any]) -> None:
+        epoch_val_stats = self.gather_outputs(outputs, 'valid_epoch_')
+        self.log_dict(epoch_val_stats, logger=True)
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.args.learning_rate)
@@ -73,13 +99,20 @@ class NewsVAE(pl.LightningModule):
 def main(args):
     utils.print_platform_codedir()
 
+    print("XXX number of GPUs available", torch.cuda.device_count())
+
+
+
     if args.deterministic:
         seed_everything(args.seed)
 
     checkpoint_callback = ModelCheckpoint()
 
-    loggers = [pl_loggers.TensorBoardLogger(save_dir='lightning_logs'),
-               pl_loggers.WandbLogger(save_dir='lightning_logs', project='thesis')]
+    datetime_stamp = datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
+    experiment_name = "experiment-{}".format(datetime_stamp)
+
+    loggers = [pl_loggers.TensorBoardLogger(save_dir='lightning_logs', name=experiment_name),
+               pl_loggers.WandbLogger(save_dir='lightning_logs', project='thesis', name=experiment_name)]
 
     news_data = NewsDataModule(args.dataset_name, args.tokenizer_name,
                                batch_size=args.batch_size,
@@ -89,11 +122,12 @@ def main(args):
 
     trainer = pl.Trainer(logger=loggers,
                          accumulate_grad_batches=args.accumulate_n_batches_grad,
-                         gpus=args.n_gpus,
+                         gpus=1,
                          max_steps=args.max_steps,
                          max_epochs=args.max_epochs,
-                         accelerator=args.distributed_backend,
-                         num_nodes=args.n_nodes,
+                         distributed_backend=None,
+                         accelerator=None,
+                         num_nodes=1,
                          auto_select_gpus=True,
                          benchmark=True,  # makes system faster with equal sized batches
                          check_val_every_n_epoch=args.check_val_every_n_epoch,

@@ -21,15 +21,27 @@ def preprare_parser():
     parser.add_argument("--linear_lr_warmup_n_steps", default=20, type=int,
                         help="Number of steps it takes to linearly "
                              "increase to the standard learning rate.")
-    parser.add_argument("--max_train_steps", default=100, type=int,
+    parser.add_argument("--max_steps", default=100, type=int,
                         help="Maximum number of train steps. Used if earlier than max_epochs.")
-    parser.add_argument("--max_epochs", default=None, type=int,
-                        help="Maximum number of epochs. Used if earlier than max_train_steps.")
+    parser.add_argument("--max_epochs", default=100, type=int,
+                        help="Maximum number of train epochs. Used if earlier than max_train_steps.")
     parser.add_argument("--check_val_every_n_epoch", default=1, type=int,
                         help="Every how many epochs should the validation be executed (default: 1).")
 
-    n_gpus_default = 1 if utils.get_platform()[0] == 'lisa' else None
+    n_gpus_default = 2 if utils.get_platform()[0] == 'lisa' else None
+    distributed_backend_default = None
+    if n_gpus_default is not None:
+        if n_gpus_default > 1:
+            distributed_backend_default = 'dp'
+
     log_gpu_memory_default = None if utils.get_platform()[0] == 'local' else 'all'
+
+    print('-'*20)
+    print("ARGPARSE GPU defaults are set to:")
+    print("n_gpus_default:", n_gpus_default)
+    print("distributed_backend_default:", distributed_backend_default)
+    print("log_gpu_memory_default:", log_gpu_memory_default)
+    print('-' * 20)
 
     # GPU
     parser.add_argument("--accumulate_n_batches_grad", default=1, type=int,
@@ -39,7 +51,7 @@ def preprare_parser():
                         help="Number GPUs to use (default: None).")
     parser.add_argument("--n_nodes", default=1, type=int,
                         help="Number nodes to use (default: 1).")
-    parser.add_argument("--distributed_backend", default=None, type=int,
+    parser.add_argument("--distributed_backend", default=distributed_backend_default, type=str,
                         help="Accelerator backend to use:"
                              "  - dp:       DataParallel: multi-GPU"
                              "  - ddp:      DistributedDataParaellel: multi-node GPU"
