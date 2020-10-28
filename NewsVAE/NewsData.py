@@ -7,6 +7,9 @@ from collections import OrderedDict
 import os
 import pytorch_lightning as pl
 import utils
+import os
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # TODO: get rid of this dangerous statement
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
@@ -20,7 +23,7 @@ class NewsDataModule(pl.LightningDataModule):
     """
 
     def __init__(self, dataset_name: str, tokenizer_name: str,
-                 batch_size: int = 8, num_workers: int = 8):
+                 batch_size: int = 8, num_workers: int = 4):
         super().__init__()
         self.DATASETS_PROPERTIES = {
             'cnn_dailymail': {
@@ -48,33 +51,32 @@ class NewsDataModule(pl.LightningDataModule):
         self.tokenizer_name = tokenizer_name
         self.num_workers = num_workers
 
-    def setup(self, stage: Optional[str] = None):
         # TOKENIZER
         self.tokenizer = self.TOKENIZER_PROPERTIES[self.tokenizer_name]['class'].from_pretrained(
-                            self.TOKENIZER_PROPERTIES[self.tokenizer_name]['ckpt'])
+            self.TOKENIZER_PROPERTIES[self.tokenizer_name]['ckpt'])
+
+    def setup(self, stage: Optional[str] = None):
+        pass
 
     def prepare_data(self):
         # ENCODE DATASET PATHS
-        file_encoded_dataset = '{}-{}'.format(self.dataset_name, self.tokenizer_name)
-        data_dir = utils.get_code_dir() + 'Data/'
+        file_encoded_dataset = '/{}-{}'.format(self.dataset_name, self.tokenizer_name)
+        data_dir = utils.get_code_dir() + 'Data'
         file_path_encoded_dataset = data_dir + file_encoded_dataset
 
         # LOAD PROCESSED FROM DISK
-        if file_encoded_dataset in os.listdir(data_dir):
-            print("Encoded this one before, loading from disk: {}".format(file_path_encoded_dataset))
+        if os.path.isdir(file_path_encoded_dataset):
             self.dataset = load_from_disk(data_dir + file_encoded_dataset)
 
         # LOAD & PROCESS DATA
         else:
-            print("Did not encode this one before, loading and processing...")
             name = '3.0.0' if self.dataset_name == 'cnn_dailymail' else None
             assert self.dataset_name in list_datasets(), "Currently only supporting datasets from Huggingface"
-            self.dataset = load_dataset(self.dataset_name, name=name)
+            self.dataset = load_dataset(self.dataset_name, name=name, ignore_verifications=True)
             self.change_article_col_name()
 
             self.dataset = self.dataset.map(self.convert_to_features, batched=True)
-            print(self.dataset.column_names)
-            # Not the article itself since it cant be turned into torch tensor
+            # Not the article itself since it cant be turned into torch tensor, and will break up the dataloading
             columns = ['attention_mask', 'input_ids']
             self.dataset.set_format(type='torch', columns=columns)
             print("Saving processed dataset to disk: {}".format(file_path_encoded_dataset))
@@ -135,3 +137,5 @@ class NewsDataModule(pl.LightningDataModule):
 
 if __name__ == "__main__":
     data = NewsDataModule('cnn_dailymail', 'roberta')
+    data.setup()
+    data.prepare_data()

@@ -18,7 +18,7 @@ def preprare_parser():
                         help="Batch size for data loading and training.")
     parser.add_argument("--learning_rate", default=0.05, type=int,
                         help="Learning rate (default: 0.05).")
-    parser.add_argument("--linear_lr_warmup_n_steps", default=40e3, type=int,
+    parser.add_argument("--linear_lr_warmup_n_steps", default=20, type=int,
                         help="Number of steps it takes to linearly "
                              "increase to the standard learning rate.")
     parser.add_argument("--max_train_steps", default=100, type=int,

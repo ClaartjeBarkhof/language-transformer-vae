@@ -220,7 +220,8 @@ class VAE_Decoder_RobertaSelfAttention(nn.Module):
                 # when they are not masked they are set to 0.0. We want all tokens to have access to the latens
                 # so we will concat series of 0.0 to the attention mask (in front) to not mask the latent.
                 batch, _, seq_l, _ = attention_mask.shape
-                attention_mask_extended_for_memory = torch.cat((torch.zeros(batch, 1, seq_l, 1),
+                extension = torch.zeros(batch, 1, seq_l, 1).type_as(attention_mask)
+                attention_mask_extended_for_memory = torch.cat((extension,
                                                                 attention_mask), dim=3)
                 attention_scores = attention_scores + attention_mask_extended_for_memory
             # <<<<<< End Claartje code

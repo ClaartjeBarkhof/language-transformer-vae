@@ -2,6 +2,7 @@
 #SBATCH -p gpu_short
 #SBATCH -t 0:50:00
 #SBATCH --mem=20G
+#SBATCH --output /home/cbarkhof/slurm-logs/%j-slurm-log.out
 
 module purge  # unload all that are active
 module load 2019  # load 2019 software module for good python versions

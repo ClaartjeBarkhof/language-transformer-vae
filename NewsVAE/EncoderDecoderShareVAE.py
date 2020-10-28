@@ -1,22 +1,10 @@
 import torch.nn as nn
 from transformers import RobertaTokenizer, RobertaModel, RobertaConfig, AutoModelForCausalLM, AutoModel  # type: ignore
 from utils_external import tie_weights  # type: ignore
-from transformers.modeling_outputs import BaseModelOutputWithPooling, CausalLMOutput
-from typing import Optional
 import torch
 import argparse
-
-import numpy as np
-import types
-import NewsVAEArguments
 from VAE_Decoder_Roberta import VAE_Decoder_RobertaForCausalLM, VAE_Decoder_RobertaPooler
 import copy
-import platform
-PLATFORM = 'local' if platform.node() == 'MacBook-Pro-van-Claartje.local' else 'lisa'
-if PLATFORM == 'local':
-    CODE_DIR = '/Users/claartje/Dropbox (Persoonlijk)/Studie/Master AI/Thesis/code-thesis/NewsVAE/'
-else:
-    CODE_DIR = '/home/cbarkhof/code-thesis/NewsVAE/'
 
 
 class EncoderDecoderShareVAE(nn.Module):

@@ -9,6 +9,8 @@ import NewsVAEArguments
 from NewsData import NewsDataModule
 import argparse
 import utils
+import os
+import numpy as np
 
 
 class NewsVAE(pl.LightningModule):
@@ -29,14 +31,15 @@ class NewsVAE(pl.LightningModule):
                                       attention_mask=article_batch['attention_mask'],
                                       args=self.args)
         train_losses = {'train_' + k: v for k, v in losses.items()}
-        return {'loss': losses['total_loss'], 'logs': train_losses}
+        self.log_dict(train_losses, prog_bar=True, on_step=True, on_epoch=True, logger=True)
+        return {'loss': losses['total_loss']}
 
     def validation_step(self, article_batch: Dict[str, torch.Tensor], batch_idx: int) -> Dict:
         losses = self.encoder_decoder(input_ids=article_batch['input_ids'],
                                       attention_mask=article_batch['attention_mask'],
                                       args=self.args)
         valid_losses = {'valid_' + k: v for k, v in losses.items()}
-        self.log_dict(valid_losses)
+        self.log_dict(valid_losses, prog_bar=True, on_step=True, on_epoch=True, logger=True)
         return valid_losses
 
     def configure_optimizers(self):
@@ -51,6 +54,7 @@ class NewsVAE(pl.LightningModule):
             lrs = torch.linspace(1e-5, self.args.learning_rate, self.args.linear_lr_warmup_n_steps)
             for pg in optimizer.param_groups:
                 pg['lr'] = lrs[self.trainer.global_step]
+
         # Square root decay afterwards, not sure if this is the right implementation
         # https://stats.stackexchange.com/questions/200063/adam-optimizer-with-exponential-decay
         else:
@@ -59,26 +63,23 @@ class NewsVAE(pl.LightningModule):
             # lr = decay_factor / sqrt(update_num)
 
             for pg in optimizer.param_groups:
-                pg['lr'] = self.args.learning_rate / torch.sqrt(self.trainer.global_step)
+                pg['lr'] = self.args.learning_rate / np.sqrt(self.trainer.global_step)
 
         # update params
         optimizer.step()
         optimizer.zero_grad()
 
 
-def print_platform_codedir():
-    platform, node = utils.get_platform()
-    print("Detected platform: {} ({})".format(platform, node))
-    print("Code directory absolute path: {}".format(utils.get_code_dir()))
-
-
 def main(args):
-    print_platform_codedir()
+    utils.print_platform_codedir()
 
     if args.deterministic:
         seed_everything(args.seed)
 
     checkpoint_callback = ModelCheckpoint()
+
+    loggers = [pl_loggers.TensorBoardLogger(save_dir='lightning_logs'),
+               pl_loggers.WandbLogger(save_dir='lightning_logs', project='thesis')]
 
     news_data = NewsDataModule(args.dataset_name, args.tokenizer_name,
                                batch_size=args.batch_size,
@@ -86,8 +87,11 @@ def main(args):
 
     news_vae = NewsVAE(args, 'roberta-base')
 
-    trainer = pl.Trainer(accumulate_grad_batches=args.accumulate_n_batches_grad,
+    trainer = pl.Trainer(logger=loggers,
+                         accumulate_grad_batches=args.accumulate_n_batches_grad,
                          gpus=args.n_gpus,
+                         max_steps=args.max_steps,
+                         max_epochs=args.max_epochs,
                          accelerator=args.distributed_backend,
                          num_nodes=args.n_nodes,
                          auto_select_gpus=True,
@@ -96,9 +100,9 @@ def main(args):
                          checkpoint_callback=checkpoint_callback,
                          log_gpu_memory=args.log_gpu_memory,
                          log_every_n_steps=args.log_every_n_steps,
-                         sync_batchnorm=True,  # Do I want this?
+                         # sync_batchnorm=True,  # Do I want this?
                          track_grad_norm=True,
-                         weights_summary='full',
+                         # weights_summary='full',
                          default_root_dir=utils.get_code_dir()
                          )
 
