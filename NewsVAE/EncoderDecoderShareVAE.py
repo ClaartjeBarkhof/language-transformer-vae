@@ -11,6 +11,12 @@ import types
 import NewsVAEArguments
 from VAE_Decoder_Roberta import VAE_Decoder_RobertaForCausalLM, VAE_Decoder_RobertaPooler
 import copy
+import platform
+PLATFORM = 'local' if platform.node() == 'MacBook-Pro-van-Claartje.local' else 'lisa'
+if PLATFORM == 'local':
+    CODE_DIR = '/Users/claartje/Dropbox (Persoonlijk)/Studie/Master AI/Thesis/code-thesis/NewsVAE/'
+else:
+    CODE_DIR = '/home/cbarkhof/code-thesis/NewsVAE/'
 
 
 class EncoderDecoderShareVAE(nn.Module):
@@ -126,7 +132,7 @@ class EncoderDecoderShareVAE(nn.Module):
 
         # Sum over the latent dimension and average over the batch dimension
         hinge_kl_loss = hinge_kl_loss.sum(dim=1).mean(dim=0)
-        kl_loss = kl_loss.sum(dim=1).mean(dim=1)
+        kl_loss = kl_loss.sum(dim=1).mean(dim=0)
 
         return latent_z, kl_loss, hinge_kl_loss
 

@@ -1,17 +1,20 @@
 import pytorch_lightning as pl
+from pytorch_lightning import seed_everything
+from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning import loggers as pl_loggers
 from typing import List, Dict
 import torch
 from EncoderDecoderShareVAE import EncoderDecoderShareVAE
 import NewsVAEArguments
-from NewsData import NewsData
-from typing import Tuple
+from NewsData import NewsDataModule
 import argparse
+import utils
 
 
 class NewsVAE(pl.LightningModule):
     """
     This Pytorch Lightning Module serves as a wrapper for training the EncoderDecoderShareVAE,
-    which is a VAE composed of two checkpoints connected by a latent space.
+    which is a VAE composed of two RoBERTa checkpoints connected by a through a latent space.
     """
 
     def __init__(self, args: argparse.Namespace, roberta_ckpt_name: str = "roberta-base"):
@@ -25,14 +28,14 @@ class NewsVAE(pl.LightningModule):
         losses = self.encoder_decoder(input_ids=article_batch['input_ids'],
                                       attention_mask=article_batch['attention_mask'],
                                       args=self.args)
-        train_losses = {'train_'+k: v for k, v in losses.items()}
+        train_losses = {'train_' + k: v for k, v in losses.items()}
         return {'loss': losses['total_loss'], 'logs': train_losses}
 
     def validation_step(self, article_batch: Dict[str, torch.Tensor], batch_idx: int) -> Dict:
         losses = self.encoder_decoder(input_ids=article_batch['input_ids'],
                                       attention_mask=article_batch['attention_mask'],
                                       args=self.args)
-        valid_losses = {'valid_'+k: v for k, v in losses.items()}
+        valid_losses = {'valid_' + k: v for k, v in losses.items()}
         self.log_dict(valid_losses)
         return valid_losses
 
@@ -45,7 +48,7 @@ class NewsVAE(pl.LightningModule):
                        using_lbfgs=False):
         # Linear warm-up
         if self.trainer.global_step < self.args.linear_lr_warmup_n_steps:
-            lrs = torch.linspace(1e-5, args.learning_rate, args.linear_lr_warmup_n_steps)
+            lrs = torch.linspace(1e-5, self.args.learning_rate, self.args.linear_lr_warmup_n_steps)
             for pg in optimizer.param_groups:
                 pg['lr'] = lrs[self.trainer.global_step]
         # Square root decay afterwards, not sure if this is the right implementation
@@ -56,35 +59,62 @@ class NewsVAE(pl.LightningModule):
             # lr = decay_factor / sqrt(update_num)
 
             for pg in optimizer.param_groups:
-                pg['lr'] = args.learning_rate / torch.sqrt(self.trainer.global_step)
+                pg['lr'] = self.args.learning_rate / torch.sqrt(self.trainer.global_step)
 
         # update params
         optimizer.step()
         optimizer.zero_grad()
 
 
+def print_platform_codedir():
+    platform, node = utils.get_platform()
+    print("Detected platform: {} ({})".format(platform, node))
+    print("Code directory absolute path: {}".format(utils.get_code_dir()))
+
+
 def main(args):
-    news_data = NewsData(args.dataset_name, args.tokenizer_name,
-                         batch_size=args.batch_size, num_workers=args.num_workers)
-    with_PL = False
+    print_platform_codedir()
 
-    if with_PL:
-        news_vae = NewsVAE(args, 'roberta-base')
-        trainer = pl.Trainer(accumulate_grad_batches=args.accumulate_n_batches_grad)
-        trainer.fit(news_vae, news_data.dataloaders['train'], news_data.dataloaders['validation'])
+    if args.deterministic:
+        seed_everything(args.seed)
 
-    else:
-        model = EncoderDecoderShareVAE(args, 'roberta-base')
+    checkpoint_callback = ModelCheckpoint()
 
-        for batch in news_data.dataloaders['train']:
-            kl_loss, recon_loss, total_loss = model(input_ids=batch['input_ids'],
-                                                    attention_mask=batch['attention_mask'], args=args)
-            print("kl_loss", kl_loss)
-            print("recon_loss", recon_loss)
-            print("total_loss", total_loss)
-            break
+    news_data = NewsDataModule(args.dataset_name, args.tokenizer_name,
+                               batch_size=args.batch_size,
+                               num_workers=args.num_workers)
+
+    news_vae = NewsVAE(args, 'roberta-base')
+
+    trainer = pl.Trainer(accumulate_grad_batches=args.accumulate_n_batches_grad,
+                         gpus=args.n_gpus,
+                         accelerator=args.distributed_backend,
+                         num_nodes=args.n_nodes,
+                         auto_select_gpus=True,
+                         benchmark=True,  # makes system faster with equal sized batches
+                         check_val_every_n_epoch=args.check_val_every_n_epoch,
+                         checkpoint_callback=checkpoint_callback,
+                         log_gpu_memory=args.log_gpu_memory,
+                         log_every_n_steps=args.log_every_n_steps,
+                         sync_batchnorm=True,  # Do I want this?
+                         track_grad_norm=True,
+                         weights_summary='full',
+                         default_root_dir=utils.get_code_dir()
+                         )
+
+    trainer.fit(news_vae, news_data)
 
 
 if __name__ == "__main__":
-    args = NewsVAEArguments.preprare_parser()
-    main(args)
+    config = NewsVAEArguments.preprare_parser()
+    main(config)
+
+    #     model = EncoderDecoderShareVAE(args, 'roberta-base')
+    #
+    #     for batch in news_data.dataloaders['train']:
+    #         kl_loss, recon_loss, total_loss = model(input_ids=batch['input_ids'],
+    #                                                 attention_mask=batch['attention_mask'], args=args)
+    #         print("kl_loss", kl_loss)
+    #         print("recon_loss", recon_loss)
+    #         print("total_loss", total_loss)
+    #         break

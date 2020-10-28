@@ -1,4 +1,5 @@
 import argparse
+import utils
 
 
 def preprare_parser():
@@ -20,13 +21,45 @@ def preprare_parser():
     parser.add_argument("--linear_lr_warmup_n_steps", default=40e3, type=int,
                         help="Number of steps it takes to linearly "
                              "increase to the standard learning rate.")
+    parser.add_argument("--max_train_steps", default=100, type=int,
+                        help="Maximum number of train steps. Used if earlier than max_epochs.")
+    parser.add_argument("--max_epochs", default=None, type=int,
+                        help="Maximum number of epochs. Used if earlier than max_train_steps.")
+    parser.add_argument("--check_val_every_n_epoch", default=1, type=int,
+                        help="Every how many epochs should the validation be executed (default: 1).")
+
+    n_gpus_default = 1 if utils.get_platform()[0] == 'lisa' else None
+    log_gpu_memory_default = None if utils.get_platform()[0] == 'local' else 'all'
+
+    # GPU
     parser.add_argument("--accumulate_n_batches_grad", default=1, type=int,
                         help="Number of batches to accumulate gradients over."
                              "Default is no accumulation: 1.")
-    parser.add_argument("--n_train_steps", default=6e5, type=int,
-                        help="Number of train steps. Overrules n_epochs.")
-    parser.add_argument("--n_epochs", default=None, type=int,
-                        help="Number of epochs, overruled by n_train_steps if not None.")
+    parser.add_argument("--n_gpus", default=n_gpus_default, type=int,
+                        help="Number GPUs to use (default: None).")
+    parser.add_argument("--n_nodes", default=1, type=int,
+                        help="Number nodes to use (default: 1).")
+    parser.add_argument("--distributed_backend", default=None, type=int,
+                        help="Accelerator backend to use:"
+                             "  - dp:       DataParallel: multi-GPU"
+                             "  - ddp:      DistributedDataParaellel: multi-node GPU"
+                             "  - ddp_cpu:  DistributedDataParallel on CPU (only speed-up with multi-node)"
+                             "  - ddp2:     dp on node, ddp acrros nodes")
+    parser.add_argument("--log_gpu_memory", default=log_gpu_memory_default, type=str,
+                        help="Options:"
+                             "  - None: no logging"
+                             "  - all: log all GPUs on master node"
+                             "  - min_max: log the min_max memory in master node.")
+
+    # LOGGING
+    parser.add_argument("--log_every_n_steps", default=10, type=int,
+                        help="Every how many steps to log (default: 10).")
+
+    # SEED
+    parser.add_argument("--seed", default=0, type=int,
+                        help="Seed for deterministic runs.")
+    parser.add_argument("--deterministic", default=True, type=bool,
+                        help="Whether or not to set seed and run everything deterministically.")
 
     # LOSS
     parser.add_argument("--hinge_loss_lambda", default=0.5, type=float,
