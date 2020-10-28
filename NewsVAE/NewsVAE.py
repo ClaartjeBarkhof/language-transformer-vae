@@ -122,11 +122,11 @@ def main(args):
 
     trainer = pl.Trainer(logger=loggers,
                          accumulate_grad_batches=args.accumulate_n_batches_grad,
-                         gpus=1,
+                         gpus=2,
                          max_steps=args.max_steps,
                          max_epochs=args.max_epochs,
-                         distributed_backend=None,
-                         accelerator=None,
+                         distributed_backend="dp",
+                         accelerator="dp",
                          num_nodes=1,
                          auto_select_gpus=True,
                          benchmark=True,  # makes system faster with equal sized batches
