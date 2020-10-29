@@ -2,7 +2,7 @@ import platform
 
 
 def get_platform():
-    PLATFORM = 'local' if platform.node() == 'MacBook-Pro-van-Claartje.local' else 'lisa'
+    PLATFORM = 'lisa' if 'lisa' in platform.node() else 'local'
     return PLATFORM, platform.node()
 
 
@@ -13,6 +13,13 @@ def get_code_dir():
         CODE_DIR = '/home/cbarkhof/code-thesis/NewsVAE/'
 
     return CODE_DIR
+
+
+def get_number_of_params(model, trainable=True):
+    if trainable:
+        return sum(p.numel() for p in model.parameters() if p.requires_grad)
+    else:
+        return sum(p.numel() for p in model.parameters())
 
 
 def print_platform_codedir():

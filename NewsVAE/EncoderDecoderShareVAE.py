@@ -5,10 +5,11 @@ import torch
 import argparse
 from VAE_Decoder_Roberta import VAE_Decoder_RobertaForCausalLM, VAE_Decoder_RobertaPooler
 import copy
-
+from NewsVAEArguments import preprare_parser
+import utils
 
 class EncoderDecoderShareVAE(nn.Module):
-    def __init__(self, args, roberta_ckpt_name: str = "roberta-base"):
+    def __init__(self, args, roberta_ckpt_name: str = "roberta-base", do_tie_weights=True):
         super(EncoderDecoderShareVAE, self).__init__()
 
         # Tokenizer
@@ -26,8 +27,9 @@ class EncoderDecoderShareVAE(nn.Module):
         self.decoder.add_latent_projection_layers(args.latent_size, args.hidden_size, args.n_layers)
 
         # Tie the weights of the Encoder and Decoder
-        base_model_prefix = self.decoder.base_model_prefix
-        tie_weights(self.encoder, self.decoder._modules[base_model_prefix], base_model_prefix)
+        if do_tie_weights:
+            base_model_prefix = self.decoder.base_model_prefix
+            tie_weights(self.encoder, self.decoder._modules[base_model_prefix], base_model_prefix)
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor,
                 args: argparse.Namespace):
@@ -125,5 +127,20 @@ class EncoderDecoderShareVAE(nn.Module):
         return latent_z, kl_loss, hinge_kl_loss
 
 
+
 if __name__ == "__main__":
-    print("Not implemented this main.")
+    params = preprare_parser()
+
+    model = EncoderDecoderShareVAE(args=params, do_tie_weights=True)
+
+    print("With tying weights")
+    print('Trainable params {:.3f} x 1e6'.format(utils.get_number_of_params(model)/1e6))
+    print("of which are encoder weights: {:.3f} x 1e6".format(utils.get_number_of_params(model.encoder)/1e6))
+    print("of which are decoder weights: {:.3f} x 1e6".format(utils.get_number_of_params(model.decoder) / 1e6))
+
+    model = EncoderDecoderShareVAE(args=params, do_tie_weights=False)
+
+    print("Without tying weights")
+    print('Trainable params {:.3f} x 1e6'.format(utils.get_number_of_params(model)/1e6))
+    print("of which are encoder weights: {:.3f} x 1e6".format(utils.get_number_of_params(model.encoder)/1e6))
+    print("of which are decoder weights: {:.3f} x 1e6".format(utils.get_number_of_params(model.decoder) / 1e6))

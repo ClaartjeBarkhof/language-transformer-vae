@@ -9,49 +9,50 @@ import NewsVAEArguments
 from NewsData import NewsDataModule
 import argparse
 import utils
-import os
 from datetime import datetime
 import numpy as np
 
 
 class NewsVAE(pl.LightningModule):
-    """
-    This Pytorch Lightning Module serves as a wrapper for training the EncoderDecoderShareVAE,
-    which is a VAE composed of two RoBERTa checkpoints connected by a through a latent space.
-    """
-
-    def __init__(self, args: argparse.Namespace, roberta_ckpt_name: str = "roberta-base"):
+    def __init__(self, args: argparse.Namespace, roberta_ckpt_name: str = "roberta-base", batch_size: int = 8):
         super().__init__()
         self.args = args
+        self.hparams = args
+        self.batch_size = batch_size
 
         # Encoder Decoder model
-        self.encoder_decoder = EncoderDecoderShareVAE(args, roberta_ckpt_name)
+        self.encoder_decoder = EncoderDecoderShareVAE(args, roberta_ckpt_name, do_tie_weights=False)
 
-    def training_step(self, article_batch: Dict[str, torch.Tensor], batch_idx: int) -> Dict:
-        print('#'*40)
-        print('--> train')
-        for k, v in article_batch.items():
-            print(k, type(v), v.device)
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.args.learning_rate)
+        return optimizer
 
-        losses = self.encoder_decoder(input_ids=article_batch['input_ids'],
-                                      attention_mask=article_batch['attention_mask'],
+    def training_step(self, batch, batch_idx):
+
+        # Strange that this is needed
+        batch = self.transfer_batch_to_device(batch, self.device)
+
+        losses = self.encoder_decoder(input_ids=batch['input_ids'],
+                                      attention_mask=batch['attention_mask'],
                                       args=self.args)
+
         train_losses = {'train_' + k: v for k, v in losses.items()}
+
         self.log_dict(train_losses, prog_bar=True, on_step=True, on_epoch=True, logger=True)
 
         return {'loss': losses['total_loss']}
 
-    def validation_step(self, article_batch: Dict[str, torch.Tensor], batch_idx: int) -> Dict:
-        print('#' * 40)
-        print('validation')
-        for k, v in article_batch.items():
-            print(k, type(v), v.device)
+    def validation_step(self, batch, batch_idx):
+        # Strange that this is needed
+        batch = self.transfer_batch_to_device(batch, self.device)
 
-        losses = self.encoder_decoder(input_ids=article_batch['input_ids'],
-                                      attention_mask=article_batch['attention_mask'],
+        losses = self.encoder_decoder(input_ids=batch['input_ids'],
+                                      attention_mask=batch['attention_mask'],
                                       args=self.args)
         valid_losses = {'valid_' + k: v for k, v in losses.items()}
+
         self.log_dict(valid_losses, prog_bar=True, on_step=True, on_epoch=True, logger=True)
+
         return {'loss': losses['total_loss']}
 
     # def gather_outputs(self, outputs: List[Any], prefix) -> Dict[str, torch.Tensor]:
@@ -71,9 +72,19 @@ class NewsVAE(pl.LightningModule):
     #     epoch_val_stats = self.gather_outputs(outputs, 'valid_epoch_')
     #     self.log_dict(epoch_val_stats, logger=True)
 
-    def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.args.learning_rate)
-        return optimizer
+    # def backward(self, use_amp, loss, optimizer):
+    #     """
+    #     Override backward with your own implementation if you need to
+    #     :param use_amp: Whether amp was requested or not
+    #     :param loss: Loss is already scaled by accumulated grads
+    #     :param optimizer: Current optimizer being used
+    #     :return:
+    #     """
+    #     if use_amp:
+    #         with amp.scale_loss(loss, optimizer) as scaled_loss:
+    #             scaled_loss.backward()
+    #     else:
+    #         loss.backward()
 
     def optimizer_step(self, current_epoch, batch_nb, optimizer, optimizer_idx,
                        second_order_closure=None, on_tpu=False, using_native_amp=False,
@@ -102,10 +113,6 @@ class NewsVAE(pl.LightningModule):
 def main(args):
     utils.print_platform_codedir()
 
-    print("XXX number of GPUs available", torch.cuda.device_count())
-
-
-
     if args.deterministic:
         seed_everything(args.seed)
 
@@ -121,35 +128,26 @@ def main(args):
                                batch_size=args.batch_size,
                                num_workers=args.num_workers)
 
-    news_vae = NewsVAE(args, 'roberta-base')
-
-    # trainer = pl.Trainer(logger=loggers,
-    #                      fast_dev_run=True,
-    #                      accumulate_grad_batches=args.accumulate_n_batches_grad,
-    #                      gpus=1,
-    #                      max_steps=args.max_steps,
-    #                      max_epochs=args.max_epochs,
-    #                      accelerator=None,
-    #                      num_nodes=1,
-    #                      auto_select_gpus=True,
-    #                      benchmark=True,  # makes system faster with equal sized batches
-    #                      check_val_every_n_epoch=args.check_val_every_n_epoch,
-    #                      checkpoint_callback=checkpoint_callback,
-    #                      log_gpu_memory=args.log_gpu_memory,
-    #                      log_every_n_steps=args.log_every_n_steps,
-    #                      # sync_batchnorm=True,  # Do I want this?
-    #                      track_grad_norm=True,
-    #                      # weights_summary='full',
-    #                      default_root_dir=utils.get_code_dir()
-    #                      )
+    news_vae = NewsVAE(args, 'roberta-base', batch_size=args.batch_size,)
 
     trainer = pl.Trainer(logger=loggers,
-                         fast_dev_run=True,
-                         gpus=1,
-                         max_steps=20,
-                         accelerator=None,
+                         fast_dev_run=args.fast_dev_run,
+                         accumulate_grad_batches=args.accumulate_n_batches_grad,
+                         gpus=args.n_gpus,
+                         max_steps=args.max_steps,
+                         max_epochs=args.max_epochs,
+                         accelerator=args.accelerator,
+                         distributed_backend=args.accelerator,
+                         num_nodes=1,
                          auto_select_gpus=True,
-                         log_every_n_steps=1,
+                         benchmark=True,  # makes system faster with equal sized batches
+                         check_val_every_n_epoch=args.check_val_every_n_epoch,
+                         checkpoint_callback=checkpoint_callback,
+                         log_gpu_memory=args.log_gpu_memory,
+                         log_every_n_steps=args.log_every_n_steps,
+                         # sync_batchnorm=True,  # Do I want this?
+                         track_grad_norm=True,
+                         # weights_summary='full',
                          default_root_dir=utils.get_code_dir()
                          )
 
@@ -164,13 +162,3 @@ def main(args):
 if __name__ == "__main__":
     config = NewsVAEArguments.preprare_parser()
     main(config)
-
-    #     model = EncoderDecoderShareVAE(args, 'roberta-base')
-    #
-    #     for batch in news_data.dataloaders['train']:
-    #         kl_loss, recon_loss, total_loss = model(input_ids=batch['input_ids'],
-    #                                                 attention_mask=batch['attention_mask'], args=args)
-    #         print("kl_loss", kl_loss)
-    #         print("recon_loss", recon_loss)
-    #         print("total_loss", total_loss)
-    #         break

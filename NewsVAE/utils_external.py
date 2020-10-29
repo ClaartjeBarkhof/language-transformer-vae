@@ -12,6 +12,9 @@ This file contains functions from external sources, such as the Pytorch Library.
 # https://huggingface.co/transformers/_modules/transformers/modeling_utils.html#PreTrainedModel
 def tie_weights(encoder, decoder, base_model_prefix):
     uninitialized_encoder_weights: List[str] = []
+
+    # print("decoder.__class__, encoder.__class__", decoder.__class__, encoder.__class__)
+
     if decoder.__class__ != encoder.__class__:
         print(
             f"{decoder.__class__} and {encoder.__class__} are not equal. In this case make sure that all encoder "
@@ -25,21 +28,27 @@ def tie_weights(encoder, decoder, base_model_prefix):
             uninitialized_encoder_weights: List[str],
             depth=0,
     ):
+        # print("-" * 30)
         assert isinstance(decoder_pointer, nn.Module) and isinstance(
             encoder_pointer, nn.Module
         ), f"{decoder_pointer} and {encoder_pointer} have to be of type torch.nn.Module"
         if hasattr(decoder_pointer, "weight"):
             assert hasattr(encoder_pointer, "weight")
             encoder_pointer.weight = decoder_pointer.weight
+            # print("--> tying an actual weight!", encoder_pointer, decoder_pointer)
             if hasattr(decoder_pointer, "bias"):
                 assert hasattr(encoder_pointer, "bias")
                 encoder_pointer.bias = decoder_pointer.bias
             return
 
-        encoder_modules = encoder_pointer._modules  # type: ignore
-        decoder_modules = decoder_pointer._modules  # type: ignore
+        encoder_modules = encoder_pointer._modules
+        decoder_modules = decoder_pointer._modules
+
+        # print("Encoder modules", " ".join([n for n in encoder_modules.keys()]))
+        # print("Decoder modules", " ".join([n for n in decoder_modules.keys()]))
 
         if len(decoder_modules) > 0:
+            # print("len(decoder_modules)", len(decoder_modules))
             assert (
                     len(encoder_modules) > 0
             ), f"Encoder module {encoder_pointer} does not match decoder module {decoder_pointer}"
@@ -48,8 +57,13 @@ def tie_weights(encoder, decoder, base_model_prefix):
             encoder_layer_pos = 0
             for name, module in decoder_modules.items():
                 if name.isdigit():
+                    # print("name is digit", name)
                     encoder_name = str(int(name) + encoder_layer_pos)
                     decoder_name = name
+
+                    # print("encoder_name", encoder_name)
+                    # print("decoder_name", decoder_name)
+
                     if not isinstance(decoder_modules[decoder_name],
                                       type(encoder_modules[encoder_name])) and len(
                         encoder_modules
@@ -67,6 +81,7 @@ def tie_weights(encoder, decoder, base_model_prefix):
                         "circular dependency between two or more `nn.Modules` of your model. "
                     )
                 else:
+                    # print("else")
                     decoder_name = encoder_name = name
                 tie_encoder_to_decoder_recursively(
                     decoder_modules[decoder_name],
@@ -81,6 +96,7 @@ def tie_weights(encoder, decoder, base_model_prefix):
 
     # tie weights recursively
     tie_encoder_to_decoder_recursively(decoder, encoder, base_model_prefix, uninitialized_encoder_weights)
+
     if len(uninitialized_encoder_weights) > 0:
         print(
             f"The following encoder weights were not tied to the decoder {uninitialized_encoder_weights}"
