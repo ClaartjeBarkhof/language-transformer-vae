@@ -55,8 +55,16 @@ class NewsDataModule(pl.LightningDataModule):
         self.tokenizer = self.TOKENIZER_PROPERTIES[self.tokenizer_name]['class'].from_pretrained(
             self.TOKENIZER_PROPERTIES[self.tokenizer_name]['ckpt'])
 
+        print("check check")
+
     def setup(self, stage: Optional[str] = None):
         pass
+
+    def transfer_batch_to_device(self, batch, device):
+        print("### DEVICE CHECK", device)
+        for k in batch.keys():
+            batch[k] = batch[k].to(device)
+        return batch
 
     def prepare_data(self):
         # ENCODE DATASET PATHS
@@ -83,16 +91,19 @@ class NewsDataModule(pl.LightningDataModule):
             self.dataset.save_to_disk(file_path_encoded_dataset)
 
     def train_dataloader(self) -> DataLoader:
+        print("trainloader")
         train_loader = DataLoader(self.dataset['train'], collate_fn=self.collate_fn,
                                   batch_size=self.batch_size, num_workers=self.num_workers)
         return train_loader
 
-    def val_dataloader(self) -> Union[DataLoader, List[DataLoader]]:
+    def val_dataloader(self) -> DataLoader:
+        print("valloader")
         val_loader = DataLoader(self.dataset['validation'], collate_fn=self.collate_fn,
                                 batch_size=self.batch_size, num_workers=self.num_workers)
         return val_loader
 
-    def test_dataloader(self, *args, **kwargs) -> Union[DataLoader, List[DataLoader]]:
+    def test_dataloader(self) -> Union[DataLoader, List[DataLoader]]:
+        print("testloader")
         test_loader = DataLoader(self.dataset['test'], collate_fn=self.collate_fn,
                                  batch_size=self.batch_size, num_workers=self.num_workers)
         return test_loader

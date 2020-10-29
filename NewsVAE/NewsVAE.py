@@ -28,8 +28,8 @@ class NewsVAE(pl.LightningModule):
         self.encoder_decoder = EncoderDecoderShareVAE(args, roberta_ckpt_name)
 
     def training_step(self, article_batch: Dict[str, torch.Tensor], batch_idx: int) -> Dict:
-
         print('#'*40)
+        print('--> train')
         for k, v in article_batch.items():
             print(k, type(v), v.device)
 
@@ -38,10 +38,12 @@ class NewsVAE(pl.LightningModule):
                                       args=self.args)
         train_losses = {'train_' + k: v for k, v in losses.items()}
         self.log_dict(train_losses, prog_bar=True, on_step=True, on_epoch=True, logger=True)
+
         return {'loss': losses['total_loss']}
 
     def validation_step(self, article_batch: Dict[str, torch.Tensor], batch_idx: int) -> Dict:
         print('#' * 40)
+        print('validation')
         for k, v in article_batch.items():
             print(k, type(v), v.device)
 
@@ -52,21 +54,22 @@ class NewsVAE(pl.LightningModule):
         self.log_dict(valid_losses, prog_bar=True, on_step=True, on_epoch=True, logger=True)
         return {'loss': losses['total_loss']}
 
-    def gather_outputs(self, outputs: List[Any], prefix) -> Dict[str, torch.Tensor]:
-        epoch_stats = {}
-        for loss_name in outputs[0].keys():
-            stacked_losses = torch.stack([o[loss_name] for o in outputs])
-            mean_loss = stacked_losses.mean()
-            epoch_stats[prefix + loss_name] = mean_loss
-        return epoch_stats
-
-    def training_epoch_end(self, outputs: List[Any]) -> None:
-        epoch_train_stats = self.gather_outputs(outputs, 'train_epoch_')
-        self.log_dict(epoch_train_stats, logger=True)
-
-    def validation_epoch_end(self, outputs: List[Any]) -> None:
-        epoch_val_stats = self.gather_outputs(outputs, 'valid_epoch_')
-        self.log_dict(epoch_val_stats, logger=True)
+    # def gather_outputs(self, outputs: List[Any], prefix) -> Dict[str, torch.Tensor]:
+    #     print(len(outputs))
+    #     epoch_stats = {}
+    #     for loss_name in outputs[0].keys():
+    #         stacked_losses = torch.stack([o[loss_name] for o in outputs])
+    #         mean_loss = stacked_losses.mean()
+    #         epoch_stats[prefix + loss_name] = mean_loss
+    #     return epoch_stats
+    #
+    # def training_epoch_end(self, outputs: List[Any]) -> None:
+    #     epoch_train_stats = self.gather_outputs(outputs, 'train_epoch_')
+    #     self.log_dict(epoch_train_stats, logger=True)
+    #
+    # def validation_epoch_end(self, outputs: List[Any]) -> None:
+    #     epoch_val_stats = self.gather_outputs(outputs, 'valid_epoch_')
+    #     self.log_dict(epoch_val_stats, logger=True)
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.args.learning_rate)
@@ -120,27 +123,42 @@ def main(args):
 
     news_vae = NewsVAE(args, 'roberta-base')
 
+    # trainer = pl.Trainer(logger=loggers,
+    #                      fast_dev_run=True,
+    #                      accumulate_grad_batches=args.accumulate_n_batches_grad,
+    #                      gpus=1,
+    #                      max_steps=args.max_steps,
+    #                      max_epochs=args.max_epochs,
+    #                      accelerator=None,
+    #                      num_nodes=1,
+    #                      auto_select_gpus=True,
+    #                      benchmark=True,  # makes system faster with equal sized batches
+    #                      check_val_every_n_epoch=args.check_val_every_n_epoch,
+    #                      checkpoint_callback=checkpoint_callback,
+    #                      log_gpu_memory=args.log_gpu_memory,
+    #                      log_every_n_steps=args.log_every_n_steps,
+    #                      # sync_batchnorm=True,  # Do I want this?
+    #                      track_grad_norm=True,
+    #                      # weights_summary='full',
+    #                      default_root_dir=utils.get_code_dir()
+    #                      )
+
     trainer = pl.Trainer(logger=loggers,
-                         accumulate_grad_batches=args.accumulate_n_batches_grad,
-                         gpus=2,
-                         max_steps=args.max_steps,
-                         max_epochs=args.max_epochs,
-                         distributed_backend="dp",
-                         accelerator="dp",
-                         num_nodes=1,
+                         fast_dev_run=True,
+                         gpus=1,
+                         max_steps=20,
+                         accelerator=None,
                          auto_select_gpus=True,
-                         benchmark=True,  # makes system faster with equal sized batches
-                         check_val_every_n_epoch=args.check_val_every_n_epoch,
-                         checkpoint_callback=checkpoint_callback,
-                         log_gpu_memory=args.log_gpu_memory,
-                         log_every_n_steps=args.log_every_n_steps,
-                         # sync_batchnorm=True,  # Do I want this?
-                         track_grad_norm=True,
-                         # weights_summary='full',
+                         log_every_n_steps=1,
                          default_root_dir=utils.get_code_dir()
                          )
 
-    trainer.fit(news_vae, news_data)
+    print("trainer.on_gpu", trainer.on_gpu)
+    print("trainer.distributed_backend", trainer.distributed_backend)
+    print("trainer.data_parallel_device_ids", trainer.data_parallel_device_ids)
+    print("trainer.root_gpu", trainer.root_gpu)
+
+    trainer.fit(news_vae, datamodule=news_data)
 
 
 if __name__ == "__main__":
