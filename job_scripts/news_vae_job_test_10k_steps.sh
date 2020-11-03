@@ -1,6 +1,6 @@
 #!/bin/bash
-#SBATCH -p gpu_short
-#SBATCH -t 0:50:00
+#SBATCH -p gpu
+#SBATCH -t 10:00:00
 #SBATCH --mem=20G
 #SBATCH --output /home/cbarkhof/slurm-logs/%j-slurm-log.out
 
@@ -17,5 +17,4 @@ source $CONDA_PREFIX/etc/profile.d/conda.sh
 conda deactivate # just to make sure other envs are not active
 conda activate thesisenv # activate environment
 
-#tensorboard --logdir=summaries
-python /home/cbarkhof/code-thesis/NewsVAE/NewsVAE.py
+python /home/cbarkhof/code-thesis/Issues_PytorchLightning/NewsVAE.py

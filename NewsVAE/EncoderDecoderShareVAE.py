@@ -60,8 +60,8 @@ class EncoderDecoderShareVAE(nn.Module):
 
         total_loss = hinge_kl_loss + (args.beta * recon_loss)
 
-        losses = {'kl_loss': kl_loss, 'hinge_kl_loss': hinge_kl_loss,
-                  'recon_loss': recon_loss, 'total_loss': total_loss}
+        losses = {'kl_loss': kl_loss.item(), 'hinge_kl_loss': hinge_kl_loss.item(),
+                  'recon_loss': recon_loss.item(), 'total_loss': total_loss}
 
         return losses
 
