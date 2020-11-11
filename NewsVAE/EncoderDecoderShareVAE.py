@@ -8,6 +8,7 @@ import copy
 from NewsVAEArguments import preprare_parser
 import utils
 
+
 class EncoderDecoderShareVAE(nn.Module):
     def __init__(self, args, roberta_ckpt_name: str = "roberta-base", do_tie_weights=True):
         super(EncoderDecoderShareVAE, self).__init__()
@@ -18,24 +19,29 @@ class EncoderDecoderShareVAE(nn.Module):
         # Encoder
         # Don't use the pre-trained pooler
         self.encoder = RobertaModel.from_pretrained(roberta_ckpt_name, add_pooling_layer=False,
-                                                    return_dict=True)
-        # Add a fresh pooling layer
+                                                    return_dict=True,
+                                                    gradient_checkpointing=args.gradient_checkpointing)
+
+        # Add a fresh pooling layer & init weights
         self.encoder.pooler = VAE_Decoder_RobertaPooler(self.encoder.config, args.latent_size)
+        self.encoder.pooler.dense.weight.data.normal_(mean=0.0, std=self.encoder.config.initializer_range)
 
         # Decoder
-        self.decoder = VAE_Decoder_RobertaForCausalLM.from_pretrained(roberta_ckpt_name)
+        self.decoder = VAE_Decoder_RobertaForCausalLM.from_pretrained(roberta_ckpt_name,
+                                                                      gradient_checkpointing=args.gradient_checkpointing)
         self.decoder.add_latent_projection_layers(args.latent_size, args.hidden_size, args.n_layers)
 
-        # Tie the weights of the Encoder and Decoder
+        # Tie the weights of the Encoder and Decoder (encoder weights are pointers to decoder weights)
         if do_tie_weights:
             base_model_prefix = self.decoder.base_model_prefix
             tie_weights(self.encoder, self.decoder._modules[base_model_prefix], base_model_prefix)
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor,
-                args: argparse.Namespace):
+                beta: float, args: argparse.Namespace):
         """
         Implements the forward pass of the shared Encoder-Decoder VAE.
 
+        :param beta: how to balance the KL-loss with the reconstruction loss in beta-vae
         :param args: configuration parameters of the VAE
         :param input_ids: batch of sequences of token ids
         :param attention_mask: 2d attention mask, masking the padded tokens
@@ -51,6 +57,8 @@ class EncoderDecoderShareVAE(nn.Module):
                                                                         deterministic=args.deterministic_connect,
                                                                         hinge_loss_lambda=args.hinge_loss_lambda)
 
+        mmd_loss = self.compute_maximum_mean_discrepancy(latent_z) * args.mmd_lambda
+
         # Forward the decoder
         decoder_outs = self.decoder(input_ids=input_ids, attention_mask=attention_mask,
                                     latent_z=latent_z, labels=copy.copy(input_ids),
@@ -58,12 +66,54 @@ class EncoderDecoderShareVAE(nn.Module):
                                     add_latent_via_memory=args.add_latent_via_memory)
         recon_loss = decoder_outs.loss
 
-        total_loss = hinge_kl_loss + (args.beta * recon_loss)
+        if args.objective == 'beta-vae':
+            total_loss = recon_loss + (beta * hinge_kl_loss)
+        elif args.objective == 'mmd-vae':
+            total_loss = recon_loss + mmd_loss
+        else:
+            print("Not supported objective. Set valid option: beta-vae or mmd-vae."); quit()
 
+        # Detach all except the total loss on which we need to base our backward pass
         losses = {'kl_loss': kl_loss.item(), 'hinge_kl_loss': hinge_kl_loss.item(),
-                  'recon_loss': recon_loss.item(), 'total_loss': total_loss}
+                  'recon_loss': recon_loss.item(), 'total_loss': total_loss,
+                  'mmd_loss': mmd_loss.item()}
 
         return losses
+
+    @staticmethod
+    def compute_kernel(x, y):
+        """
+        Gaussian kernel
+        Taken from: https://github.com/aktersnurra/information-maximizing-variational-autoencoders/blob/master/model/loss_functions/mmd_loss.py
+
+        :param x:
+        :param y:
+        :return:
+        """
+        x_size = x.size(0)
+        y_size = y.size(0)
+        dim = x.size(1)
+        x = x.unsqueeze(1)
+        y = y.unsqueeze(0)
+        tiled_x = x.expand(x_size, y_size, dim)
+        tiled_y = y.expand(x_size, y_size, dim)
+        kernel_input = (tiled_x - tiled_y).pow(2).mean(2) / float(dim)
+        return torch.exp(-kernel_input)
+
+    def compute_maximum_mean_discrepancy(self, latent_z):
+        """
+        Taken from: https://github.com/aktersnurra/information-maximizing-variational-autoencoders/blob/master/model/loss_functions/mmd_loss.py
+
+        :param latent_z:
+        :return:
+        """
+        x = torch.randn_like(latent_z).to(latent_z.device)
+        y = latent_z
+        x_kernel = self.compute_kernel(x, x)
+        y_kernel = self.compute_kernel(y, y)
+        xy_kernel = self.compute_kernel(x, y)
+        mmd = x_kernel.mean() + y_kernel.mean() - 2 * xy_kernel.mean()
+        return mmd
 
     @staticmethod
     def reparameterize(mu: torch.Tensor,
@@ -117,15 +167,18 @@ class EncoderDecoderShareVAE(nn.Module):
 
         kl_loss = 0.5 * (mu.pow(2) + logvar.exp() - logvar - 1)
 
-        # Cap the loss (hinge loss)
-        hinge_kl_loss = torch.clamp(kl_loss, 0, hinge_loss_lambda)
+        # Ignore the dimensions of which the KL-div is already under the
+        # threshold, avoiding driving it down even further. Those values do
+        # not have to be replaced by the threshold because that would not mean
+        # anything to the gradient. That's why they are simply removed. This
+        # confused me at first.
+        kl_mask = (kl_loss > hinge_loss_lambda).float()
 
-        # Sum over the latent dimension and average over the batch dimension
-        hinge_kl_loss = hinge_kl_loss.sum(dim=1).mean(dim=0)
+        # Sum over the latent dimensions and average over the batch dimension
+        hinge_kl_loss = (kl_mask * kl_loss).sum(dim=1).mean(dim=0)
         kl_loss = kl_loss.sum(dim=1).mean(dim=0)
 
         return latent_z, kl_loss, hinge_kl_loss
-
 
 
 if __name__ == "__main__":
@@ -138,9 +191,9 @@ if __name__ == "__main__":
     print("of which are encoder weights: {:.3f} x 1e6".format(utils.get_number_of_params(model.encoder)/1e6))
     print("of which are decoder weights: {:.3f} x 1e6".format(utils.get_number_of_params(model.decoder) / 1e6))
 
-    model = EncoderDecoderShareVAE(args=params, do_tie_weights=False)
-
-    print("Without tying weights")
-    print('Trainable params {:.3f} x 1e6'.format(utils.get_number_of_params(model)/1e6))
-    print("of which are encoder weights: {:.3f} x 1e6".format(utils.get_number_of_params(model.encoder)/1e6))
-    print("of which are decoder weights: {:.3f} x 1e6".format(utils.get_number_of_params(model.decoder) / 1e6))
+    # model = EncoderDecoderShareVAE(args=params, do_tie_weights=False)
+    #
+    # print("Without tying weights")
+    # print('Trainable params {:.3f} x 1e6'.format(utils.get_number_of_params(model)/1e6))
+    # print("of which are encoder weights: {:.3f} x 1e6".format(utils.get_number_of_params(model.encoder)/1e6))
+    # print("of which are decoder weights: {:.3f} x 1e6".format(utils.get_number_of_params(model.decoder) / 1e6))

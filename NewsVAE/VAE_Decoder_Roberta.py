@@ -443,11 +443,16 @@ class VAE_Decoder_RobertaEncoder(nn.Module):
 
                     return custom_forward
 
+                if latent_layer_memory is not None:
+                    latent_layer_memory_i = latent_layer_memory[i]
+                else:
+                    latent_layer_memory_i = None
+
                 layer_outputs = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(layer_module),
                     hidden_states,
                     attention_mask,
-                    latent_layer_memory[i],  # TODO: not sure if this works with this checkpointing thing
+                    latent_layer_memory_i,  # TODO: not sure if this works with this checkpointing thing
                     layer_head_mask,
                     encoder_hidden_states,
                     encoder_attention_mask,
@@ -683,6 +688,8 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
 
+        self.config = config
+
         # >>>>>> Claartje code
         config.is_decoder = True
         config.add_cross_attention = False
@@ -701,10 +708,12 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
 
     def add_latent_projection_layers(self, latent_size, hidden_size, n_layers):
         # >>>>>> Claartje code
-        self.latent_to_memory_projection = nn.Linear(latent_size, hidden_size * n_layers,
-                                                     bias=False)
-        self.latent_to_embedding_projection = nn.Linear(latent_size, hidden_size,
-                                                        bias=False)
+        # TODO: In the Optimus they have bias=False, but can't find good reason for that?
+        self.latent_to_memory_projection = nn.Linear(latent_size, hidden_size * n_layers)
+        self.latent_to_embedding_projection = nn.Linear(latent_size, hidden_size)
+
+        self.latent_to_memory_projection.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+        self.latent_to_embedding_projection.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
         # <<<<<< End Claartje code
 
     def get_output_embeddings(self):
@@ -799,12 +808,15 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
         sequence_output = outputs[0]
         prediction_scores = self.lm_head(sequence_output)
 
+        # set the masked tokens in the labels to -100 to ignore index in error calculation
+        labels[attention_mask == 0] = -100
+
         lm_loss = None
         if labels is not None:
             # we are doing next-token prediction; shift prediction scores and input ids by one
             shifted_prediction_scores = prediction_scores[:, :-1, :].contiguous()
             labels = labels[:, 1:].contiguous()
-            loss_fct = CrossEntropyLoss()
+            loss_fct = CrossEntropyLoss(ignore_index=-100)
             lm_loss = loss_fct(shifted_prediction_scores.view(-1, self.config.vocab_size), labels.view(-1))
 
         if not return_dict:
@@ -826,6 +838,7 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
             attention_mask = input_ids.new_ones(input_shape)
 
         return {"input_ids": input_ids, "attention_mask": attention_mask}
+
 
 
 class RobertaLMHead(nn.Module):

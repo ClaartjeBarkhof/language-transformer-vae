@@ -28,14 +28,12 @@ def tie_weights(encoder, decoder, base_model_prefix):
             uninitialized_encoder_weights: List[str],
             depth=0,
     ):
-        # print("-" * 30)
         assert isinstance(decoder_pointer, nn.Module) and isinstance(
             encoder_pointer, nn.Module
         ), f"{decoder_pointer} and {encoder_pointer} have to be of type torch.nn.Module"
         if hasattr(decoder_pointer, "weight"):
             assert hasattr(encoder_pointer, "weight")
             encoder_pointer.weight = decoder_pointer.weight
-            # print("--> tying an actual weight!", encoder_pointer, decoder_pointer)
             if hasattr(decoder_pointer, "bias"):
                 assert hasattr(encoder_pointer, "bias")
                 encoder_pointer.bias = decoder_pointer.bias

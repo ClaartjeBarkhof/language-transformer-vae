@@ -13,7 +13,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 # # TODO: get rid of this dangerous statement
 # os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 
-transformers.logging.set_verbosity_error()
+# transformers.logging.set_verbosity_error()
 
 
 class NewsData:
@@ -22,12 +22,15 @@ class NewsData:
     """
     def __init__(self, dataset_name: str, tokenizer_name: str,
                  batch_size: int = 8, num_workers: int = 4,
-                 pin_memory: bool = True, debug=False):
+                 pin_memory: bool = True, debug=False, max_seq_len = 64,
+                 debug_data_len=1000):
         # DATA DIRECTORY
         os.makedirs('NewsData', exist_ok=True)
 
         # FOR GPU USE
         self.pin_memory = pin_memory
+
+        self.max_seq_len = max_seq_len
 
         # DATASET PROPERTIES
         self.dataset_name = dataset_name
@@ -36,20 +39,22 @@ class NewsData:
         self.num_workers = num_workers
 
         self.datasets = {}
+        self.encoded_datasets = {}
 
         # TOKENIZER
         self.tokenizer = RobertaTokenizerFast.from_pretrained('roberta-base')
 
         name = '3.0.0' if self.dataset_name == 'cnn_dailymail' else None
-        assert self.dataset_name in list_datasets(), "Currently only supporting datasets from Huggingface"
+        # assert self.dataset_name in list_datasets(), "Currently only supporting datasets from Huggingface"
 
         path_to_file = pathlib.Path(__file__).parent.absolute()
-        data_path = "{}/NewsData/{}-{}".format(path_to_file, self.dataset_name, self.tokenizer_name)
-        debug_ext = "[:200]" if debug else ""
+        debug_ext = "[:{}]".format(debug_data_len) if debug else ""
+        data_path = "{}/NewsData/{}-{}-datalen{}-seqlen{}".format(path_to_file, self.dataset_name,
+                                                                  self.tokenizer_name, debug_ext, max_seq_len)
 
         if os.path.isdir(data_path):
             for split in ['train', 'validation', 'test']:
-                self.datasets[split] = load_from_disk(data_path+"/"+split+debug_ext)
+                self.datasets[split] = load_from_disk(data_path+"/"+split)
         else:
             for split in ['train', 'validation', 'test']:
                 self.datasets[split] = load_dataset(self.dataset_name, name=name, ignore_verifications=True,
@@ -58,7 +63,7 @@ class NewsData:
                 columns = ['attention_mask', 'input_ids']
 
                 self.datasets[split].set_format(type='torch', columns=columns)
-                self.datasets[split].save_to_disk(data_path+"/"+split+debug_ext)
+                self.datasets[split].save_to_disk(data_path+"/"+split)
 
     def train_dataloader(self):
         train_loader = DataLoader(self.datasets['train'], collate_fn=self.collate_fn,
@@ -103,16 +108,18 @@ class NewsData:
         :return: encoded_batch: batch of samples with the encodings with the defined tokenizer added
         """
 
-        encoded_batch = self.tokenizer(data_batch['article'], truncation=True)
+        encoded_batch = self.tokenizer(data_batch['article'], truncation=True, max_length=self.max_seq_len)
 
         return encoded_batch
 
 
 if __name__ == "__main__":
-    data = NewsData('cnn_dailymail', 'roberta', debug=False)
+    data = NewsData('cnn_dailymail', 'roberta', debug=True,
+                    debug_data_len=1000, max_seq_len=128)
 
     for batch in data.train_dataloader():
         for k, v in batch.items():
             print(k)
             print(v.shape)
+
         break
