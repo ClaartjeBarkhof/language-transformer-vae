@@ -22,7 +22,7 @@ class EncoderDecoderShareVAE(nn.Module):
                                                     return_dict=True,
                                                     gradient_checkpointing=args.gradient_checkpointing)
 
-        # Add a fresh pooling layer & init weights
+        # Add a fresh pooling layer (different size) & init weights
         self.encoder.pooler = VAE_Decoder_RobertaPooler(self.encoder.config, args.latent_size)
         self.encoder.pooler.dense.weight.data.normal_(mean=0.0, std=self.encoder.config.initializer_range)
 
@@ -37,10 +37,11 @@ class EncoderDecoderShareVAE(nn.Module):
             tie_weights(self.encoder, self.decoder._modules[base_model_prefix], base_model_prefix)
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor,
-                beta: float, args: argparse.Namespace):
+                beta: float, args: argparse.Namespace, return_predictions: bool = False):
         """
         Implements the forward pass of the shared Encoder-Decoder VAE.
 
+        :param return_predictions:
         :param beta: how to balance the KL-loss with the reconstruction loss in beta-vae
         :param args: configuration parameters of the VAE
         :param input_ids: batch of sequences of token ids
@@ -57,7 +58,9 @@ class EncoderDecoderShareVAE(nn.Module):
                                                                         deterministic=args.deterministic_connect,
                                                                         hinge_loss_lambda=args.hinge_loss_lambda)
 
-        mmd_loss = self.compute_maximum_mean_discrepancy(latent_z) * args.mmd_lambda
+
+        mmd_loss = self.compute_maximum_mean_discrepancy(latent_z)
+        mmd_loss = mmd_loss * args.mmd_lambda
 
         # Forward the decoder
         decoder_outs = self.decoder(input_ids=input_ids, attention_mask=attention_mask,
@@ -71,12 +74,15 @@ class EncoderDecoderShareVAE(nn.Module):
         elif args.objective == 'mmd-vae':
             total_loss = recon_loss + mmd_loss
         else:
-            print("Not supported objective. Set valid option: beta-vae or mmd-vae."); quit()
+            print("Not supported objective. Set valid option: beta-vae or mmd-vae.")
 
         # Detach all except the total loss on which we need to base our backward pass
         losses = {'kl_loss': kl_loss.item(), 'hinge_kl_loss': hinge_kl_loss.item(),
                   'recon_loss': recon_loss.item(), 'total_loss': total_loss,
                   'mmd_loss': mmd_loss.item()}
+
+        if return_predictions:
+            losses['logits'] = decoder_outs.logits
 
         return losses
 

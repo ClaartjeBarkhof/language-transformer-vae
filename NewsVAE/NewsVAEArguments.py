@@ -14,7 +14,7 @@ def preprare_parser(jupyter=False):
                         help="Num workers for data loading.")
     parser.add_argument("--debug_data", default=False, type=bool,
                         help="Whether or not to use debug data (default: False).")
-    parser.add_argument("--debug_data_len", default=600, type=int,
+    parser.add_argument("--debug_data_len", default=1000, type=int,
                         help="How much data to take for debugging per set. (default: 2000).")
     parser.add_argument("--max_seq_len", default=64, type=int,
                         help="What the maximum sequence length the model accepts is (default: 128).")
@@ -77,7 +77,7 @@ def preprare_parser(jupyter=False):
                         help="Every how many steps to print.")
 
     # TIME STEPS
-    parser.add_argument("--time_batch", default=False, type=bool,
+    parser.add_argument("--time_batch", default=True, type=bool,
                         help="Whether or not to log the process of the model (default: True).")
 
     # CHECKPOINTING
@@ -97,7 +97,7 @@ def preprare_parser(jupyter=False):
                         help="Whether or not to set seed and run everything deterministically.")
 
     # LOSS
-    parser.add_argument("--hinge_loss_lambda", default=0.5, type=float,
+    parser.add_argument("--hinge_loss_lambda", default=1, type=float,
                         help="The KL loss below this value is not taken into account.")
     parser.add_argument("--beta", default=0.5, type=float,
                         help="The balancing beta term between the reconstruction loss"
@@ -105,18 +105,15 @@ def preprare_parser(jupyter=False):
     parser.add_argument("--KL_annealing", default=True, type=bool,
                         help="Whether or not to perform (cyclic) KL annealing from 0 to 1 in "
                              "KL_annealing_steps.")
-    parser.add_argument("--KL_annealing_steps", default=5000, type=int,
+    parser.add_argument("--KL_annealing_steps", default=1250, type=int,
                         help="How many steps a full KL-annealing cycle from 0->1 should take"
-                             "Careful that does steps do not take into account gradient accumulation"
-                             "So if gradient accumulation is used, multiply these steps with the number"
-                             "of gradient accumulation steps (default: 10k steps)."
-                             "Also be careful it does not increase linearly. It increases linearly"
+                             "Be careful it does not increase linearly. It increases linearly"
                              "for half a cycle and then stays 1 for half a cycle.")
-    parser.add_argument("--objective", default='beta-vae', type=str,
+    parser.add_argument("--objective", default='mmd-vae', type=str,
                         help="Which objective to use, options:"
                              "  - beta-vae"
                              "  - mmd-vae")
-    parser.add_argument("--mmd_lambda", default=10000., type=float,
+    parser.add_argument("--mmd_lambda", default=10000, type=float,
                         help="How much to weight the mmd loss.")
 
     # MODEL
@@ -159,21 +156,23 @@ def preprare_parser(jupyter=False):
         args.beta = 1.0
 
     # To quickly set some of the more important parameters
-    args.n_gpus = 1
+    args.n_gpus = 4
     args.max_seq_len = 64
     args.do_tie_weights = True
     args.gradient_checkpointing = False
-    args.ddp = False
-    args.accumulate_n_batches_grad = 1
+    args.ddp = True
+    args.accumulate_n_batches_grad = 2
     args.batch_size = 32
-    args.run_name_prefix = "TEST"
+    args.run_name_prefix = "BETA-VAE-TESTRUN"
+    args.lr = 0.05
     args.logging = True
     args.objective = "beta-vae"
-    args.checkpoint = False
 
-    args.max_valid_steps_epoch = 100
-    args.max_train_steps_epoch = 2000
-    args.checkpoint_every_n_steps = 1000
+    args.checkpoint = True
+    args.checkpoint_every_n_steps = 4000
+
+    args.max_valid_steps_epoch = 500
+    args.max_train_steps_epoch = 5000
 
     args.KL_annealing = True
     args.KL_annealing_steps = args.max_train_steps_epoch
@@ -181,24 +180,45 @@ def preprare_parser(jupyter=False):
     print("-"*100)
     print("SOME IMPORTANT ARGUMENTS")
     print("-"*100)
-    print("EFFECTIVE BATCHSIZE:", args.n_gpus * args.accumulate_n_batches_grad * args.batch_size)
-    print("KL-ANNEALING EVERY N DATAPOINTS:", args.n_gpus * args.batch_size)
-    print("KL-ANNEALING:", args.KL_annealing)
+
+    print("MAX SEQ LEN:", args.max_seq_len)
+    print("OBJECTIVE:", args.objective)
+
+    if args.objective == 'beta-vae':
+        if args.KL_annealing:
+            print("BETA-VAE OBJECTIVE with KL ANNEALING:")
+            print("KL-ANNEALING (step per effective batch size):", args.KL_annealing)
+        else:
+            print("BETA-VAE without KL ANNEALING:")
+            print("STATIC BETA AT: ", args.beta)
+        print("HINGE TARGET KL:", args.hinge_loss_lambda)
+    elif args.objective == 'mmd-vae':
+        print("MMD-VAE OBJECTIVE")
+        print("Lambda to weight the MMD objective:", args.mmd_lambda)
+
+    print('-' * 30)
     print("N_GPUS:", args.n_gpus)
     print("DDP:", args.ddp)
-    print("OBJECTIVE:", args.objective)
-    print("MAX SEQ LEN:", args.max_seq_len)
-    print("GRAD CHECKPOINT:", args.gradient_checkpointing)
-    print("ACC. GRAD. N BATCH:", args.accumulate_n_batches_grad)
     print("BATCH SIZE:", args.batch_size)
+    print("GRADIENT ACCUMULATION (N BATCHES):", args.accumulate_n_batches_grad)
+    print("EFFECTIVE BATCHSIZE PER GRAD STEP:", args.n_gpus * args.accumulate_n_batches_grad * args.batch_size)
+    print('-'*30)
     print("LR:", args.lr)
     print("TIE WEIGHTS:", args.do_tie_weights)
-    print("GRAD ACC.:", args.accumulate_n_batches_grad)
+    print("GRAD CHECKPOINT:", args.gradient_checkpointing)
+    print('-' * 30)
     print("CHECKPOINTING:", args.checkpoint)
     print("LOGGING:", args.logging)
     print("RUN PREFIX:", args.run_name_prefix)
+    print('-' * 30)
     print("TRAIN (GLOBAL) STEPS:", args.max_global_train_steps)
-    print("DATA DEBUG: {}, LEN: {}".format(args.debug_data, args.debug_data_len))
+    print("TRAIN EPOCH LEN:", args.max_train_steps_epoch)
+    print("VALID EPOCH LEN:", args.max_valid_steps_epoch)
+
+    if args.debug_data:
+        print('-' * 30)
+        print("DATA DEBUG (LEN {}): {}".format(args.debug_data_len, args.debug_data))
+
     print("-" * 100)
 
     return args

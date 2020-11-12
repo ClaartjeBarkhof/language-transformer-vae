@@ -14,8 +14,9 @@ from torch.utils.data import DataLoader
 import numpy as np
 import utils
 from torch.optim.lr_scheduler import LambdaLR
-from torch.optim import Adam
+from transformers import AdamW
 
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 def set_DDP_environment_vars(port_nr=1234):
     """
@@ -55,7 +56,7 @@ def get_optimizer(VAE_model, args):
     :return:
     """
 
-    optimizer = Adam(VAE_model.parameters(), lr=args.lr)
+    optimizer = torch.optim.AdamW(VAE_model.parameters(), lr=args.lr)
 
     return optimizer
 
@@ -94,7 +95,7 @@ def get_dataloader(args, phases, gpu_rank):
     if gpu_rank == 0: print("Get dataloaders...")
 
     loaders = {}
-
+    samplers = {}
     # Get data
     data = NewsData(args.dataset_name, args.tokenizer_name,
                     batch_size=args.batch_size, num_workers=args.num_workers,
@@ -103,22 +104,26 @@ def get_dataloader(args, phases, gpu_rank):
 
     for phase in phases:
         if args.ddp:
-            sampler = torch.utils.data.distributed.DistributedSampler(data.datasets[phase],
+            sampler = torch.utils.data.distributed.DistributedSampler(data.datasets[phase], rank=gpu_rank, shuffle=True,
                                                                       num_replicas=int(args.n_gpus * args.n_nodes))
+            samplers[phase] = sampler
+
             # With distributed sampling, shuffle must be false
             loaders[phase] = DataLoader(data.datasets[phase], batch_size=args.batch_size,
-                                        sampler=sampler, shuffle=False, pin_memory=True,
+                                        sampler=sampler, pin_memory=True,
                                         num_workers=args.num_workers, collate_fn=data.collate_fn)
         else:
             # Without distributed sampling
             loaders[phase] = DataLoader(data.datasets[phase], batch_size=args.batch_size,
-                                        shuffle=False, pin_memory=True,
+                                        shuffle=True, pin_memory=True,
                                         num_workers=args.num_workers, collate_fn=data.collate_fn)
 
-    return loaders, data
+            sampler = None
+
+    return loaders, data, samplers
 
 
-def transfer_batch_to_device(batch, device='cuda'):
+def transfer_batch_to_device(batch, gpu_rank):
     """
     Transfer an input batch to (CUDA) device.
 
@@ -128,7 +133,7 @@ def transfer_batch_to_device(batch, device='cuda'):
     """
 
     for k in batch.keys():
-        batch[k] = batch[k].to(device)
+        batch[k] = batch[k].cuda(gpu_rank)
     return batch
 
 
@@ -166,11 +171,11 @@ def print_stats(stats, epoch, phase, global_step, max_global_train_steps,
     :return:
     """
 
-    print_string = "EPOCH {:4} | STEP {:6}/{:6} | {} {:6}/{:6}".format(epoch, global_step, max_global_train_steps,
+    print_string = "EPOCH {:4} | STEP {:5}/{:5} | {} {:6}/{:6}".format(epoch, global_step, max_global_train_steps,
                                                                        phase, phase_step, max_steps)
 
     for s, v in stats[epoch][phase].items():
-        print_string += " | {:12}: {:8.4f}".format(s, v[-1])
+        print_string += " | {:8}: {:8.4f}".format(s, v[-1])
 
     print_string += " | Beta: {:.4f}".format(beta)
 
@@ -219,6 +224,7 @@ def do_train_step(VAE_model, batch, batch_i, optimizer, scheduler, scaler, globa
 
     # Zero gradients
     optimizer.zero_grad()
+    VAE_model.zero_grad()
 
     with torch.set_grad_enabled(True):
         with autocast(enabled=args.use_amp):
@@ -228,30 +234,22 @@ def do_train_step(VAE_model, batch, batch_i, optimizer, scheduler, scaler, globa
                                args=args)
 
             loss = losses['total_loss'] / args.accumulate_n_batches_grad
-            print("-> LOSS", loss)
 
     # Gradient accumulate in here
-    try:
-        scaler.scale(loss).backward()
+    scaler.scale(loss).backward()
 
-        # If gradient accumulated long enough: set a step
-        if (batch_i + 1) % args.accumulate_n_batches_grad == 0:
-            print("DO ACCUMULATED GRADIENT STEP")
+    # If gradient accumulated long enough: set a step
+    if (batch_i + 1) % args.accumulate_n_batches_grad == 0:
+        scaler.step(optimizer)  # instead of optimizer.step()
+        scaler.update()
+        # Advance the learning rate scheduler by 1
+        scheduler.step()
 
-            scaler.step(optimizer)  # instead of optimizer.step()
-            scaler.update()
+    # Detach now (this is not divided by args.accumulate_n_batches)
+    # but since we are not summing I think that's fine
+    losses['total_loss'] = losses['total_loss'].item()
 
-            # Advance the learning rate scheduler by 1
-            scheduler.step()
-
-        # Detach now (this is not divided by args.accumulate_n_batches)
-        # but since we are not summing I think that's fine
-        losses['total_loss'] = losses['total_loss'].item()
-
-        return VAE_model, optimizer, scheduler, losses
-    except:
-        print("EXCEPT!!!", loss, "beta", determine_beta(global_step, args))
-        quit()
+    return VAE_model, optimizer, scheduler, losses
 
 
 def get_lr(scheduler):
@@ -382,6 +380,9 @@ def determine_beta(step, args):
     :return:
     """
 
+    # Consider only every accumulate_n_batches to be a new 'step'
+    step = int(np.floor(step / args.accumulate_n_batches_grad))
+
     # Annealed beta
     if args.KL_annealing:
         cycle_step = step % args.KL_annealing_steps
@@ -467,12 +468,11 @@ def train(gpu_rank, args, run_name):
     if args.logging and gpu_rank == 0: init_logging(VAE_model, run_name, args)
 
     # Data loader
-    data_loaders, data = get_dataloader(args, ['train', 'validation'], gpu_rank)
+    data_loaders, data, samplers = get_dataloader(args, ['train', 'validation'], gpu_rank)
 
     # Optimizer
     optimizer = get_optimizer(VAE_model, args)
     scheduler = get_scheduler(optimizer, args)
-
     scaler = GradScaler(enabled=args.use_amp)
 
     # Set-up DDP
@@ -499,9 +499,12 @@ def train(gpu_rank, args, run_name):
                                                                                                             args)
 
     if gpu_rank == 0: print("Start or resume training!")
+
     while not finished_training:
         # TRAIN, VALID
         for phase in data_loaders.keys():
+            if args.ddp:
+                samplers[phase].set_epoch(epoch)
 
             phase_step = 0
             max_steps = max_train_steps_epoch if phase == 'train' else max_valid_steps_epoch
@@ -513,7 +516,7 @@ def train(gpu_rank, args, run_name):
                     start.record()
 
                 # SET DEVICE
-                batch = transfer_batch_to_device(batch)
+                batch = transfer_batch_to_device(batch, gpu_rank)
 
                 # PERFORM TRAIN / VALIDATION
                 if phase == 'train':
@@ -535,7 +538,8 @@ def train(gpu_rank, args, run_name):
 
                 # PRINT
                 if gpu_rank == 0 and phase_step % args.print_every_n_steps == 0 and args.print_stats:
-                    print_stats(stats, epoch, phase, global_step, args.max_global_train_steps, phase_step, max_steps, determine_beta(global_step, args))
+                    print_stats(stats, epoch, phase, global_step, args.max_global_train_steps,
+                                phase_step, max_steps, determine_beta(global_step, args))
 
                 # LOG STEP (ONLY FOR TRAIN)
                 if phase_step % args.log_every_n_steps == 0 and args.logging and phase == 'train' and gpu_rank == 0:
@@ -557,10 +561,11 @@ def train(gpu_rank, args, run_name):
 
             if finished_training: break
 
+        # LOG EPOCH STATS
         if args.logging and gpu_rank == 0:
             log_stats_epoch(stats, epoch)
 
-        # Make checkpoint if validation error is better than before
+        # BEST MODEL CHECKPOINT
         if phase == 'valid' and args.checkpoint and stats[epoch]['valid']['total_loss'] < best_valid_loss:
             print(
                 "Found better validation loss: {:.4f}. Saving checkpoint!".format(stats[epoch]['valid']['total_loss']))

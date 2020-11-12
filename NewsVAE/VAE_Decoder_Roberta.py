@@ -809,14 +809,15 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
         prediction_scores = self.lm_head(sequence_output)
 
         # set the masked tokens in the labels to -100 to ignore index in error calculation
-        labels[attention_mask == 0] = -100
+        # labels[attention_mask == 0] = -100 # CAREFUL THIS THREW WEIRD ERROR!
+        # labels = labels.to(attention_mask.device)
 
         lm_loss = None
         if labels is not None:
             # we are doing next-token prediction; shift prediction scores and input ids by one
             shifted_prediction_scores = prediction_scores[:, :-1, :].contiguous()
             labels = labels[:, 1:].contiguous()
-            loss_fct = CrossEntropyLoss(ignore_index=-100)
+            loss_fct = CrossEntropyLoss()  # ignore_index=-100
             lm_loss = loss_fct(shifted_prediction_scores.view(-1, self.config.vocab_size), labels.view(-1))
 
         if not return_dict:
