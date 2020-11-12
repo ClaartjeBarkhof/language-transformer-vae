@@ -46,7 +46,7 @@ def preprare_parser(jupyter=False):
                         help="Whether or not to use gradient checkpointing (default: True).")
 
     # AUTOMATIC MIXED PRECISION
-    parser.add_argument("--use_amp", default=True, type=bool,
+    parser.add_argument("--use_amp", default=False, type=bool,
                         help="Whether or not to use automatic mixed precision (default: True).")
 
     # DISTRIBUTED TRAINING

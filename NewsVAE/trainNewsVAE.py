@@ -447,10 +447,9 @@ def train(gpu_rank, args, run_name):
     :param run_name:
     :return:
     """
-    cudnn.benchmark = True  # optimise backend algo
-
     # Set GPU device
     torch.cuda.set_device(gpu_rank)
+    cudnn.benchmark = False  # optimise backend algo
 
     # Initiate process group and specify backend configurations
     if args.ddp:
