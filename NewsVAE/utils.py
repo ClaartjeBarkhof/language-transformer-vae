@@ -4,6 +4,19 @@ import torch
 import collections
 
 
+def transfer_batch_to_device(batch, gpu_rank):
+    """
+    Transfer an input batch to (CUDA) device.
+
+    :param gpu_rank: which gpu to put the data on
+    :param batch: the data to put on device
+    :return:
+    """
+    for k in batch.keys():
+        batch[k] = batch[k].cuda(gpu_rank)
+    return batch
+
+
 def get_platform():
     PLATFORM = 'lisa' if 'lisa' in platform.node() else 'local'
     return PLATFORM, platform.node()
@@ -29,6 +42,7 @@ def print_platform_codedir():
     platform, node = get_platform()
     print("Detected platform: {} ({})".format(platform, node))
     print("Code directory absolute path: {}".format(get_code_dir()))
+
 
 def get_device():
     if torch.cuda.is_available():

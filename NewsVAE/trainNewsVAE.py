@@ -4,6 +4,7 @@ import torch
 import torch.distributed as dist
 import torch.backends.cudnn as cudnn
 import wandb
+import pandas as pd
 from torch.cuda.amp import GradScaler, autocast
 import torch.multiprocessing as mp
 import NewsVAEArguments
@@ -14,9 +15,8 @@ from torch.utils.data import DataLoader
 import numpy as np
 import utils
 from torch.optim.lr_scheduler import LambdaLR
-from transformers import AdamW
+from evaluateNewsVAE import evaluate_model
 
-os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 def set_DDP_environment_vars(port_nr=1234):
     """
@@ -65,14 +65,20 @@ def get_scheduler(optimizer, args):
     def get_lr_scale(step):
         step += 1
 
-        # First linear warm-up
-        if step < args.warmup_updates:
-            lr_scale = step / args.warmup_updates
-        # Then square root decay
-        else:
-            lr_scale = 1 / np.sqrt(step - args.warmup_updates)
+        # If using a scheduler, calculate the scaling coefficient
+        if args.lr_scheduler:
+            # First linear warm-up
+            if step <= args.warmup_updates:
+                lr_scale = step / args.warmup_updates
+            # Then square root decay
+            else:
+                lr_scale = 1 / np.sqrt(step - args.warmup_updates)
 
-        return lr_scale
+            return lr_scale
+
+        # No scaling if no scheduler
+        else:
+            return 1.0
 
     scheduler = LambdaLR(
         optimizer,
@@ -96,11 +102,13 @@ def get_dataloader(args, phases, gpu_rank):
 
     loaders = {}
     samplers = {}
+
     # Get data
     data = NewsData(args.dataset_name, args.tokenizer_name,
                     batch_size=args.batch_size, num_workers=args.num_workers,
                     pin_memory=True, debug=args.debug_data,
-                    debug_data_len=args.debug_data_len, max_seq_len=args.max_seq_len)
+                    debug_data_len=args.debug_data_len, max_seq_len=args.max_seq_len,
+                    device="cuda:{}".format(gpu_rank))
 
     for phase in phases:
         if args.ddp:
@@ -118,23 +126,7 @@ def get_dataloader(args, phases, gpu_rank):
                                         shuffle=True, pin_memory=True,
                                         num_workers=args.num_workers, collate_fn=data.collate_fn)
 
-            sampler = None
-
     return loaders, data, samplers
-
-
-def transfer_batch_to_device(batch, gpu_rank):
-    """
-    Transfer an input batch to (CUDA) device.
-
-    :param batch:
-    :param device:
-    :return:
-    """
-
-    for k in batch.keys():
-        batch[k] = batch[k].cuda(gpu_rank)
-    return batch
 
 
 def insert_stats(stats, new_stats, epoch, phase):
@@ -159,7 +151,7 @@ def insert_stats(stats, new_stats, epoch, phase):
 
 
 def print_stats(stats, epoch, phase, global_step, max_global_train_steps,
-                phase_step, max_steps, beta):
+                phase_step, max_steps, beta, lr):
     """
     Print statistics to track process.
 
@@ -178,6 +170,7 @@ def print_stats(stats, epoch, phase, global_step, max_global_train_steps,
         print_string += " | {:8}: {:8.4f}".format(s, v[-1])
 
     print_string += " | Beta: {:.4f}".format(beta)
+    print_string += " | LR: {:.6f}".format(lr)
 
     print(print_string)
 
@@ -222,10 +215,6 @@ def do_train_step(VAE_model, batch, batch_i, optimizer, scheduler, scaler, globa
     # https://pytorch.org/docs/stable/notes/amp_examples.html#amp-examples
     VAE_model.train()
 
-    # Zero gradients
-    optimizer.zero_grad()
-    VAE_model.zero_grad()
-
     with torch.set_grad_enabled(True):
         with autocast(enabled=args.use_amp):
             losses = VAE_model(input_ids=batch['input_ids'],
@@ -245,6 +234,9 @@ def do_train_step(VAE_model, batch, batch_i, optimizer, scheduler, scaler, globa
         # Advance the learning rate scheduler by 1
         scheduler.step()
 
+        # Zero the gradients only here
+        optimizer.zero_grad()
+
     # Detach now (this is not divided by args.accumulate_n_batches)
     # but since we are not summing I think that's fine
     losses['total_loss'] = losses['total_loss'].item()
@@ -253,7 +245,7 @@ def do_train_step(VAE_model, batch, batch_i, optimizer, scheduler, scaler, globa
 
 
 def get_lr(scheduler):
-    return scheduler.get_last_lr()
+    return scheduler.get_last_lr()[0]
 
 
 def log_stats_step(losses, phase, epoch, log_every, global_step, lr, beta):
@@ -292,16 +284,51 @@ def log_stats_epoch(stats, epoch):
     wandb.log(logs)
 
 
-def load_from_checkpoint(VAE_model, optimizer, scheduler, scaler, args):
-    print("Loading VAE_model, optimizer and scheduler from {}".format(args.checkpoint_file))
-    assert os.path.isfile(args.checkpoint_file), "-> checkpoint file path must exist for it to be loaded!"
+def remove_module_from_statedict(state_dict):
+    from collections import OrderedDict
+    new_state_dict = OrderedDict()
+    for k, v in state_dict.items():
+        name = k[7:]  # remove `module.`
+        new_state_dict[name] = v
+    return new_state_dict
 
-    checkpoint = torch.load(args.checkpoint_file)
-    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-    scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-    VAE_model.load_state_dict(checkpoint["VAE_model_state_dict"])
+
+def load_from_checkpoint(VAE_model, args=None, optimizer=None, scheduler=None, scaler=None, path=None):
+    # DETERMINE / CHECK PATH
+    if path is None:
+        if args is None:
+            print("Can't be that args and path are None, not sure what checkpoint to load now...");
+            quit()
+        path = args.checkpoint_file
+    print("Loading VAE_model, optimizer and scheduler from {}".format(path))
+    assert os.path.isfile(path), "-> checkpoint file path must exist for it to be loaded!"
+
+    # LOAD CHECKPOINT
+    checkpoint = torch.load(path)
+
+    # OPTIMIZER
+    if optimizer is not None:
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+    # SCHEDULER
+    if scheduler is not None:
+        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+
+    # MODEL
+    if "module." in list(checkpoint["VAE_model_state_dict"].keys())[0]:
+        print("first removing module string from checkpoint")
+        state_dict_without_module_string = remove_module_from_statedict(checkpoint["VAE_model_state_dict"])
+        assert state_dict_without_module_string != checkpoint["VAE_model_state_dict"], "removing module did not work, state dict still the same"
+        VAE_model.load_state_dict(state_dict_without_module_string)
+    else:
+        VAE_model.load_state_dict(checkpoint["VAE_model_state_dict"])
+
+    # SCALER
+    if scaler is not None:
+        scaler.load_state_dict(checkpoint["scaler_state_dict"])
+
+    # GLOBAL STEP, EPOCH, BEST VALIDATION LOSS
     global_step = checkpoint["global_step"]
-    scaler.load_state_dict(checkpoint["scaler_state_dict"])
     epoch = checkpoint["epoch"]
     best_valid_loss = checkpoint["best_valid_loss"]
 
@@ -439,6 +466,31 @@ def determine_max_epoch_steps(args, data):
     return max_train_steps_epoch, max_valid_steps_epoch
 
 
+def evaluate(VAE_model, data, epoch, args):
+    print("Evaluating after epoch:", epoch)
+    text_results, results = evaluate_model(VAE_model, data, args,
+                                           iw_nsamples=args.iw_nsamples_evaluation,
+                                           n_batches=args.n_batches_to_evaluate_on)
+    text_results["epoch"] = [str(epoch) for _ in range(len(text_results["input_text"]))]
+
+    text_results_df = pd.DataFrame(text_results)
+    table = wandb.Table(dataframe=text_results_df)
+
+    wandb.log({"reconstructions".format(epoch): table})
+
+    results["epoch"] = epoch
+
+    log_results = {}
+    for k, v in results.items():
+        if k != "epoch":
+            log_results["EVALUATIION-{}".format(k)] = v
+        else:
+            log_results[k] = v
+
+    wandb.log(log_results)
+    print("Done evaluating!")
+
+
 def train(gpu_rank, args, run_name):
     """
     Train loop and preparation.
@@ -450,7 +502,7 @@ def train(gpu_rank, args, run_name):
     """
     # Set GPU device
     torch.cuda.set_device(gpu_rank)
-    cudnn.benchmark = False  # optimise backend algo
+    cudnn.benchmark = True  # optimise backend algo
 
     # Initiate process group and specify backend configurations
     if args.ddp:
@@ -493,10 +545,10 @@ def train(gpu_rank, args, run_name):
 
     if args.load_from_checkpoint:
         optimizer, scheduler, VAE_model, scaler, global_step, epoch, best_valid_loss = load_from_checkpoint(VAE_model,
-                                                                                                            optimizer,
-                                                                                                            scheduler,
-                                                                                                            scaler,
-                                                                                                            args)
+                                                                                                            optimizer=optimizer,
+                                                                                                            scheduler=scheduler,
+                                                                                                            scaler=scaler,
+                                                                                                            args=args)
 
     if gpu_rank == 0: print("Start or resume training!")
 
@@ -515,8 +567,8 @@ def train(gpu_rank, args, run_name):
                     end = torch.cuda.Event(enable_timing=True)
                     start.record()
 
-                # SET DEVICE
-                batch = transfer_batch_to_device(batch, gpu_rank)
+                # SET DEVICE is now being done in collate_fn of dataloader
+                batch = utils.transfer_batch_to_device(batch, gpu_rank)
 
                 # PERFORM TRAIN / VALIDATION
                 if phase == 'train':
@@ -539,15 +591,15 @@ def train(gpu_rank, args, run_name):
                 # PRINT
                 if gpu_rank == 0 and phase_step % args.print_every_n_steps == 0 and args.print_stats:
                     print_stats(stats, epoch, phase, global_step, args.max_global_train_steps,
-                                phase_step, max_steps, determine_beta(global_step, args))
+                                phase_step, max_steps, determine_beta(global_step, args), get_lr(scheduler))
 
-                # LOG STEP (ONLY FOR TRAIN)
-                if phase_step % args.log_every_n_steps == 0 and args.logging and phase == 'train' and gpu_rank == 0:
+                # LOG STEP
+                if phase_step % args.log_every_n_steps == 0 and args.logging and gpu_rank == 0:
                     log_stats_step(losses, phase, epoch, args.log_every_n_steps, global_step,
                                    get_lr(scheduler), determine_beta(global_step, args))
 
                 # CHECK POINTING
-                if (global_step % args.checkpoint_every_n_steps == 0) and args.checkpoint and gpu_rank == 0:
+                if (global_step % args.checkpoint_every_n_steps == 0) and phase == 'train' and args.checkpoint and gpu_rank == 0:
                     save_checkpoint_model(VAE_model, optimizer, scheduler, scaler, run_name, global_step,
                                           best_valid_loss, epoch, args)
 
@@ -559,23 +611,43 @@ def train(gpu_rank, args, run_name):
                 phase_step += 1
                 if phase == "train": global_step += 1
 
+            try:
+                # BEST MODEL CHECKPOINT
+                if phase == 'validation' and gpu_rank == 0:
+                    print(np.mean(stats[epoch]['validation']['total_loss']))
+                    if args.checkpoint and np.mean(stats[epoch]['validation']['total_loss']) < best_valid_loss:
+                        print(
+                            "Found better validation loss: {:.4f}. Saving checkpoint!".format(
+                                np.mean(stats[epoch]['validation']['total_loss'])))
+                        save_checkpoint_model(VAE_model, optimizer, scheduler, scaler, run_name, global_step,
+                                              best_valid_loss,
+                                              epoch, args, best=True)
+                        best_valid_loss = np.mean(stats[epoch]['validation']['total_loss'])
+            except Exception as e:
+                print("--> ERROR in checkpointing best model e:", e)
+
+            try:
+                if phase == "validation" and (epoch + 1) % args.evaluate_every_n_epochs == 0 and gpu_rank == 0:
+                    if args.ddp:
+                        model = VAE_model.module
+                    else:
+                        model = VAE_model
+                    evaluate(model, data, epoch, args)
+            except Exception as e:
+                print("--> ERROR in evaluation e:", e)
+
+
             if finished_training: break
 
         # LOG EPOCH STATS
         if args.logging and gpu_rank == 0:
             log_stats_epoch(stats, epoch)
 
-        # BEST MODEL CHECKPOINT
-        if phase == 'valid' and args.checkpoint and stats[epoch]['valid']['total_loss'] < best_valid_loss:
-            print(
-                "Found better validation loss: {:.4f}. Saving checkpoint!".format(stats[epoch]['valid']['total_loss']))
-            save_checkpoint_model(VAE_model, optimizer, scheduler, scaler, run_name, global_step, best_valid_loss,
-                                  epoch, args, best=True)
-
         epoch += 1
 
-    print("Average time of passing a batch: {} +- {}".format(np.mean(stats[0]['train']['time']),
-                                                             np.std(stats[0]['train']['time'])))
+    if args.time_batch:
+        print("Average time of passing a batch: {} +- {}".format(np.mean(stats[0]['train']['time']),
+                                                                 np.std(stats[0]['train']['time'])))
 
 
 def main(args):

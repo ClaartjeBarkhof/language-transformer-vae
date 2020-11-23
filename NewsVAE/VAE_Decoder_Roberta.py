@@ -190,6 +190,9 @@ class VAE_Decoder_RobertaSelfAttention(nn.Module):
         # and values come from an encoder; the attention mask needs to be
         # such that the encoder's padding tokens are not attended to.
         if encoder_hidden_states is not None:
+
+            print("--> Warning: encoder decoder attention is ON, this is NOT what you want.")
+
             mixed_key_layer = self.key(encoder_hidden_states)
             mixed_value_layer = self.value(encoder_hidden_states)
             attention_mask = encoder_attention_mask
@@ -736,6 +739,10 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
             output_attentions=None,
             output_hidden_states=None,
             return_dict=None,
+            return_exact_match_acc=False,
+            return_predictions=False,
+            return_cross_entropy=True,
+            reduce_loss=True
     ):
         r"""
         encoder_hidden_states  (:obj:`torch.FloatTensor` of shape :obj:`(batch_size, sequence_length, hidden_size)`, `optional`):
@@ -804,32 +811,80 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
-
+        # GET OUTPUS
         sequence_output = outputs[0]
         prediction_scores = self.lm_head(sequence_output)
 
-        # set the masked tokens in the labels to -100 to ignore index in error calculation
-        # labels[attention_mask == 0] = -100 # CAREFUL THIS THREW WEIRD ERROR!
-        # labels = labels.to(attention_mask.device)
+        # SHIFT SOME THINGS TO MAKE SURE WE ARE COMPARING THE RIGHT THINGS
+        # we are doing next-token prediction; shift prediction scores and input ids by one
+        logits = prediction_scores[:, :-1, :].contiguous()
 
-        lm_loss = None
-        if labels is not None:
-            # we are doing next-token prediction; shift prediction scores and input ids by one
-            shifted_prediction_scores = prediction_scores[:, :-1, :].contiguous()
-            labels = labels[:, 1:].contiguous()
-            loss_fct = CrossEntropyLoss()  # ignore_index=-100
-            lm_loss = loss_fct(shifted_prediction_scores.view(-1, self.config.vocab_size), labels.view(-1))
+        if return_cross_entropy:
+            if labels is not None:
+                labels = labels[:, 1:].contiguous()
+                labels = labels.reshape(-1)
+            else:
+                print("Can't return CE loss if no labels are provided! Quitting..."); quit()
+
+        # Get rid of the sequence dimension
+        batch_size, seq_len, vocab_size = logits.shape
+        logits = logits.reshape(-1, vocab_size)
+
+        predictions = None
+        exact_match_acc = None
+        cross_entropy = None
+        probs = None
+
+        if return_cross_entropy or return_predictions:
+            probs = torch.nn.functional.softmax(logits, dim=-1)
+            log_probs = torch.log(probs)
+
+            if labels is not None:
+                reduction = 'mean' if reduce_loss else 'none'
+                cross_entropy = torch.nn.functional.nll_loss(log_probs, labels, reduction=reduction)
+
+                # still reduce along sequence dimension
+                if reduction == 'none':
+                    cross_entropy = cross_entropy.reshape(batch_size, seq_len).mean(dim=1)
+
+            if return_predictions or return_exact_match_acc:
+                predictions = probs.argmax(-1)
+
+
+                if return_exact_match_acc and labels is not None:
+
+                    correct = (labels == predictions).float()
+                    correct = correct.reshape(batch_size, seq_len)
+                    correct = correct.mean(dim=-1)  # per sequence
+                    exact_match_acc = correct.mean(dim=0)
+
+                predictions = predictions.reshape((batch_size, seq_len))
+
+        if logits is not None:
+            logits = logits.reshape((batch_size, seq_len, vocab_size))
+
+        return_dict = {
+            "cross_entropy": cross_entropy,
+            "predictions": predictions,
+            "exact_match_acc": exact_match_acc,
+            "logits": logits,
+            "hidden_states": outputs.hidden_states,
+            "attentions": outputs.attentions
+        }
 
         if not return_dict:
             output = (prediction_scores,) + outputs[2:]
-            return ((lm_loss,) + output) if lm_loss is not None else output
+            return ((cross_entropy,) + output) if cross_entropy is not None else output
 
-        return CausalLMOutput(
-            loss=lm_loss,
-            logits=prediction_scores,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
-        )
+        return return_dict
+
+        # Used to be:
+        # return CausalLMOutput(
+        #     loss=cr,
+        #     logits=prediction_scores,
+        #     hidden_states=outputs.hidden_states,
+        #     attentions=outputs.attentions,
+        # )
 
     def prepare_inputs_for_generation(self, input_ids, attention_mask=None, **model_kwargs):
         input_shape = input_ids.shape

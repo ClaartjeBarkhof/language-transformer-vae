@@ -23,9 +23,11 @@ class NewsData:
     def __init__(self, dataset_name: str, tokenizer_name: str,
                  batch_size: int = 8, num_workers: int = 4,
                  pin_memory: bool = True, debug=False, max_seq_len = 64,
-                 debug_data_len=1000):
+                 debug_data_len=1000, device="cuda:0"):
         # DATA DIRECTORY
         os.makedirs('NewsData', exist_ok=True)
+
+        self.device = device
 
         # FOR GPU USE
         self.pin_memory = pin_memory
@@ -71,10 +73,14 @@ class NewsData:
                                   pin_memory=self.pin_memory)
         return train_loader
 
-    def val_dataloader(self):
+    def val_dataloader(self, shuffle=False, batch_size=None):
+        if batch_size is not None:
+            bs = batch_size
+        else:
+            bs = self.batch_size
         val_loader = DataLoader(self.datasets['validation'], collate_fn=self.collate_fn,
-                                batch_size=self.batch_size, num_workers=self.num_workers,
-                                pin_memory=self.pin_memory)
+                                batch_size=bs, num_workers=self.num_workers,
+                                pin_memory=self.pin_memory, shuffle=shuffle)
         return val_loader
 
     def test_dataloader(self):

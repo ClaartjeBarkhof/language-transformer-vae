@@ -7,7 +7,7 @@ from VAE_Decoder_Roberta import VAE_Decoder_RobertaForCausalLM, VAE_Decoder_Robe
 import copy
 from NewsVAEArguments import preprare_parser
 import utils
-
+import math
 
 class EncoderDecoderShareVAE(nn.Module):
     def __init__(self, args, roberta_ckpt_name: str = "roberta-base", do_tie_weights=True):
@@ -31,13 +31,16 @@ class EncoderDecoderShareVAE(nn.Module):
                                                                       gradient_checkpointing=args.gradient_checkpointing)
         self.decoder.add_latent_projection_layers(args.latent_size, args.hidden_size, args.n_layers)
 
+        self.latent_size = args.latent_size
+
         # Tie the weights of the Encoder and Decoder (encoder weights are pointers to decoder weights)
         if do_tie_weights:
             base_model_prefix = self.decoder.base_model_prefix
             tie_weights(self.encoder, self.decoder._modules[base_model_prefix], base_model_prefix)
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor,
-                beta: float, args: argparse.Namespace, return_predictions: bool = False):
+                beta: float, args: argparse.Namespace, return_predictions: bool = False,
+                return_exact_match_acc: bool = True):
         """
         Implements the forward pass of the shared Encoder-Decoder VAE.
 
@@ -66,8 +69,12 @@ class EncoderDecoderShareVAE(nn.Module):
         decoder_outs = self.decoder(input_ids=input_ids, attention_mask=attention_mask,
                                     latent_z=latent_z, labels=copy.copy(input_ids),
                                     add_latent_via_embeddings=args.add_latent_via_embeddings,
-                                    add_latent_via_memory=args.add_latent_via_memory)
-        recon_loss = decoder_outs.loss
+                                    add_latent_via_memory=args.add_latent_via_memory,
+                                    return_cross_entropy=True,
+                                    return_predictions=return_predictions,
+                                    return_exact_match_acc=return_exact_match_acc)
+
+        recon_loss = decoder_outs["cross_entropy"]
 
         if args.objective == 'beta-vae':
             total_loss = recon_loss + (beta * hinge_kl_loss)
@@ -82,7 +89,11 @@ class EncoderDecoderShareVAE(nn.Module):
                   'mmd_loss': mmd_loss.item()}
 
         if return_predictions:
-            losses['logits'] = decoder_outs.logits
+            losses['logits'] = decoder_outs["logits"]
+            losses["predictions"] = decoder_outs["predictions"]
+
+        if return_exact_match_acc:
+            losses["exact_match_acc"] = decoder_outs["exact_match_acc"].item()
 
         return losses
 
@@ -121,33 +132,64 @@ class EncoderDecoderShareVAE(nn.Module):
         mmd = x_kernel.mean() + y_kernel.mean() - 2 * xy_kernel.mean()
         return mmd
 
+    # @staticmethod
+    # def reparameterize(mu: torch.Tensor,
+    #                    logvar: torch.Tensor) -> torch.Tensor:
+    #     """
+    #     Sample from posterior Gaussian family.
+    #
+    #     :param mu: mean of the posterior (batch_size x vae_latent_dim)
+    #     :param logvar: log variance of the posterior (batch_size x vae_latent_dim)
+    #
+    #     :return: sampled_latent: sampled latent (batch_size x vae_latent_dim)
+    #     """
+    #     batch_size, nz = mu.size()
+    #     std = torch.mul(logvar, 0.5).exp()
+    #
+    #     mu_expd = mu.unsqueeze(1).expand(batch_size, 1, nz)
+    #     std_expd = std.unsqueeze(1).expand(batch_size, 1, nz)
+    #
+    #     eps = torch.zeros_like(std_expd).normal_()
+    #
+    #     sampled_latent = mu_expd + torch.mul(eps, std_expd)
+    #     sampled_latent = sampled_latent.squeeze(1)
+    #
+    #     return sampled_latent
+
     @staticmethod
-    def reparameterize(mu: torch.Tensor,
-                       logvar: torch.Tensor) -> torch.Tensor:
-        """
-        Sample from posterior Gaussian family.
-
-        :param mu: mean of the posterior (batch_size x vae_latent_dim)
-        :param logvar: log variance of the posterior (batch_size x vae_latent_dim)
-
-        :return: sampled_latent: sampled latent (batch_size x vae_latent_dim)
+    def reparameterize(mu, logvar, n_samples=1):
+        """sample from posterior Gaussian family
+        Args:
+            mu: Tensor
+                Mean of gaussian distribution with shape (batch, nz)
+            logvar: Tensor
+                logvar of gaussian distibution with shape (batch, nz)
+        Returns: Tensor
+            Sampled z with shape (batch, nsamples, nz)
         """
         batch_size, nz = mu.size()
-        std = torch.mul(logvar, 0.5).exp()
+        std = logvar.mul(0.5).exp()
 
-        mu_expd = mu.unsqueeze(1).expand(batch_size, 1, nz)
-        std_expd = std.unsqueeze(1).expand(batch_size, 1, nz)
+        mu_expd = mu.unsqueeze(1).expand(batch_size, n_samples, nz)
+        std_expd = std.unsqueeze(1).expand(batch_size, n_samples, nz)
 
         eps = torch.zeros_like(std_expd).normal_()
 
-        sampled_latent = mu_expd + torch.mul(eps, std_expd)
-        sampled_latent = sampled_latent.squeeze(1)
+        return mu_expd + torch.mul(eps, std_expd)
 
-        return sampled_latent
+    def sample(self, encoder_pooled_output, n_samples):
+        # interpret output from encoder as mu, logvar vector
+        mu, logvar = encoder_pooled_output.chunk(2, dim=1)
+
+        # batch x n_samples x seq_len
+        latent_z = self.reparameterize(mu, logvar, n_samples=n_samples)
+
+        return latent_z, (mu, logvar)
 
     def connect_encoder_decoder(self, encoder_pooled_output: torch.FloatTensor,
                                 deterministic: bool = False,
-                                hinge_loss_lambda: float = 0.5):
+                                hinge_loss_lambda: float = 0.5,
+                                return_mu_logvar: bool = False):
         """
         This function connects the encoder to the decoder, either deterministically
         or probabilistically, in which case a sample is drawn.
@@ -169,7 +211,7 @@ class EncoderDecoderShareVAE(nn.Module):
 
         # Sample with reparameterization trick
         else:
-            latent_z = self.reparameterize(mu, logvar)
+            latent_z = self.reparameterize(mu, logvar, n_samples=1).squeeze(1)
 
         kl_loss = 0.5 * (mu.pow(2) + logvar.exp() - logvar - 1)
 
@@ -184,7 +226,117 @@ class EncoderDecoderShareVAE(nn.Module):
         hinge_kl_loss = (kl_mask * kl_loss).sum(dim=1).mean(dim=0)
         kl_loss = kl_loss.sum(dim=1).mean(dim=0)
 
-        return latent_z, kl_loss, hinge_kl_loss
+        if return_mu_logvar:
+            return latent_z, kl_loss, hinge_kl_loss, (mu, logvar)
+        else:
+            return latent_z, kl_loss, hinge_kl_loss
+
+    def eval_complete_ll(self, input_ids, attention_mask, latent_z, args):
+        """
+        compute log p(z,x) = log joint
+
+        Args:
+            x: Tensor
+                input with shape [batch, seq_len]
+            z: Tensor
+                evaluation points with shape [batch, nsamples, nz]
+        Returns: Tensor1
+            Tensor1: log p(z,x) Tensor with shape [batch, nsamples]
+
+        """
+
+        # [batch, nsamples]
+        log_prior = self.eval_prior_dist(latent_z)
+        log_gen = self.eval_cond_ll(input_ids, attention_mask, latent_z, args)
+
+        # p(x, z) = p(z) * p(x|z) -> log p(x, z) = log p(z) + log p(x|z)
+        log_p_z_x = log_prior + log_gen
+
+        return log_p_z_x
+
+    def eval_prior_dist(self, zrange):
+        """perform grid search to calculate the true posterior
+        Args:
+            zrange: tensor
+                different z points that will be evaluated, with
+                shape (k^2, nz), where k=(zmax - zmin)/space
+        """
+
+        # (k^2)
+
+        loc = torch.zeros(self.latent_size, device=zrange.device)
+        scale = torch.ones(self.latent_size, device=zrange.device)
+
+        return torch.distributions.normal.Normal(loc, scale).log_prob(zrange).sum(dim=-1)
+
+    def eval_cond_ll(self, input_ids, attention_mask, latent_z, args):
+        """
+        compute log p(x|z) = log likelihood
+
+        """
+
+        assert len(latent_z.shape) == 3, "only implemented for the multi-sample case"
+
+        batch_size, seq_len = input_ids.shape
+        n_samples = latent_z.shape[1]
+
+        losses = []
+
+        # Loop over batch dimension, sample dimension is interpreted as batch dimension
+        for i in range(batch_size):
+            z = latent_z[i, :, :].squeeze(0)
+            x = input_ids[i, :].expand(n_samples, seq_len)
+            a = attention_mask[i, :].expand(n_samples, seq_len)
+
+            # Forward the decoder
+            decoder_outs = self.decoder(input_ids=x, attention_mask=a,
+                                        latent_z=z, labels=copy.copy(x),
+                                        add_latent_via_embeddings=args.add_latent_via_embeddings,
+                                        add_latent_via_memory=args.add_latent_via_memory,
+                                        return_cross_entropy=True,
+                                        reduce_loss=False,
+                                        return_predictions=False,
+                                        return_exact_match_acc=False)
+
+            recon_loss = decoder_outs["cross_entropy"]
+
+            losses.append(recon_loss)
+
+        # Stack so the dimensions are batch_size x n_samples
+        losses = torch.stack(losses)
+
+        return - losses  #TODO: minus? I think so...
+
+    def eval_inference_dist(self, input_ids, attention_mask, z, param=None):
+        """this function computes log q(z | x)
+        Args:
+            z: tensor
+                different z points that will be evaluated, with
+                shape [batch, nsamples, nz]
+        Returns: Tensor1
+            Tensor1: log q(z|x) with shape [batch, nsamples]
+        """
+
+        nz = z.size(2)
+
+        if not param:
+            encoder_outs = self.encoder(input_ids=input_ids,
+                                        attention_mask=attention_mask)
+            mu, logvar = encoder_outs.pooler_output.chunk(2, dim=1)
+        else:
+            mu, logvar = param
+
+        # (batch_size, 1, nz)
+        mu, logvar = mu.unsqueeze(1), logvar.unsqueeze(1)
+        var = logvar.exp()
+
+        # (batch_size, nsamples, nz)
+        dev = z - mu
+
+        # (batch_size, nsamples)
+        log_density = -0.5 * ((dev ** 2) / var).sum(dim=-1) - 0.5 * (nz * math.log(2 * math.pi) + logvar.sum(-1))
+
+        return log_density
 
 
 if __name__ == "__main__":
