@@ -709,14 +709,17 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
 
         self.init_weights()
 
-    def add_latent_projection_layers(self, latent_size, hidden_size, n_layers):
+    def add_latent_projection_layers(self, latent_size, hidden_size, n_layers,
+                                     add_latent_via_memory=True, add_latent_via_embeddings=True):
         # >>>>>> Claartje code
         # TODO: In the Optimus they have bias=False, but can't find good reason for that?
-        self.latent_to_memory_projection = nn.Linear(latent_size, hidden_size * n_layers)
-        self.latent_to_embedding_projection = nn.Linear(latent_size, hidden_size)
+        if add_latent_via_memory:
+            self.latent_to_memory_projection = nn.Linear(latent_size, hidden_size * n_layers)
+            self.latent_to_memory_projection.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
 
-        self.latent_to_memory_projection.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
-        self.latent_to_embedding_projection.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+        if add_latent_via_embeddings:
+            self.latent_to_embedding_projection = nn.Linear(latent_size, hidden_size)
+            self.latent_to_embedding_projection.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
         # <<<<<< End Claartje code
 
     def get_output_embeddings(self):

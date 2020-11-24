@@ -29,7 +29,8 @@ class EncoderDecoderShareVAE(nn.Module):
         # Decoder
         self.decoder = VAE_Decoder_RobertaForCausalLM.from_pretrained(roberta_ckpt_name,
                                                                       gradient_checkpointing=args.gradient_checkpointing)
-        self.decoder.add_latent_projection_layers(args.latent_size, args.hidden_size, args.n_layers)
+        self.decoder.add_latent_projection_layers(args.latent_size, args.hidden_size, args.n_layers,
+                                                  args.add_latent_via_memory, args.add_latent_via_embeddings)
 
         self.latent_size = args.latent_size
 
