@@ -298,7 +298,8 @@ def load_from_checkpoint(VAE_model, args, optimizer=None, scheduler=None, scaler
     if path is None:
         if args.checkpoint_file is "":
             print("Can't be that args is empty string and path is None, "
-                  "not sure what checkpoint to load now..."); quit()
+                  "not sure what checkpoint to load now...");
+            quit()
         path = args.checkpoint_file
     print("Loading VAE_model, optimizer and scheduler from {}".format(path))
     assert os.path.isfile(path), "-> checkpoint file path must exist for it to be loaded!"
@@ -607,7 +608,8 @@ def train(gpu_rank, args, run_name):
                                    get_lr(scheduler), determine_beta(global_step, args))
 
                 # CHECK POINTING
-                if (global_step % args.checkpoint_every_n_steps == 0) and phase == 'train' and args.checkpoint and gpu_rank == 0:
+                if (
+                        global_step % args.checkpoint_every_n_steps == 0) and phase == 'train' and args.checkpoint and gpu_rank == 0:
                     save_checkpoint_model(VAE_model, optimizer, scheduler, scaler, run_name, global_step,
                                           best_valid_loss, epoch, args)
 
@@ -643,7 +645,6 @@ def train(gpu_rank, args, run_name):
                     evaluate(model, data, epoch, args)
             except Exception as e:
                 print("--> ERROR in evaluation e:", e)
-
 
             if finished_training: break
 

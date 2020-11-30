@@ -506,7 +506,6 @@ class VAE_Decoder_RobertaPooler(nn.Module):
         return pooled_output
 
 
-
 class RobertaPreTrainedModel(PreTrainedModel):
     """An abstract class to handle weights initialization and
     a simple interface for downloading and loading pretrained models.
@@ -729,9 +728,7 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
             self,
             input_ids=None,
             attention_mask=None,
-            latent_z=None,
-            add_latent_via_embeddings=True,
-            add_latent_via_memory=True,
+            latent_to_decoder_output=None,
             token_type_ids=None,
             position_ids=None,
             head_mask=None,
@@ -786,17 +783,11 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         # >>>>>> Claartje code
-        if add_latent_via_memory:
-            latent_layer_memory = self.latent_to_memory_projection(latent_z)
-            # Makes tuple of equally sized tensors of (batch x 1 x hidden_size)
-            latent_layer_memory = torch.split(latent_layer_memory.unsqueeze(1), self.config.hidden_size, dim=2)
+        if latent_to_decoder_output is not None:
+            latent_layer_memory = latent_to_decoder_output['latent_to_memory']
+            latent_embedding = latent_to_decoder_output['latent_to_embeddings']
         else:
-            latent_layer_memory = None
-
-        if add_latent_via_embeddings:
-            latent_embedding = self.latent_to_embedding_projection(latent_z)
-        else:
-            latent_embedding = None
+            latent_layer_memory, latent_embedding = None, None
         # <<<<<< End Claartje code
 
         outputs = self.roberta(

@@ -167,7 +167,7 @@ class EncoderDecoderShareVAE(nn.Module):
 
     @staticmethod
     def reparameterize(mu, logvar, n_samples=1):
-        """sample from posterior Gaussian family
+        """ample from posterior Gaussian family
         Args:
             mu: Tensor
                 Mean of gaussian distribution with shape (batch, nz)
