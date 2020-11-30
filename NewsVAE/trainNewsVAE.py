@@ -293,12 +293,12 @@ def remove_module_from_statedict(state_dict):
     return new_state_dict
 
 
-def load_from_checkpoint(VAE_model, args=None, optimizer=None, scheduler=None, scaler=None, path=None):
+def load_from_checkpoint(VAE_model, args, optimizer=None, scheduler=None, scaler=None, path=None):
     # DETERMINE / CHECK PATH
     if path is None:
-        if args is None:
-            print("Can't be that args and path are None, not sure what checkpoint to load now...");
-            quit()
+        if args.checkpoint_file is "":
+            print("Can't be that args is empty string and path is None, "
+                  "not sure what checkpoint to load now..."); quit()
         path = args.checkpoint_file
     print("Loading VAE_model, optimizer and scheduler from {}".format(path))
     assert os.path.isfile(path), "-> checkpoint file path must exist for it to be loaded!"
@@ -307,30 +307,38 @@ def load_from_checkpoint(VAE_model, args=None, optimizer=None, scheduler=None, s
     checkpoint = torch.load(path)
 
     # OPTIMIZER
-    if optimizer is not None:
+    if optimizer is not None and args.continue_train_after_checkpoint_loading:
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
     # SCHEDULER
-    if scheduler is not None:
+    if scheduler is not None and args.continue_train_after_checkpoint_loading:
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
 
     # MODEL
     if "module." in list(checkpoint["VAE_model_state_dict"].keys())[0]:
         print("first removing module string from checkpoint")
         state_dict_without_module_string = remove_module_from_statedict(checkpoint["VAE_model_state_dict"])
-        assert state_dict_without_module_string != checkpoint["VAE_model_state_dict"], "removing module did not work, state dict still the same"
+        assert state_dict_without_module_string != checkpoint["VAE_model_state_dict"], "removing module did not work, " \
+                                                                                       "state dict still the same "
         VAE_model.load_state_dict(state_dict_without_module_string)
     else:
         VAE_model.load_state_dict(checkpoint["VAE_model_state_dict"])
 
+    if args.reset_decoder_after_checkpoint_loading:
+        VAE_model.reset_decoder(checkpoint_name=args.base_checkpoint_name,
+                                gradient_checkpointing=args.gradient_checkpointing)
+
     # SCALER
-    if scaler is not None:
+    if scaler is not None and args.continue_train_after_checkpoint_loading:
         scaler.load_state_dict(checkpoint["scaler_state_dict"])
 
     # GLOBAL STEP, EPOCH, BEST VALIDATION LOSS
-    global_step = checkpoint["global_step"]
-    epoch = checkpoint["epoch"]
-    best_valid_loss = checkpoint["best_valid_loss"]
+    if args.continue_train_after_checkpoint_loading:
+        global_step = checkpoint["global_step"]
+        epoch = checkpoint["epoch"]
+        best_valid_loss = checkpoint["best_valid_loss"]
+    else:
+        global_step, epoch, best_valid_loss = 0, 0, 1000
 
     print("Checkpoint global_step: {}, epoch: {}, best_valid_loss: {}".format(global_step,
                                                                               epoch,
@@ -539,12 +547,12 @@ def train(gpu_rank, args, run_name):
     stats = utils.make_nested_dict()
     finished_training = False
 
-    epoch, global_step = 0, 0
-    best_valid_loss = 1000
+    epoch, global_step, best_valid_loss = 0, 0, 1000
     max_train_steps_epoch, max_valid_steps_epoch = determine_max_epoch_steps(args, data)
 
     if args.load_from_checkpoint:
         optimizer, scheduler, VAE_model, scaler, global_step, epoch, best_valid_loss = load_from_checkpoint(VAE_model,
+                                                                                                            args,
                                                                                                             optimizer=optimizer,
                                                                                                             scheduler=scheduler,
                                                                                                             scaler=scaler,

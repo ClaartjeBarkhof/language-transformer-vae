@@ -94,6 +94,14 @@ def preprare_parser(jupyter=False, print_settings=True):
                         help="Load from checkpoint given by checkpoint_file (default: False).")
     parser.add_argument("--checkpoint_file", default="", type=str,
                         help="File name of a checkpoint to load in (default: '').")
+    parser.add_argument("--reset_decoder_after_checkpoint_loading", default=False,
+                        type=lambda x: bool(distutils.util.strtobool(x)),
+                        help="After loading the weights from the checkpoint, reset the decoder to roberta-base."
+                             "(default: False).")
+    parser.add_argument("--continue_train_after_checkpoint_loading", default=True,
+                        type=lambda x: bool(distutils.util.strtobool(x)),
+                        help="If false, the epoch and best validation etc. are set to "
+                             "their initial values again. as if training from scratch.")
 
     # SEED
     parser.add_argument("--seed", default=0, type=int,
