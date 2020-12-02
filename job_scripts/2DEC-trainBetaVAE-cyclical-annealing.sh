@@ -20,7 +20,7 @@ conda activate thesisenv # activate environment
 python /home/cbarkhof/code-thesis/NewsVAE/trainNewsVAE.py \
           --overwrite_args=False \
           \
-          --run_name_prefix="30NOV-BETA-VAE-Cylical-annealing" \
+          --run_name_prefix="2DEC-BETA-VAE-Cylical-annealing" \
           \
           --objective="beta-vae" \
           --KL_annealing_steps=33333 \

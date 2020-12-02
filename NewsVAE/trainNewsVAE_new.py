@@ -21,6 +21,7 @@ from evaluateNewsVAE import evaluate_model
 def set_DDP_environment_vars(port_nr=1234):
     """
     Set the environment variables for the DDP environment.
+
     :param port_nr
     """
     os.environ['MASTER_ADDR'] = utils.get_ip()
@@ -31,6 +32,7 @@ def set_DDP_environment_vars(port_nr=1234):
 def get_model_on_device(gpu_rank, args):
     """
     Initialise a VAE model model from checkpoints and set to CUDA.
+
     :param gpu_rank:
     :param args:
     :return:
@@ -48,6 +50,7 @@ def get_model_on_device(gpu_rank, args):
 def get_optimizer(VAE_model, args):
     """
     Return a simple optimiser.
+
     :param VAE_model:
     :param args:
     :return:
@@ -88,6 +91,7 @@ def get_scheduler(optimizer, args):
 def get_dataloader(args, phases, gpu_rank):
     """
     Get data loaders for distributed sampling for different phases (eg. train and validation).
+
     :param args:
     :param phases:
     :param gpu_rank:
@@ -128,6 +132,7 @@ def get_dataloader(args, phases, gpu_rank):
 def insert_stats(stats, new_stats, epoch, phase):
     """
     Add losses to the statistics.
+
     :param stats:
     :param new_stats:
     :param epoch:
@@ -149,6 +154,7 @@ def print_stats(stats, epoch, phase, global_step, max_global_train_steps,
                 phase_step, max_steps, beta, lr):
     """
     Print statistics to track process.
+
     :param stats:
     :param epoch:
     :param phase:
@@ -172,6 +178,7 @@ def print_stats(stats, epoch, phase, global_step, max_global_train_steps,
 def do_valid_step(VAE_model, batch, global_step, args):
     """
     Perform a validation step (no grads, eval mode, no autocast?)
+
     :param VAE_model:
     :param batch:
     :param args:
@@ -193,6 +200,7 @@ def do_valid_step(VAE_model, batch, global_step, args):
 def do_train_step(VAE_model, batch, batch_i, optimizer, scheduler, scaler, global_step, args):
     """
     Perform a train step with autocast, gradients enabled and gradient accumulated backward.
+
     :param VAE_model:
     :param batch:
     :param batch_i:
@@ -243,6 +251,7 @@ def get_lr(scheduler):
 def log_stats_step(losses, phase, epoch, log_every, global_step, lr, beta):
     """
     Log losses of step to W&B.
+
     :param losses:
     :param phase:
     :param epoch:
@@ -261,6 +270,7 @@ def log_stats_step(losses, phase, epoch, log_every, global_step, lr, beta):
 def log_stats_epoch(stats, epoch):
     """
     Log stats of epoch to W&B.
+
     :param stats:
     :param epoch:
     :return:
@@ -283,11 +293,12 @@ def remove_module_from_statedict(state_dict):
     return new_state_dict
 
 
-def load_from_checkpoint(VAE_model, args=None, optimizer=None, scheduler=None, scaler=None, path=None):
+def load_from_checkpoint(VAE_model, args, optimizer=None, scheduler=None, scaler=None, path=None):
     # DETERMINE / CHECK PATH
     if path is None:
-        if args is None:
-            print("Can't be that args and path are None, not sure what checkpoint to load now...");
+        if args.checkpoint_file is "":
+            print("Can't be that args is empty string and path is None, "
+                  "not sure what checkpoint to load now...");
             quit()
         path = args.checkpoint_file
     print("Loading VAE_model, optimizer and scheduler from {}".format(path))
@@ -297,30 +308,38 @@ def load_from_checkpoint(VAE_model, args=None, optimizer=None, scheduler=None, s
     checkpoint = torch.load(path)
 
     # OPTIMIZER
-    if optimizer is not None:
+    if optimizer is not None and args.continue_train_after_checkpoint_loading:
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
     # SCHEDULER
-    if scheduler is not None:
+    if scheduler is not None and args.continue_train_after_checkpoint_loading:
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
 
     # MODEL
     if "module." in list(checkpoint["VAE_model_state_dict"].keys())[0]:
         print("first removing module string from checkpoint")
         state_dict_without_module_string = remove_module_from_statedict(checkpoint["VAE_model_state_dict"])
-        assert state_dict_without_module_string != checkpoint["VAE_model_state_dict"], "removing module did not work, state dict still the same"
+        assert state_dict_without_module_string != checkpoint["VAE_model_state_dict"], "removing module did not work, " \
+                                                                                       "state dict still the same "
         VAE_model.load_state_dict(state_dict_without_module_string)
     else:
         VAE_model.load_state_dict(checkpoint["VAE_model_state_dict"])
 
+    if args.reset_decoder_after_checkpoint_loading:
+        VAE_model.reset_decoder(checkpoint_name=args.base_checkpoint_name,
+                                gradient_checkpointing=args.gradient_checkpointing)
+
     # SCALER
-    if scaler is not None:
+    if scaler is not None and args.continue_train_after_checkpoint_loading:
         scaler.load_state_dict(checkpoint["scaler_state_dict"])
 
     # GLOBAL STEP, EPOCH, BEST VALIDATION LOSS
-    global_step = checkpoint["global_step"]
-    epoch = checkpoint["epoch"]
-    best_valid_loss = checkpoint["best_valid_loss"]
+    if args.continue_train_after_checkpoint_loading:
+        global_step = checkpoint["global_step"]
+        epoch = checkpoint["epoch"]
+        best_valid_loss = checkpoint["best_valid_loss"]
+    else:
+        global_step, epoch, best_valid_loss = 0, 0, 1000
 
     print("Checkpoint global_step: {}, epoch: {}, best_valid_loss: {}".format(global_step,
                                                                               epoch,
@@ -333,6 +352,7 @@ def save_checkpoint_model(VAE_model, optimizer, scheduler, scaler, run_name,
                           global_step, best_valid_loss, epoch, args, best=False):
     """
     Save checkpoint for later use.
+
     :param VAE_model:
     :param train_step:
     :param optimizer:
@@ -371,6 +391,7 @@ def save_checkpoint_model(VAE_model, optimizer, scheduler, scaler, run_name,
 def init_logging(VAE_model, run_name, args):
     """
     Initialise W&B logging.
+
     :param VAE_model:
     :param run_name:
     :param args:
@@ -389,6 +410,7 @@ def determine_beta(step, args):
     Determine beta. If using KL.annealing, determine beta based on global step
     and global step compared to KL_annealing_steps. If not using annealing
     use the pre-defined beta or if using another objective (mmd-vae) set beta to 1.
+
     :param step:
     :param args:
     :return:
@@ -415,6 +437,7 @@ def determine_beta(step, args):
 def get_run_name(args):
     """
     Make a unique run name, with the current type and possibly some named prefix.
+
     :param args:
     :param gpu_rank:
     :return:
@@ -429,6 +452,7 @@ def get_run_name(args):
 def prepare_folders(run_name, args):
     """
     Make folders to save stuff to.
+
     :param run_name:
     :return:
     """
@@ -479,6 +503,7 @@ def evaluate(VAE_model, data, epoch, args):
 def train(gpu_rank, args, run_name):
     """
     Train loop and preparation.
+
     :param gpu_rank:
     :param args:
     :param run_name:
@@ -523,12 +548,12 @@ def train(gpu_rank, args, run_name):
     stats = utils.make_nested_dict()
     finished_training = False
 
-    epoch, global_step = 0, 0
-    best_valid_loss = 1000
+    epoch, global_step, best_valid_loss = 0, 0, 1000
     max_train_steps_epoch, max_valid_steps_epoch = determine_max_epoch_steps(args, data)
 
     if args.load_from_checkpoint:
         optimizer, scheduler, VAE_model, scaler, global_step, epoch, best_valid_loss = load_from_checkpoint(VAE_model,
+                                                                                                            args,
                                                                                                             optimizer=optimizer,
                                                                                                             scheduler=scheduler,
                                                                                                             scaler=scaler,
@@ -583,7 +608,8 @@ def train(gpu_rank, args, run_name):
                                    get_lr(scheduler), determine_beta(global_step, args))
 
                 # CHECK POINTING
-                if (global_step % args.checkpoint_every_n_steps == 0) and phase == 'train' and args.checkpoint and gpu_rank == 0:
+                if (
+                        global_step % args.checkpoint_every_n_steps == 0) and phase == 'train' and args.checkpoint and gpu_rank == 0:
                     save_checkpoint_model(VAE_model, optimizer, scheduler, scaler, run_name, global_step,
                                           best_valid_loss, epoch, args)
 
@@ -619,7 +645,6 @@ def train(gpu_rank, args, run_name):
                     evaluate(model, data, epoch, args)
             except Exception as e:
                 print("--> ERROR in evaluation e:", e)
-
 
             if finished_training: break
 

@@ -136,6 +136,7 @@ class RobertaEmbeddings(nn.Module):
     def create_position_ids_from_inputs_embeds(self, inputs_embeds):
         """We are provided embeddings directly. We cannot infer which are padded so just generate
         sequential position ids.
+
         :param torch.Tensor inputs_embeds:
         :return torch.Tensor:
         """
@@ -505,7 +506,6 @@ class VAE_Decoder_RobertaPooler(nn.Module):
         return pooled_output
 
 
-
 class RobertaPreTrainedModel(PreTrainedModel):
     """An abstract class to handle weights initialization and
     a simple interface for downloading and loading pretrained models.
@@ -530,17 +530,21 @@ class RobertaPreTrainedModel(PreTrainedModel):
 
 class VAE_Decoder_RobertaModel(RobertaPreTrainedModel):
     """
+
     The model can behave as an encoder (with only self-attention) as well
     as a decoder, in which case a layer of cross-attention is added between
     the self-attention layers, following the architecture described in `Attention is all you need`_ by Ashish Vaswani,
     Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N. Gomez, Lukasz Kaiser and Illia Polosukhin.
+
     To behave as an decoder the model needs to be initialized with the
     :obj:`is_decoder` argument of the configuration set to :obj:`True`.
     To be used in a Seq2Seq model, the model needs to initialized with both :obj:`is_decoder`
     argument and :obj:`add_cross_attention` set to :obj:`True`; an
     :obj:`encoder_hidden_states` is then expected as an input to the forward pass.
+
     .. _`Attention is all you need`:
         https://arxiv.org/abs/1706.03762
+
     """
 
     authorized_missing_keys = [r"position_ids"]
@@ -724,9 +728,7 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
             self,
             input_ids=None,
             attention_mask=None,
-            latent_z=None,
-            add_latent_via_embeddings=True,
-            add_latent_via_memory=True,
+            latent_to_decoder_output=None,
             token_type_ids=None,
             position_ids=None,
             head_mask=None,
@@ -750,40 +752,42 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
             Mask to avoid performing attention on the padding token indices of the encoder input. This mask
             is used in the cross-attention if the model is configured as a decoder.
             Mask values selected in ``[0, 1]``:
+
             - 1 for tokens that are **not masked**,
             - 0 for tokens that are **masked**.
+
         labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size, sequence_length)`, `optional`):
             Labels for computing the left-to-right language modeling loss (next word prediction).
             Indices should be in ``[-100, 0, ..., config.vocab_size]`` (see ``input_ids`` docstring)
             Tokens with indices set to ``-100`` are ignored (masked), the loss is only computed for the tokens with
             labels in ``[0, ..., config.vocab_size]``
+
         Returns:
+
         Example::
+
             from transformers import RobertaTokenizer, RobertaForCausalLM, RobertaConfig
             import torch
+
             tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
             config = RobertaConfig.from_pretrained("roberta-base", return_dict=True)
             config.is_decoder = True
             model = RobertaForCausalLM.from_pretrained('roberta-base', config=config)
+
             inputs = tokenizer(Hello, my dog is cute", return_tensors="pt")
             outputs = model(**inputs)
+
             prediction_logits = outputs.logits
         """
 
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         # >>>>>> Claartje code
-        if add_latent_via_memory:
-            latent_layer_memory = self.latent_to_memory_projection(latent_z)
-            # Makes tuple of equally sized tensors of (batch x 1 x hidden_size)
-            latent_layer_memory = torch.split(latent_layer_memory.unsqueeze(1), self.config.hidden_size, dim=2)
+        if latent_to_decoder_output is not None:
+            latent_layer_memory = latent_to_decoder_output['latent_to_memory']
+            latent_embedding = latent_to_decoder_output['latent_to_embeddings']
         else:
-            latent_layer_memory = None
-
-        if add_latent_via_embeddings:
-            latent_embedding = self.latent_to_embedding_projection(latent_z)
-        else:
-            latent_embedding = None
+            latent_layer_memory, latent_embedding = None, None
         # <<<<<< End Claartje code
 
         outputs = self.roberta(
@@ -916,6 +920,7 @@ def create_position_ids_from_input_ids(input_ids, padding_idx):
     """Replace non-padding symbols with their position numbers. Position numbers begin at
     padding_idx+1. Padding symbols are ignored. This is modified from fairseq's
     `utils.make_positions`.
+
     :param torch.Tensor x:
     :return torch.Tensor:
     """
