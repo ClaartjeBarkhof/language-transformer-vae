@@ -283,7 +283,7 @@ def remove_module_from_statedict(state_dict):
     return new_state_dict
 
 
-def load_from_checkpoint(VAE_model, args=None, optimizer=None, scheduler=None, scaler=None, path=None):
+def load_from_checkpoint(VAE_model, args=None, optimizer=None, scheduler=None, scaler=None, path=None, gpu_rank=0, ddp=False):
     # DETERMINE / CHECK PATH
     if path is None:
         if args is None:
@@ -294,28 +294,41 @@ def load_from_checkpoint(VAE_model, args=None, optimizer=None, scheduler=None, s
     assert os.path.isfile(path), "-> checkpoint file path must exist for it to be loaded!"
 
     # LOAD CHECKPOINT
-    checkpoint = torch.load(path)
+    print("loading checkpoint")
+    checkpoint = torch.load(path, map_location='cpu')
+    print("done loading checkpoint")
 
     # OPTIMIZER
-    if optimizer is not None:
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    # if optimizer is not None:
+    #     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
     # SCHEDULER
-    if scheduler is not None:
-        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+    # if scheduler is not None:
+    #     scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
 
     # MODEL
-    if "module." in list(checkpoint["VAE_model_state_dict"].keys())[0]:
+    if "module." in list(checkpoint["VAE_model_state_dict"].keys())[0] and not ddp:
         print("first removing module string from checkpoint")
+        VAE_model = VAE_model.to('cpu')
         state_dict_without_module_string = remove_module_from_statedict(checkpoint["VAE_model_state_dict"])
         assert state_dict_without_module_string != checkpoint["VAE_model_state_dict"], "removing module did not work, state dict still the same"
         VAE_model.load_state_dict(state_dict_without_module_string)
+        VAE_model = VAE_model.to(f'cuda:{gpu_rank}')
     else:
+        print("not removing module string")
+        VAE_model = VAE_model.to('cpu')
         VAE_model.load_state_dict(checkpoint["VAE_model_state_dict"])
+        VAE_model = VAE_model.to(f'cuda:{gpu_rank}')
+        # print("XXXX the device of this model is:", next(VAE_model.parameters()).is_cuda)
+        # print(VAE_model)
+
+    if args.reset_decoder_after_checkpoint_loading:
+        VAE_model.module.reset_decoder(args)
+        VAE_model = VAE_model.to(f'cuda:{gpu_rank}')
 
     # SCALER
-    if scaler is not None:
-        scaler.load_state_dict(checkpoint["scaler_state_dict"])
+    # if scaler is not None:
+    #     scaler.load_state_dict(checkpoint["scaler_state_dict"])
 
     # GLOBAL STEP, EPOCH, BEST VALIDATION LOSS
     global_step = checkpoint["global_step"]
@@ -532,7 +545,9 @@ def train(gpu_rank, args, run_name):
                                                                                                             optimizer=optimizer,
                                                                                                             scheduler=scheduler,
                                                                                                             scaler=scaler,
-                                                                                                            args=args)
+                                                                                                            args=args,
+                                                                                                            gpu_rank=gpu_rank,
+                                                                                                            ddp=args.ddp)
 
     if gpu_rank == 0: print("Start or resume training!")
 

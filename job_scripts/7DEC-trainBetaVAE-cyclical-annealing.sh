@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -p gpu
-#SBATCH -t 60:00:00
+#SBATCH -t 80:00:00
 #SBATCH -c 12
 #SBATCH --output /home/cbarkhof/slurm-logs/%j-slurm-log.out
 
@@ -20,14 +20,7 @@ conda activate thesisenv # activate environment
 python /home/cbarkhof/code-thesis/NewsVAE/trainNewsVAE.py \
           --overwrite_args=False \
           \
-          --run_name_prefix="2DEC-BETA-VAE-AE_pretrained_enc" \
-          \
-          --load_from_checkpoint=True \
-          --checkpoint_file="/home/cbarkhof/code-thesis/NewsVAE/Runs/23NOV-AUTOENCODER-run-2020-11-23-18:36:12/checkpoint-50000.pth" \
-          --reset_decoder_after_checkpoint_loading=True \
-          --continue_train_after_checkpoint_loading=False \
-          \
-          --do_tie_weights=False \
+          --run_name_prefix="7DEC-BETA-VAE-Cylical-annealing" \
           \
           --objective="beta-vae" \
           --KL_annealing_steps=50000 \
@@ -38,7 +31,7 @@ python /home/cbarkhof/code-thesis/NewsVAE/trainNewsVAE.py \
           \
           --max_train_steps_epoch=5000 \
           --max_valid_steps_epoch=-1 \
-          --max_global_train_steps=100000 \
+          --max_global_train_steps=150000 \
           \
           --batch_size=32 \
           --accumulate_n_batches_grad=2 \
@@ -59,6 +52,7 @@ python /home/cbarkhof/code-thesis/NewsVAE/trainNewsVAE.py \
           --time_batch=False \
           --checkpoint=True \
           --checkpoint_every_n_steps=1000 \
+          --load_from_checkpoint=False \
           \
           --num_workers=8 \
           --debug_data=False \
@@ -69,4 +63,6 @@ python /home/cbarkhof/code-thesis/NewsVAE/trainNewsVAE.py \
           \
           --evaluate_every_n_epochs=1 \
           --n_batches_to_evaluate_on=24 \
-          --iw_nsamples_evaluation=300
+          --iw_nsamples_evaluation=300 \
+          \
+          --do_tie_weights=True

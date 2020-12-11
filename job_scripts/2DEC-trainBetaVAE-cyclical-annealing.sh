@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -p gpu
-#SBATCH -t 40:00:00
+#SBATCH -t 80:00:00
 #SBATCH -c 12
 #SBATCH --output /home/cbarkhof/slurm-logs/%j-slurm-log.out
 
@@ -23,7 +23,7 @@ python /home/cbarkhof/code-thesis/NewsVAE/trainNewsVAE.py \
           --run_name_prefix="2DEC-BETA-VAE-Cylical-annealing" \
           \
           --objective="beta-vae" \
-          --KL_annealing_steps=33333 \
+          --KL_annealing_steps=50000 \
           --KL_annealing=True \
           --beta=1.0 \
           --mmd_lambda=10000. \
@@ -31,7 +31,7 @@ python /home/cbarkhof/code-thesis/NewsVAE/trainNewsVAE.py \
           \
           --max_train_steps_epoch=5000 \
           --max_valid_steps_epoch=-1 \
-          --max_global_train_steps=100000 \
+          --max_global_train_steps=150000 \
           \
           --batch_size=32 \
           --accumulate_n_batches_grad=2 \

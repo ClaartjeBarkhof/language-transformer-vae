@@ -20,7 +20,7 @@ conda activate thesisenv # activate environment
 python /home/cbarkhof/code-thesis/NewsVAE/trainNewsVAE.py \
           --overwrite_args=False \
           \
-          --run_name_prefix="2DEC-BETA-VAE-AE_pretrained_enc" \
+          --run_name_prefix="7DEC-BETA-VAE-AE_pretrained_enc" \
           \
           --load_from_checkpoint=True \
           --checkpoint_file="/home/cbarkhof/code-thesis/NewsVAE/Runs/23NOV-AUTOENCODER-run-2020-11-23-18:36:12/checkpoint-50000.pth" \
@@ -30,7 +30,7 @@ python /home/cbarkhof/code-thesis/NewsVAE/trainNewsVAE.py \
           --do_tie_weights=False \
           \
           --objective="beta-vae" \
-          --KL_annealing_steps=50000 \
+          --KL_annealing_steps=100000 \
           --KL_annealing=True \
           --beta=1.0 \
           --mmd_lambda=10000. \

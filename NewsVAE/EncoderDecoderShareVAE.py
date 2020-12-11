@@ -9,6 +9,7 @@ from NewsVAEArguments import preprare_parser
 import utils
 import math
 
+
 class EncoderDecoderShareVAE(nn.Module):
     def __init__(self, args, roberta_ckpt_name: str = "roberta-base", do_tie_weights=True):
         super(EncoderDecoderShareVAE, self).__init__()
@@ -63,7 +64,6 @@ class EncoderDecoderShareVAE(nn.Module):
                                                                         deterministic=args.deterministic_connect,
                                                                         hinge_loss_lambda=args.hinge_loss_lambda)
 
-
         mmd_loss = self.compute_maximum_mean_discrepancy(latent_z)
         mmd_loss = mmd_loss * args.mmd_lambda
 
@@ -99,12 +99,14 @@ class EncoderDecoderShareVAE(nn.Module):
 
         return losses
 
-    def reset_decoder(self, checkpoint_name="roberta-base", gradient_checkpointing=False):
-        print("Checking if shared_weights == False, yields {}".format(self.arguments.do_tie_weights))
-        assert not self.arguments.do_tie_weights, "Not resetting the decoder if the weights are shared. Aborting!"
-        print(f"Resetting the decoder to {checkpoint_name} checkpoint.")
-        self.decoder = VAE_Decoder_RobertaForCausalLM.from_pretrained(checkpoint_name,
-                                                                      gradient_checkpointing=gradient_checkpointing)
+    def reset_decoder(self, args):
+        print("Checking if shared_weights == False, yields {}".format(self.arguments.do_tie_weights is False))
+        assert not args.do_tie_weights, "Not resetting the decoder if the weights are shared. Aborting!"
+        print(f"Resetting the decoder to {args.base_checkpoint_name} checkpoint.")
+        self.decoder = VAE_Decoder_RobertaForCausalLM.from_pretrained(args.base_checkpoint_name,
+                                                                      gradient_checkpointing=args.gradient_checkpointing)
+        self.decoder.add_latent_projection_layers(args.latent_size, args.hidden_size, args.n_layers,
+                                                  args.add_latent_via_memory, args.add_latent_via_embeddings)
 
     @staticmethod
     def compute_kernel(x, y):
@@ -164,6 +166,13 @@ class EncoderDecoderShareVAE(nn.Module):
     #     sampled_latent = sampled_latent.squeeze(1)
     #
     #     return sampled_latent
+
+    # def reset_decoder(self, checkpoint_name="roberta-base", gradient_checkpointing=False):
+    #     print("Checking if shared_weights == False, yields {}".format(self.arguments.do_tie_weights))
+    #     assert not self.arguments.do_tie_weights, "Not resetting the decoder if the weights are shared. Aborting!"
+    #     print(f"Resetting the decoder to {checkpoint_name} checkpoint.")
+    #     self.decoder = VAE_Decoder_RobertaForCausalLM.from_pretrained(checkpoint_name,
+    #                                                                   gradient_checkpointing=gradient_checkpointing)
 
     @staticmethod
     def reparameterize(mu, logvar, n_samples=1):
@@ -314,7 +323,7 @@ class EncoderDecoderShareVAE(nn.Module):
         # Stack so the dimensions are batch_size x n_samples
         losses = torch.stack(losses)
 
-        return - losses  #TODO: minus? I think so...
+        return - losses  # TODO: minus? I think so...
 
     def eval_inference_dist(self, input_ids, attention_mask, z, param=None):
         """this function computes log q(z | x)
@@ -354,8 +363,8 @@ if __name__ == "__main__":
     model = EncoderDecoderShareVAE(args=params, do_tie_weights=True)
 
     print("With tying weights")
-    print('Trainable params {:.3f} x 1e6'.format(utils.get_number_of_params(model)/1e6))
-    print("of which are encoder weights: {:.3f} x 1e6".format(utils.get_number_of_params(model.encoder)/1e6))
+    print('Trainable params {:.3f} x 1e6'.format(utils.get_number_of_params(model) / 1e6))
+    print("of which are encoder weights: {:.3f} x 1e6".format(utils.get_number_of_params(model.encoder) / 1e6))
     print("of which are decoder weights: {:.3f} x 1e6".format(utils.get_number_of_params(model.decoder) / 1e6))
 
     # model = EncoderDecoderShareVAE(args=params, do_tie_weights=False)
