@@ -219,7 +219,7 @@ class VAE_Decoder_RobertaSelfAttention(nn.Module):
             if latent_layer_memory_i is not None:
                 # If there is a latent vector added to the key, value matrices, the attention mask should
                 # not mask attending to this. When tokens are masked their value is set to -1000.0 and
-                # when they are not masked they are set to 0.0. We want all tokens to have access to the latens
+                # when they are not masked they are set to 0.0. We want all tokens to have access to the latents
                 # so we will concat series of 0.0 to the attention mask (in front) to not mask the latent.
                 batch, _, seq_l, _ = attention_mask.shape
                 extension = torch.zeros(batch, 1, seq_l, 1).type_as(attention_mask)
@@ -233,6 +233,7 @@ class VAE_Decoder_RobertaSelfAttention(nn.Module):
 
         # Normalize the attention scores to probabilities.
         attention_probs = nn.Softmax(dim=-1)(attention_scores)
+        print("attention_probs.shape", attention_probs.shape)
 
         # This is actually dropping out entire tokens to attend to, which might
         # seem a bit unusual, but is taken from the original Transformer paper.
@@ -666,6 +667,7 @@ class VAE_Decoder_RobertaModel(RobertaPreTrainedModel):
             return_dict=return_dict,
         )
         sequence_output = encoder_outputs[0]
+
         pooled_output = self.pooler(sequence_output) if self.pooler is not None else None
 
         if not return_dict:
@@ -770,6 +772,8 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
             prediction_logits = outputs.logits
         """
 
+        print("Test upload yes")
+
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         # >>>>>> Claartje code
@@ -796,13 +800,16 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
             head_mask=head_mask,
             inputs_embeds=inputs_embeds,
             encoder_hidden_states=encoder_hidden_states,
-            encoder_attention_mask=encoder_attention_mask,
+            encoder_attention_mask=True,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
-        # GET OUTPUS
+        # GET OUTPUTS
         sequence_output = outputs[0]
+
+        print("len(sequence_output)", len(sequence_output))
+
         prediction_scores = self.lm_head(sequence_output)
 
         # SHIFT SOME THINGS TO MAKE SURE WE ARE COMPARING THE RIGHT THINGS

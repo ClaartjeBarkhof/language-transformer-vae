@@ -73,6 +73,7 @@ class EncoderDecoderShareVAE(nn.Module):
                                     add_latent_via_embeddings=args.add_latent_via_embeddings,
                                     add_latent_via_memory=args.add_latent_via_memory,
                                     return_cross_entropy=True,
+                                    output_attentions=True,
                                     return_predictions=return_predictions,
                                     return_exact_match_acc=return_exact_match_acc)
 
@@ -143,40 +144,9 @@ class EncoderDecoderShareVAE(nn.Module):
         mmd = x_kernel.mean() + y_kernel.mean() - 2 * xy_kernel.mean()
         return mmd
 
-    # @staticmethod
-    # def reparameterize(mu: torch.Tensor,
-    #                    logvar: torch.Tensor) -> torch.Tensor:
-    #     """
-    #     Sample from posterior Gaussian family.
-    #
-    #     :param mu: mean of the posterior (batch_size x vae_latent_dim)
-    #     :param logvar: log variance of the posterior (batch_size x vae_latent_dim)
-    #
-    #     :return: sampled_latent: sampled latent (batch_size x vae_latent_dim)
-    #     """
-    #     batch_size, nz = mu.size()
-    #     std = torch.mul(logvar, 0.5).exp()
-    #
-    #     mu_expd = mu.unsqueeze(1).expand(batch_size, 1, nz)
-    #     std_expd = std.unsqueeze(1).expand(batch_size, 1, nz)
-    #
-    #     eps = torch.zeros_like(std_expd).normal_()
-    #
-    #     sampled_latent = mu_expd + torch.mul(eps, std_expd)
-    #     sampled_latent = sampled_latent.squeeze(1)
-    #
-    #     return sampled_latent
-
-    # def reset_decoder(self, checkpoint_name="roberta-base", gradient_checkpointing=False):
-    #     print("Checking if shared_weights == False, yields {}".format(self.arguments.do_tie_weights))
-    #     assert not self.arguments.do_tie_weights, "Not resetting the decoder if the weights are shared. Aborting!"
-    #     print(f"Resetting the decoder to {checkpoint_name} checkpoint.")
-    #     self.decoder = VAE_Decoder_RobertaForCausalLM.from_pretrained(checkpoint_name,
-    #                                                                   gradient_checkpointing=gradient_checkpointing)
-
     @staticmethod
     def reparameterize(mu, logvar, n_samples=1):
-        """ample from posterior Gaussian family
+        """Sample from posterior Gaussian family
         Args:
             mu: Tensor
                 Mean of gaussian distribution with shape (batch, nz)

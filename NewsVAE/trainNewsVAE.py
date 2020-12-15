@@ -38,14 +38,14 @@ def get_model_on_device(gpu_rank, args):
     if gpu_rank == 0: print("Loading model...")
 
     # Encoder Decoder model
-    VAE_model = EncoderDecoderShareVAE(args, args.base_checkpoint_name,
+    vae_model = EncoderDecoderShareVAE(args, args.base_checkpoint_name,
                                        do_tie_weights=args.do_tie_weights)
-    VAE_model = VAE_model.cuda(gpu_rank)
+    vae_model = vae_model.cuda(gpu_rank)
 
-    return VAE_model
+    return vae_model
 
 
-def get_optimizer(VAE_model, args):
+def get_optimizer(vae_model, args):
     """
     Return a simple optimiser.
     :param VAE_model:
@@ -53,7 +53,7 @@ def get_optimizer(VAE_model, args):
     :return:
     """
 
-    optimizer = torch.optim.AdamW(VAE_model.parameters(), lr=args.lr)
+    optimizer = torch.optim.AdamW(vae_model.parameters(), lr=args.lr)
 
     return optimizer
 
