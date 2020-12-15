@@ -41,9 +41,9 @@ class EncoderDecoderShareVAE(nn.Module):
             base_model_prefix = self.decoder.base_model_prefix
             tie_weights(self.encoder, self.decoder._modules[base_model_prefix], base_model_prefix)
 
-    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor,
-                beta: float, args: argparse.Namespace, return_predictions: bool = False,
-                return_exact_match_acc: bool = True):
+    def forward(self, input_ids, attention_mask,
+                beta, args, return_predictions,
+                return_exact_match_acc):
         """
         Implements the forward pass of the shared Encoder-Decoder VAE.
 

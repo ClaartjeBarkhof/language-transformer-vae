@@ -2,6 +2,7 @@ import argparse
 import utils
 import distutils
 
+
 def preprare_parser(jupyter=False, print_settings=True):
     parser = argparse.ArgumentParser()
 

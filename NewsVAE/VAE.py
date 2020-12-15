@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
-from transformers import RobertaTokenizer, RobertaModel, RobertaConfig, AutoModelForCausalLM, AutoModel  # type: ignore
-from utils_external import tie_weights  # type: ignore
+from transformers import RobertaTokenizer, RobertaModel, RobertaConfig, AutoModelForCausalLM, AutoModel
+from utils_external import tie_weights
 import torch
 import argparse
 from VAE_Decoder_Roberta import VAE_Decoder_RobertaForCausalLM, VAE_Decoder_RobertaPooler
@@ -43,6 +43,7 @@ class NewsVAE(torch.nn.Module):
 
     def forward(self, input_ids, attention_mask, beta,
                 return_predictions=False,
+                return_attention_probs=False,
                 return_exact_match_acc=True, objective='beta-vae'):
         """
         Perform a forward pass through the whole VAE with the sampling operation in between.
@@ -50,6 +51,8 @@ class NewsVAE(torch.nn.Module):
         Args:
             input_ids: Tensor [batch, seq_len]
                 The input sequence token ids
+            beta: float
+                What weight to give to the KL-term in the loss for beta-vae objective
             attention_mask: Tensor [batch, seq_len]
                 The input sequence mask, masking padded tokens with 0
             objective: str ["beta-vae" or "mmd-vae"]
@@ -68,18 +71,22 @@ class NewsVAE(torch.nn.Module):
         mu, logvar, latent_z, kl_loss, hinge_kl_loss, mmd_loss = self.encoder.encode(input_ids=input_ids,
                                                                                      attention_mask=attention_mask,
                                                                                      n_samples=1)
-        latent_to_decoder_output = self.latent_to_decoder(latent_z=latent_z)
+        latent_to_decoder_output = self.latent_to_decoder(latent_z)
 
         decoder_outs = self.decoder(latent_to_decoder_output=latent_to_decoder_output,
                                     input_ids=input_ids, attention_mask=attention_mask,
+                                    output_attentions=return_attention_probs,
                                     return_predictions=return_predictions,
                                     return_exact_match_acc=return_exact_match_acc)
 
         total_loss = None
+
         if objective == 'beta-vae':
             total_loss = decoder_outs["cross_entropy"] + (beta * hinge_kl_loss)
+
         elif objective == 'mmd-vae':
             total_loss = decoder_outs["cross_entropy"] + mmd_loss
+
         else:
             print("Not supported objective. Set valid option: beta-vae or mmd-vae.")
 
@@ -91,6 +98,9 @@ class NewsVAE(torch.nn.Module):
         if return_predictions:
             losses['logits'] = decoder_outs["logits"]
             losses["predictions"] = decoder_outs["predictions"]
+
+        if return_attention_probs:
+            losses['attention_probs'] = decoder_outs["decoder_outs"]
 
         if return_exact_match_acc:
             losses["exact_match_acc"] = decoder_outs["exact_match_acc"].item()
@@ -274,8 +284,10 @@ class EncoderNewsVAE(torch.nn.Module):
 
 
 class LatentToDecoderNewsVAE(nn.Module):
-    def __init__(self, add_latent_via_memory=True, add_latent_via_embeddings=True,
-                 latent_size=768, hidden_size=768, n_layers=12, initializer_range=0.02):
+    def __init__(self, add_latent_via_memory=True,
+                 add_latent_via_embeddings=True,
+                 latent_size=768, hidden_size=768, n_layers=12,
+                 initializer_range=0.02):
         super(LatentToDecoderNewsVAE, self).__init__()
 
         self.add_latent_via_memory = add_latent_via_memory
@@ -305,8 +317,8 @@ class LatentToDecoderNewsVAE(nn.Module):
                 it returns a dict containing the right information to be used by decoder.
         """
 
-        output = {"latent_to_memory": None,
-                  "latent_to_embeddings": None}
+        output = {"latent_to_memory":       None,
+                  "latent_to_embeddings":   None}
 
         if self.add_latent_via_memory:
             latent_to_memory = self.latent_to_memory_projection(latent_z)
