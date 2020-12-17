@@ -1,20 +1,21 @@
 import argparse
-import utils
 import distutils
-
+import utils_train
 
 def preprare_parser(jupyter=False, print_settings=True):
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--overwrite_args", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Overwrite arguments with the rules below (if from job, then is set to False).")
+    parser.add_argument("--run_name_prefix", default='', type=str,
+                        help="Prefix of the run name (to give it a marker or hparam settins) (default: '').")
 
     # TRAIN / VALIDATION
     parser.add_argument("--batch_size", default=3, type=int,
                         help="Batch size for data loading and training.")
-    parser.add_argument("--max_train_steps_epoch", default=5000, type=int,
+    parser.add_argument("--max_train_steps_epoch_per_rank", default=5000, type=int,
                         help="Maximum number of train steps (per epoch / phase) (for all set to -1).") # max 192246
-    parser.add_argument("--max_valid_steps_epoch", default=-1, type=int,
+    parser.add_argument("--max_valid_steps_epoch_per_rank", default=-1, type=int,
                         help="Maximum number of validation steps (per epoch / phase) (for all set to -1).") # max 1220
     parser.add_argument("--max_global_train_steps", default=50000, type=int,
                         help="Maximum number of train steps in total.")
@@ -42,7 +43,7 @@ def preprare_parser(jupyter=False, print_settings=True):
                         help="Whether or not to use automatic mixed precision (default: True).")
 
     # DISTRIBUTED TRAINING
-    n_gpus_default = 2 if utils.get_platform()[0] == 'lisa' else None
+    n_gpus_default = 2 if utils_train.get_platform()[0] == 'lisa' else None
     ddp_default = True if type(n_gpus_default) == int else False
     parser.add_argument("--n_gpus", default=n_gpus_default, type=int,
                         help="Number GPUs to use (default: None).")
@@ -59,16 +60,14 @@ def preprare_parser(jupyter=False, print_settings=True):
                         help="Every how many steps to log (default: 20).")
     parser.add_argument("--wandb_project", default='thesis', type=str,
                         help="The name of the W&B project to store runs to.")
-    parser.add_argument("--run_name_prefix", default='', type=str,
-                        help="Prefix of the run name (to give it a marker or hparam settins) (default: '').")
 
     # DATA & TOKENISATION
     parser.add_argument("--tokenizer_name", default='roberta', type=str,
                         help="The name of the tokenizer, 'roberta' by default.")
     parser.add_argument("--dataset_name", default='cnn_dailymail', type=str,
                         help="The name of the dataset, 'cnn_dailymail' by default.")
-    parser.add_argument("--num_workers", default=n_gpus_default*3, type=int,
-                        help="Num workers for data loading.")
+    parser.add_argument("--num_workers", default=n_gpus_default, type=int,
+                        help="Num workers for data loading.") # TODO: what is a good default?
     parser.add_argument("--debug_data", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to use debug data (default: False).")
     parser.add_argument("--debug_data_len", default=1000, type=int,
@@ -83,8 +82,8 @@ def preprare_parser(jupyter=False, print_settings=True):
                         help="Every how many steps to print.")
 
     # TIME STEPS
-    parser.add_argument("--time_batch", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
-                        help="Whether or not to log the process of the model (default: True).")
+    # parser.add_argument("--time_batch", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
+    #                     help="Whether or not to log the process of the model (default: True).")
 
     # CHECKPOINTING
     parser.add_argument("--checkpoint", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
@@ -95,10 +94,11 @@ def preprare_parser(jupyter=False, print_settings=True):
                         help="Load from checkpoint given by checkpoint_file (default: False).")
     parser.add_argument("--checkpoint_file", default="", type=str,
                         help="File name of a checkpoint to load in (default: '').")
-    parser.add_argument("--reset_decoder_after_checkpoint_loading", default=False,
-                        type=lambda x: bool(distutils.util.strtobool(x)),
-                        help="After loading the weights from the checkpoint, reset the decoder to roberta-base."
-                             "(default: False).")
+    # TODO: implement this
+    # parser.add_argument("--reset_decoder_after_checkpoint_loading", default=False,
+    #                     type=lambda x: bool(distutils.util.strtobool(x)),
+    #                     help="After loading the weights from the checkpoint, reset the decoder to roberta-base."
+    #                          "(default: False).")
     parser.add_argument("--continue_train_after_checkpoint_loading", default=True,
                         type=lambda x: bool(distutils.util.strtobool(x)),
                         help="If false, the epoch and best validation etc. are set to "
@@ -119,10 +119,12 @@ def preprare_parser(jupyter=False, print_settings=True):
     parser.add_argument("--KL_annealing", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to perform (cyclic) KL annealing from 0 to 1 in "
                              "KL_annealing_steps.")
+    # TODO: fix this to be grad steps from the beginning
     parser.add_argument("--KL_annealing_steps", default=1250, type=int,
                         help="How many steps a full KL-annealing cycle from 0->1 should take"
                              "Be careful it does not increase linearly. It increases linearly"
-                             "for half a cycle and then stays 1 for half a cycle.")
+                             "for half a cycle and then stays 1 for half a cycle. "
+                             "Careful these are normal steps and not grad steps, which it is calculated with")
     parser.add_argument("--objective", default='mmd-vae', type=str,
                         help="Which objective to use, options:"
                              "  - beta-vae"
@@ -130,32 +132,32 @@ def preprare_parser(jupyter=False, print_settings=True):
     parser.add_argument("--mmd_lambda", default=10000, type=float,
                         help="How much to weight the mmd loss.")
 
-    # EVALUATION
-    parser.add_argument("--evaluate_every_n_epochs", default=1, type=int,
-                        help="Every how many epochs to do an evaluation cycle "
-                             "with reconstructions and PPL etc... To track the process (default: 1)")
-    parser.add_argument("--n_batches_to_evaluate_on", default=24, type=int,
-                        help="How many batches to use for evaluation (default: 24)")
-    parser.add_argument("--iw_nsamples_evaluation", default=300, type=int,
-                        help="How many samples to use for the importance weighted NLL"
-                             "in the evaluation cycle.")
+    # EVALUATION TODO: add this
+    # parser.add_argument("--evaluate_every_n_epochs", default=1, type=int,
+    #                     help="Every how many epochs to do an evaluation cycle "
+    #                          "with reconstructions and PPL etc... To track the process (default: 1)")
+    # parser.add_argument("--n_batches_to_evaluate_on", default=24, type=int,
+    #                     help="How many batches to use for evaluation (default: 24)")
+    # parser.add_argument("--iw_nsamples_evaluation", default=300, type=int,
+    #                     help="How many samples to use for the importance weighted NLL"
+    #                          "in the evaluation cycle.")
 
     # MODEL
-    parser.add_argument("--base_checkpoint_name", default="roberta-base", type=str,
-                        help="The name of the checkpoint to use to initialise the EncoderDecoderVAE.")
+    # parser.add_argument("--base_checkpoint_name", default="roberta-base", type=str,
+    #                     help="The name of the checkpoint to use to initialise the EncoderDecoderVAE.")
     parser.add_argument("--latent_size", default=768, type=int,
                         help="The size of the latent space. The output from the "
                              "encoder is now 768 x 2 (first and last token). The last projection should be 2 x the "
                              "size of the latent space, because it contains mean and logvar with"
                              "both the dimensionality of the latent space.")
-    parser.add_argument("--hidden_size", default=768, type=int,
-                        help="The size of hidden representations (default: 768).")
-    parser.add_argument("--n_layers", default=12, type=int,
-                        help="The number of transformer layers in the encoder and decoder (default: 12).")
-    parser.add_argument("--deterministic_connect", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
-                        help="Whether or not to connect the encoder and decoder deterministically. "
-                             "If deterministically, the mean vector is taken to be the latent, otherwise"
-                             "the latent vector is sampled.")
+    # parser.add_argument("--hidden_size", default=768, type=int,
+    #                     help="The size of hidden representations (default: 768).")
+    # parser.add_argument("--n_layers", default=12, type=int,
+    #                     help="The number of transformer layers in the encoder and decoder (default: 12).")
+    # parser.add_argument("--deterministic_connect", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
+    #                     help="Whether or not to connect the encoder and decoder deterministically. "
+    #                          "If deterministically, the mean vector is taken to be the latent, otherwise"
+    #                          "the latent vector is sampled.")
     parser.add_argument("--add_latent_via_memory", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Add the latent to the decoding process by the memory mechanism"
                              "as descrbed in the Optimus paper (default: True)")
@@ -165,8 +167,8 @@ def preprare_parser(jupyter=False, print_settings=True):
     parser.add_argument("--do_tie_weights", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to tie the weights of the encoder and decoder"
                              "(default: True).")
-    prefix_NewsVAE_path = utils.get_code_dir()
-    parser.add_argument("--prefix_NewsVAE_path", default=prefix_NewsVAE_path, type=str,
+    code_dir_path = utils_train.get_code_dir()
+    parser.add_argument("--code_dir_path", default=code_dir_path, type=str,
                         help="Path to NewsVAE folder (default: depends on machine).")
 
     if jupyter:
@@ -195,11 +197,11 @@ def preprare_parser(jupyter=False, print_settings=True):
         args.checkpoint = False
         args.checkpoint_every_n_steps = 3
 
-        args.max_valid_steps_epoch = 5
-        args.max_train_steps_epoch = 10
+        args.max_valid_steps_epoch_per_rank = 5
+        args.max_train_steps_epoch_per_rank = 10
 
         args.KL_annealing = True
-        args.KL_annealing_steps = args.max_train_steps_epoch
+        args.KL_annealing_steps = args.max_train_steps_epoch_per_rank
 
     if args.objective == "mmd-vae":
         if print_settings: print("--> Note to self: Objective is mmd-vae, setting KL-annealing to False and Beta to 1.0.")
@@ -245,8 +247,8 @@ def preprare_parser(jupyter=False, print_settings=True):
         print("RUN PREFIX:", args.run_name_prefix)
         print('-' * 30)
         print("TRAIN (GLOBAL) STEPS:", args.max_global_train_steps)
-        print("TRAIN EPOCH LEN:", args.max_train_steps_epoch)
-        print("VALID EPOCH LEN:", args.max_valid_steps_epoch)
+        print("TRAIN EPOCH LEN:", args.max_train_steps_epoch_per_rank)
+        print("VALID EPOCH LEN:", args.max_valid_steps_epoch_per_rank)
 
         if args.debug_data:
             print('-' * 30)

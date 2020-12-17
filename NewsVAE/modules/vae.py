@@ -1,8 +1,9 @@
 import torch.nn as nn
 from utils_external import tie_weights
 import torch
-from decoder import DecoderNewsVAE
-from encoder import EncoderNewsVAE
+from modules.decoder import DecoderNewsVAE
+from modules.encoder import EncoderNewsVAE
+
 
 class NewsVAE(torch.nn.Module):
     def __init__(self, encoder, decoder,
@@ -65,6 +66,8 @@ class NewsVAE(torch.nn.Module):
         mu, logvar, latent_z, kl_loss, hinge_kl_loss, mmd_loss = self.encoder.encode(input_ids=input_ids,
                                                                                      attention_mask=attention_mask,
                                                                                      n_samples=1)
+        beta_hinge_kl = beta * hinge_kl_loss
+
         latent_to_decoder_output = self.latent_to_decoder(latent_z)
 
         decoder_outs = self.decoder(latent_to_decoder_output=latent_to_decoder_output,
@@ -76,7 +79,7 @@ class NewsVAE(torch.nn.Module):
         total_loss = None
 
         if objective == 'beta-vae':
-            total_loss = decoder_outs["cross_entropy"] + (beta * hinge_kl_loss)
+            total_loss = decoder_outs["cross_entropy"] + beta_hinge_kl
 
         elif objective == 'mmd-vae':
             total_loss = decoder_outs["cross_entropy"] + mmd_loss
@@ -86,6 +89,7 @@ class NewsVAE(torch.nn.Module):
 
         # Detach all except the total loss on which we need to base our backward pass
         losses = {'kl_loss': kl_loss.item(), 'hinge_kl_loss': hinge_kl_loss.item(),
+                  'beta_hinge_kl_loss': beta_hinge_kl.item(),
                   'recon_loss': decoder_outs["cross_entropy"].item(), 'total_loss': total_loss,
                   'mmd_loss': mmd_loss.item()}
 
@@ -155,9 +159,10 @@ class LatentToDecoderNewsVAE(nn.Module):
             latent_to_embeddings = self.latent_to_embedding_projection(latent_z)
             output["latent_to_embeddings"] = latent_to_embeddings
 
+        return output
 
 
-if __name__=="__main__":
+if __name__ == "__main__":
     latent_size = 768
     embedding_mechanism = True
     memory_mechanism = True

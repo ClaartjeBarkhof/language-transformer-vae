@@ -1,7 +1,8 @@
 import torch
-from decoder_roberta import VAE_Decoder_RobertaForCausalLM
+from modules.decoder_roberta import VAE_Decoder_RobertaForCausalLM
 import copy
-
+from transformers import top_k_top_p_filtering
+import torch.functional as F
 
 class DecoderNewsVAE(torch.nn.Module):
     def __init__(self, gradient_checkpointing=False):
@@ -62,7 +63,7 @@ class DecoderNewsVAE(torch.nn.Module):
         """
 
         print("Checking if shared_weights == False, yields {}".format(do_tie_weights == False))
-        assert do_tie_weights == False, "Not resetting the decoder if the weights are shared. Aborting!"
+        assert do_tie_weights is False, "Not resetting the decoder if the weights are shared. Aborting!"
 
         print(f"Resetting the decoder to roberta-base checkpoint.")
         self.model = VAE_Decoder_RobertaForCausalLM.from_pretrained("roberta-base",
@@ -107,3 +108,91 @@ class DecoderNewsVAE(torch.nn.Module):
         # Reconstruction loss = cross entropy = negative log likelihood
         # so likelihood is the negative of that
         return - losses
+
+
+    @staticmethod
+    def sample_from_prior(latent_size=768, n_samples=8, device_name="cuda:0"):
+        """
+        Sampels from prior distribution (factorised standard normal).
+
+        Args:
+            latent_size: int
+            n_samples: int
+            device_name: str
+
+        Returns:
+            samples: Tensor [batch, latent_size]
+        """
+        loc = torch.zeros(latent_size, device=device_name)
+        scale = torch.ones(latent_size, device=device_name)
+        prior_dist = torch.distributions.normal.Normal(loc, scale)
+        samples = prior_dist.sample((n_samples,))
+
+        return samples
+
+    def autoregressive_decode(self, latent_z, tokenizer, add_latent_via_embeddings=True,
+                              add_latent_via_memory=True, max_seq_len=32, nucleus_sampling=False,
+                              temperature=1.0, top_k=0, top_p=0.0, device_name="cuda:0"):
+        """
+        This function performs auto-regressive decoding (no grads), given samples from the latent space.
+
+        Args:
+            latent_z: Tensor [batch, latent_size]
+                Samples from the latent space.
+            tokenizer:
+            add_latent_via_memory: bool
+            add_latent_via_embeddings: bool
+            max_seq_len: int:
+                How many sequential forward passes to perform:
+                maximum sequence length for the whole batch.
+            nucleus_sampling: bool
+                Whether or not to perform top_k_top_p_filtering (nucleus sampling)
+                top_k_top_p_filtering: Filter a distribution of logits using top-k and/or nucleus (top-p) filtering
+            temperature: float
+            top_k: int
+            top_p: float
+            device_name: str:
+                Which device to use for decoding (default: 'cuda:0')
+
+        Returns:
+            generated_so_far: Tensor [batch, max_seq_len]
+                Batch of decoded / generated token ids
+        """
+
+        batch_size = latent_z.shape[0]
+
+        # Add <s> and </s>
+        generated_so_far = torch.tensor(
+            [[tokenizer.bos_token_id, tokenizer.eos_token_id] for _ in range(batch_size)])
+        generated_so_far = generated_so_far.to(device_name)
+
+        for i in range(max_seq_len):
+            # Forward the decoder
+            decoder_outs = self.model(input_ids=generated_so_far, attention_mask=None,
+                                      latent_z=latent_z, labels=None,
+                                      add_latent_via_embeddings=add_latent_via_embeddings,
+                                      add_latent_via_memory=add_latent_via_memory,
+                                      return_cross_entropy=False, return_predictions=False,
+                                      return_exact_match_acc=False)
+
+            if nucleus_sampling:
+                # The forward of the decoder already cuts of the prediction for the last token
+                logits = decoder_outs["logits"][:, -1, :]
+
+                # Temperature (higher temperature => more likely to sample low probability tokens)
+                if temperature != 1.0:
+                    scores = scores / temperature
+
+                # Top-p/top-k filtering
+                next_token_logscores = top_k_top_p_filtering(logits, top_k=top_k, top_p=top_p)
+
+                # Sample
+                probs = F.softmax(next_token_logscores, dim=-1)
+                new_preds = torch.multinomial(probs, num_samples=1).squeeze(1)
+            else:
+                new_preds = decoder_outs['predictions'][:, -1]  # argmax predictions
+
+            generated_so_far = torch.cat(
+                (generated_so_far[:, :-1], new_preds.unsqueeze(1), generated_so_far[:, -1].unsqueeze(1)), dim=1)
+
+        return generated_so_far
