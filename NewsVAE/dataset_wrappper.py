@@ -27,6 +27,8 @@ class NewsData:
         # DATA DIRECTORY
         os.makedirs('NewsData', exist_ok=True)
 
+        print("test")
+
         self.device = device
 
         # FOR GPU USE
@@ -50,22 +52,27 @@ class NewsData:
         # assert self.dataset_name in list_datasets(), "Currently only supporting datasets from Huggingface"
 
         path_to_file = pathlib.Path(__file__).parent.absolute()
-        debug_ext = "[:{}]".format(debug_data_len) if debug else ""
-        data_path = "{}/NewsData/{}-{}-datalen{}-seqlen{}".format(path_to_file, self.dataset_name,
-                                                                  self.tokenizer_name, debug_ext, max_seq_len)
+        # debug_ext = "[:{}]".format(debug_data_len) if debug else ""
+        data_path = "{}/NewsData/22DEC-{}-{}-seqlen{}".format(path_to_file, self.dataset_name, self.tokenizer_name, max_seq_len)
+        print(data_path)
 
         if os.path.isdir(data_path):
+            print("Is file!")
             for split in ['train', 'validation', 'test']:
                 self.datasets[split] = load_from_disk(data_path+"/"+split)
+                print(split, len(self.datasets[split]))
         else:
+            print("New pre-processing")
             for split in ['train', 'validation', 'test']:
                 self.datasets[split] = load_dataset(self.dataset_name, name=name, ignore_verifications=True,
-                                                    split=split+debug_ext)
+                                                    split=split)
                 self.datasets[split] = self.datasets[split].map(self.convert_to_features, batched=True)
                 columns = ['attention_mask', 'input_ids']
 
                 self.datasets[split].set_format(type='torch', columns=columns)
                 self.datasets[split].save_to_disk(data_path+"/"+split)
+
+                print(f"Saved split {split} in {data_path+'/'+split}")
 
     def train_dataloader(self):
         train_loader = DataLoader(self.datasets['train'], collate_fn=self.collate_fn,
@@ -120,8 +127,9 @@ class NewsData:
 
 
 if __name__ == "__main__":
-    data = NewsData('cnn_dailymail', 'roberta', debug=True,
-                    debug_data_len=1000, max_seq_len=128)
+    print("-> Begin!")
+    data = NewsData('cnn_dailymail', 'roberta', max_seq_len=64)
+    print("-> End!")
 
     for batch in data.train_dataloader():
         for k, v in batch.items():

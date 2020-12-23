@@ -9,6 +9,7 @@ from modules.vae import NewsVAE
 from dataset_wrappper import NewsData
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
+import multiprocessing
 
 import numpy as np
 from torch.optim.lr_scheduler import LambdaLR
@@ -34,7 +35,7 @@ def get_optimizer(vae_model, learning_rate=2e-5):
     return optimizer
 
 
-def get_scheduler(optimizer, warmup_updates=1000, lr_scheduler=True):
+def get_scheduler(optimizer, warmup_updates=4000, lr_scheduler=True, lr=2e-5):
     """
     Returns a learning rate scheduler with linear warm-up (if lr_scheduler).
     Otherwise it returns the unscaled learning rate.
@@ -51,22 +52,22 @@ def get_scheduler(optimizer, warmup_updates=1000, lr_scheduler=True):
     """
 
     def get_lr_scale(step):
-        step += 1
+        step += 1  # to avoid zero division
 
         # If using a scheduler, calculate the scaling coefficient
         if lr_scheduler:
-            # First linear warm-up
-            if step <= warmup_updates:
-                lr_scale = step / warmup_updates
-            # Then square root decay
-            else:
-                lr_scale = 1 / np.sqrt(step - warmup_updates)
+            # Square root decay as described in Vaswani et al. (2017), section 5.3
+            # performs linear warm-up
+            arg1 = 1 / np.sqrt(step)
+            arg2 = step * (warmup_updates ** (-1.5))
+            d_model = 768
+            lr_scale = (1 / np.sqrt(d_model)) * np.min([arg1, arg2])
 
-            return lr_scale
-
-        # No scaling if no scheduler
+        # Scale to the set learning rate (fixed)
         else:
-            return 1.0
+            lr_scale = lr
+
+        return lr_scale
 
     scheduler = LambdaLR(
         optimizer,
@@ -138,9 +139,9 @@ def get_dataloader(phases, ddp=False, batch_size=12, num_workers=8, debug_data=F
                                          shuffle=True, rank=gpu_rank)
             samplers[phase] = sampler
 
-            # With distributed sampling, shuffle must be false
+            # With distributed sampling, shuffle must be false, the sampler takes care of that
             loaders[phase] = DataLoader(data.datasets[phase], batch_size=batch_size,
-                                        sampler=sampler, pin_memory=True,
+                                        sampler=sampler, pin_memory=True, shuffle=False,
                                         num_workers=num_workers, collate_fn=data.collate_fn)
         # Single GPU and CPU
         else:
@@ -189,7 +190,8 @@ def get_model_on_device(device_name="cuda:0", latent_size=768, gradient_checkpoi
     return vae_model
 
 
-def determine_annealed_beta(global_grad_step, KL_annealing_steps=1000):
+def determine_beta(global_grad_step, config_beta=0.5, KL_cyclical_annealing=False, KL_linear_annealing=True,
+                   KL_annealing_grad_steps_linear=1000, KL_annealing_grad_steps_per_cycle=9000):
     """
     Determine beta given the current global gradient step. Cycles consists
     for one half of annealing from 0 to 1 and the other half of keeping beta
@@ -198,33 +200,49 @@ def determine_annealed_beta(global_grad_step, KL_annealing_steps=1000):
     Args:
         global_grad_step: int
             How many gradient steps are performed so far.
-        KL_annealing: bool:
-            Whether or not to anneal the KL divergence in the loss
-        KL_annealing_steps: int:
-            How many steps a KL annealing cycle should consist of.
-
+        KL_cyclical_annealing: bool:
+            Whether or not to anneal the KL divergence cyclically
+        KL_annealing_grad_steps_per_cycle: int
+            How many gradient steps to perform a full cycle.
+        KL_linear_annealing: bool:
+            Whether or not to anneal the KL divergence linearly (warm-up annealing)
+        KL_annealing_grad_steps_linear: int
+            How many gradient steps to use to anneal from 0 to 1 linearly
     Returns:
         beta: float
             Current beta weight to use.
     """
 
-    cycle_step = global_grad_step % KL_annealing_steps
+    # CYCLICAL ANNEALING
+    if KL_cyclical_annealing:
+        cycle_step = global_grad_step % KL_annealing_grad_steps_per_cycle
 
-    # First half of cycle grow linearly from 0 -> 1
-    if cycle_step < (KL_annealing_steps / 2):
-        if global_grad_step > 0:
-            beta = cycle_step / (global_grad_step / 2)
+        # First half of cycle grow linearly from 0 -> 1
+        if cycle_step < (KL_annealing_grad_steps_per_cycle / 2):
+            if global_grad_step > 0:
+                beta = cycle_step / (KL_annealing_grad_steps_per_cycle / 2)
+            else:
+                beta = 0.0
+
+        # Second half of the cycle, beta = 1.0
         else:
-            beta = 0.0
+            beta = 1.0
 
-    # Second half of the cycle, beta = 1.0
+    # LINEAR / WARMUP ANNEALING
+    elif KL_linear_annealing:
+        if global_grad_step < KL_annealing_grad_steps_linear:
+            beta = (global_grad_step + 1) / KL_annealing_grad_steps_linear
+        else:
+            beta = 1.0
+
+    # NO ANNEALING
     else:
-        beta = 1.0
+        beta = config_beta
 
     return float(beta)
 
 
-def do_valid_step(vae_model, batch, beta):
+def do_valid_step(vae_model, batch, beta, hinge_kl_loss_lambda):
     """
     Perform a validation step (no grads, eval mode, no autocast?)
 
@@ -233,6 +251,8 @@ def do_valid_step(vae_model, batch, beta):
         batch: Dict[str, Tensor]
         beta: float
             The current beta to balance the KL divergence in the loss.
+        hinge_kl_loss_lambda: float
+            What the minimal value of KL should be capped at per dimension
     Returns:
         losses: Dict[str, Union[float, Tensor]]
             statistics accumulated in a dict
@@ -246,13 +266,14 @@ def do_valid_step(vae_model, batch, beta):
                            beta=beta,
                            return_predictions=False,
                            return_exact_match_acc=True,
-                           return_attention_probs=False)
+                           return_attention_probs=False,
+                           hinge_kl_loss_lambda=hinge_kl_loss_lambda)
         losses['total_loss'] = losses['total_loss'].item()
 
     return losses
 
 
-def do_train_step(vae_model, batch, optimizer, scheduler, scaler, global_step, beta,
+def do_train_step(vae_model, batch, optimizer, scheduler, scaler, global_step, beta, hinge_kl_loss_lambda,
                   use_amp=False, accumulate_n_batches_grad=1):
     """
     Perform a train step with autocast, gradients enabled and gradient accumulated backward.
@@ -284,7 +305,9 @@ def do_train_step(vae_model, batch, optimizer, scheduler, scaler, global_step, b
                                beta=beta,
                                return_predictions=False,
                                return_exact_match_acc=True,
-                               return_attention_probs=False)
+                               return_attention_probs=False,
+                               hinge_kl_loss_lambda=hinge_kl_loss_lambda)
+
             loss = losses['total_loss'] / accumulate_n_batches_grad
 
     # Gradient accumulate in here
@@ -324,6 +347,7 @@ def train(device_rank, config, run_name):
     # Initiate process group and specify backend configurations
     if config.ddp:
         if world_master: print("Init process group...")
+        if world_master: print(f"--> CPU count {multiprocessing.cpu_count()}")
         dist.init_process_group(backend='nccl', init_method='env://',
                                 world_size=int(config.n_gpus * config.n_nodes), rank=device_rank)
 
@@ -345,21 +369,21 @@ def train(device_rank, config, run_name):
     data_loaders, data, samplers = get_dataloader(["train", "validation"], ddp=config.ddp, batch_size=config.batch_size,
                                                   num_workers=config.num_workers, debug_data=config.debug_data,
                                                   debug_data_len=config.debug_data_len, max_seq_len=config.max_seq_len,
-                                                  world_size=int(config.n_nodes * config.n_gpus),
-                                                  dataset_name=config.dataset_name,
+                                                  world_size=world_size, dataset_name=config.dataset_name,
                                                   tokenizer_name=config.tokenizer_name,
                                                   device_name=device_name, world_master=world_master,
                                                   gpu_rank=device_rank)
 
     # Optimizer, learning rate scheduler and amp scaler
-    optimizer = get_optimizer(vae_model, config.lr)
-    scheduler = get_scheduler(optimizer, config.warmup_updates, config.lr_scheduler)
+    optimizer = get_optimizer(vae_model, 1.0)  # lr is set to 1.0 because the scheduler takes care of the actual learning rate
+    scheduler = get_scheduler(optimizer, config.lr_warmup_updates, config.lr_scheduler, config.lr)
     scaler = GradScaler(enabled=config.use_amp)
 
     # Set-up DDP
     if config.ddp:
         vae_model = torch.nn.parallel.DistributedDataParallel(vae_model, device_ids=[device_rank],
                                                               find_unused_parameters=True)
+        print(f"-> Turned on DDP for device rank {device_rank}")
 
     # Zero grads
     vae_model.zero_grad()
@@ -382,7 +406,7 @@ def train(device_rank, config, run_name):
             epoch, best_valid_loss = utils_train.load_from_checkpoint(vae_model, config.checkpoint_file,
                                                                       optimizer=optimizer, scheduler=scheduler,
                                                                       scaler=scaler, world_master=world_master,
-                                                                      ddp=config.ddp)
+                                                                      ddp=config.ddp, use_amp=config.use_amp)
         # Only load the model
         else:
             _, _, VAE_model, _, _, _, _ = utils_train.load_from_checkpoint(vae_model, config.checkpoint_file,
@@ -393,7 +417,6 @@ def train(device_rank, config, run_name):
     # ----------------------------------------------------------------------------------------------------
     # TRAINING!
     # ----------------------------------------------------------------------------------------------------
-
     while not finished_training:
         # TRAIN, VALID
         for phase in data_loaders.keys():
@@ -401,12 +424,16 @@ def train(device_rank, config, run_name):
             if finished_training: break
 
             if config.ddp:
+                print(f"-> Setting epoch explicitly to {epoch} on device {device_name}")
                 samplers[phase].set_epoch(epoch)  # needed to explicitly shuffle
 
             max_steps = max_train_steps_epoch_per_rank if phase == 'train' else max_valid_steps_epoch_per_rank
 
             # TODO: add profiler to keep track of timing
             for batch_i, batch in enumerate(data_loaders[phase]):
+
+                print(
+                    f"{device_name} | batch_i {batch_i} | global_step {global_step} | global_grad_step {global_grad_step}")
 
                 # ----------------------------------------------------------------------------------------------------
                 # TRAIN / VALIDATION STEPS
@@ -416,14 +443,19 @@ def train(device_rank, config, run_name):
                 batch = utils_train.transfer_batch_to_device(batch, device_name)
 
                 # Determine beta (annealed or fixed)
-                beta = config.beta if not config.KL_annealing else determine_annealed_beta(global_grad_step,
-                                                                                           config.KL_annealing_steps)
+                beta = determine_beta(global_grad_step, config_beta=config.beta,
+                                      KL_cyclical_annealing=config.KL_cyclical_annealing,
+                                      KL_annealing_grad_steps_per_cycle=config.KL_annealing_grad_steps_per_cycle,
+                                      KL_linear_annealing=config.KL_linear_annealing,
+                                      KL_annealing_grad_steps_linear=config.KL_annealing_grad_steps_linear)
+
                 # PERFORM TRAIN / VALIDATION
                 if phase == 'train':
                     vae_model, optimizer, scheduler, losses = do_train_step(vae_model, batch, optimizer,
-                                                                            scheduler, scaler, global_step, beta)
+                                                                            scheduler, scaler, global_step, beta,
+                                                                            config.hinge_loss_lambda)
                 else:
-                    losses = do_valid_step(vae_model, batch, beta)
+                    losses = do_valid_step(vae_model, batch, beta, config.hinge_loss_lambda)
 
                 # ----------------------------------------------------------------------------------------------------
                 # INSERT STATISTICS, PRINT, LOG, CHECKPOINT
@@ -447,7 +479,7 @@ def train(device_rank, config, run_name):
                 if (global_step % config.checkpoint_every_n_steps == 0) and phase == 'train' \
                         and config.checkpoint and device_rank == 0:
                     utils_train.save_checkpoint_model(vae_model, optimizer, scheduler, scaler, run_name,
-                                                      config.cod, global_step, best_valid_loss, epoch)
+                                                      config.code_dir_path, global_step, best_valid_loss, epoch)
 
                 # ----------------------------------------------------------------------------------------------------
                 # KEEP TRACK OF STEPS (IN PHASE AND GLOBALLY)
@@ -470,10 +502,9 @@ def train(device_rank, config, run_name):
             # BEST MODEL CHECKPOINT
             if phase == 'validation' and world_master:
                 mean_valid_loss = np.mean(stats[epoch]['validation']['total_loss'])
-                if config.checkpoint and np.mean(stats[epoch]['validation']['total_loss']) < best_valid_loss:
+                if config.checkpoint and mean_valid_loss < best_valid_loss:
                     print(f"Found better (mean) validation loss (at this device): "
                           f"{mean_valid_loss:.4f}. Saving checkpoint!")
-
                     utils_train.save_checkpoint_model(vae_model, optimizer, scheduler, scaler, run_name,
                                                       config.code_dir_path, global_step,
                                                       best_valid_loss, epoch, best=True)
@@ -486,7 +517,7 @@ def train(device_rank, config, run_name):
 
         # LOG EPOCH STATS (if world master)
         if config.logging and world_master:
-            utils_train.log_stats_epoch(stats, epoch)
+            utils_train.log_stats_epoch(stats, epoch, global_step, global_grad_step)
 
         epoch += 1
 
@@ -496,9 +527,13 @@ def main(config):
     run_name = utils_train.get_run_name(config.run_name_prefix)
     utils_train.prepare_folders(run_name, config.code_dir_path)
 
+    print("-" * 71)
+    print("-" * 30, "IN MAIN", "-" * 30)
+    print("-" * 71)
+
     # DDP
     if config.ddp:
-        print("*** Using DDP")
+        print(f"*** Using DDP, spawing {config.n_gpus * config.n_nodes} processes")
         utils_train.set_ddp_environment_vars()
         mp.spawn(train, nprocs=int(config.n_gpus * config.n_nodes), args=(config, run_name))
 
@@ -511,6 +546,9 @@ def main(config):
     else:
         print("*** Using CPU, you're warned!")
         train("cpu", config, run_name)
+
+    print("-" * 71)
+    print("-" * 71)
 
 
 if __name__ == "__main__":

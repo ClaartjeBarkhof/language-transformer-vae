@@ -188,11 +188,14 @@ class EncoderNewsVAE(torch.nn.Module):
         kl_loss = 0.5 * (mu.pow(2) + logvar.exp() - logvar - 1)
 
         # Ignore the dimensions of which the KL-div is already under the
-        # threshold, avoiding driving it down even further.
-        hinge_kl_loss = torch.clamp(kl_loss, min=hinge_kl_loss_lambda)
+        # threshold, avoiding driving it down even further. Those values do
+        # not have to be replaced by the threshold because that would not mean
+        # anything to the gradient. That's why they are simply removed. This
+        # confused me at first.
+        kl_mask = (kl_loss > hinge_kl_loss_lambda).float()
 
-        # Sum over the latent dimensions (and average over the batch dimension
-        hinge_kl_loss = hinge_kl_loss.sum(dim=1).mean(dim=0)
+        # Sum over the latent dimensions and average over the batch dimension
+        hinge_kl_loss = (kl_mask * kl_loss).sum(dim=1).mean(dim=0)
         kl_loss = kl_loss.sum(dim=1).mean(dim=0)
 
         return kl_loss, hinge_kl_loss

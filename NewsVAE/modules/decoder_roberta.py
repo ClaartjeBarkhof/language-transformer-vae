@@ -741,7 +741,8 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
             return_exact_match_acc=False,
             return_predictions=False,
             return_cross_entropy=True,
-            reduce_loss=True
+            reduce_seq_dim="sum"
+            # reduce_loss=False
     ):
         r"""
         encoder_hidden_states  (:obj:`torch.FloatTensor` of shape :obj:`(batch_size, sequence_length, hidden_size)`, `optional`):
@@ -836,16 +837,31 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
             log_probs = torch.log(probs)
 
             if labels is not None:
-                reduction = 'mean' if reduce_loss else 'none'
-                cross_entropy = torch.nn.functional.nll_loss(log_probs, labels, reduction=reduction)
 
-                # still reduce along sequence dimension
-                if reduction == 'none':
+                # reduction = 'mean' if reduce_loss else 'none'
+
+                cross_entropy = torch.nn.functional.nll_loss(log_probs, labels, reduction='none')
+
+                # Either reduce the sequence dimension with mean or sum
+                # TODO: add this to arguments and pass all the way from train.
+                if reduce_seq_dim == "mean":
                     cross_entropy = cross_entropy.reshape(batch_size, seq_len).mean(dim=1)
+                # Sum
+                else:
+                    cross_entropy = cross_entropy.reshape(batch_size, seq_len).sum(dim=1)
+
+                # Mean over the batch dimension always
+                cross_entropy = cross_entropy.mean(dim=0)
+
+                # still reduce (sum) along sequence dimension
+                # if reduction == 'none':
+                #     # cross_entropy = cross_entropy.reshape(batch_size, seq_len).mean(dim=1)
+                #     print("cross_entropy.shape", cross_entropy.shape)
+                #     cross_entropy = cross_entropy.reshape(batch_size, seq_len).sum(dim=1).mean(dim=0)
+                #     print(cross_entropy.shape)
 
             if return_predictions or return_exact_match_acc:
                 predictions = probs.argmax(-1)
-
 
                 if return_exact_match_acc and labels is not None:
 

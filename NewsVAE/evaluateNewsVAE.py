@@ -65,6 +65,7 @@ def calc_au(model, test_data_batch, delta=0.01):
     return (au_var >= delta).sum().item(), au_var
 
 
+#
 def calc_mi(model, test_data_batch, device="cuda:0"):
     # Taken from: https://github.com/bohanli/vae-pretraining-encoder/blob/master/utils.py
     num_examples = 0
@@ -300,7 +301,8 @@ if __name__ == "__main__":
     data = NewsData(args.dataset_name, args.tokenizer_name,
                     batch_size=args.batch_size, num_workers=4,
                     pin_memory=(device == "cuda"), debug=False,
-                    debug_data_len=args.debug_data_len, max_seq_len=args.max_seq_len, device=device)
+                    debug_data_len=args.debug_data_len,
+                    max_seq_len=args.max_seq_len, device=device)
 
     # Get model architecture
     VAE_model = EncoderDecoderShareVAE(args, args.base_checkpoint_name, do_tie_weights=args.do_tie_weights).to(device)

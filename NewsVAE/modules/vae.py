@@ -39,7 +39,10 @@ class NewsVAE(torch.nn.Module):
                 return_predictions=False,
                 return_attention_probs=False,
                 return_exact_match_acc=True,
-                objective='beta-vae'):
+                return_latents=False,
+                return_mu_logvar=False,
+                objective='beta-vae',
+                hinge_kl_loss_lambda=0.5):
         """
         Perform a forward pass through the whole VAE with the sampling operation in between.
 
@@ -65,7 +68,8 @@ class NewsVAE(torch.nn.Module):
         # Forward through encoder and sample
         mu, logvar, latent_z, kl_loss, hinge_kl_loss, mmd_loss = self.encoder.encode(input_ids=input_ids,
                                                                                      attention_mask=attention_mask,
-                                                                                     n_samples=1)
+                                                                                     n_samples=1,
+                                                                                     hinge_kl_loss_lambda=hinge_kl_loss_lambda)
         beta_hinge_kl = beta * hinge_kl_loss
 
         latent_to_decoder_output = self.latent_to_decoder(latent_z)
@@ -94,14 +98,20 @@ class NewsVAE(torch.nn.Module):
                   'mmd_loss': mmd_loss.item()}
 
         if return_predictions:
-            losses['logits'] = decoder_outs["logits"]
-            losses["predictions"] = decoder_outs["predictions"]
+            losses['logits'] = decoder_outs["logits"].detach()
+            losses["predictions"] = decoder_outs["predictions"].detach()
 
         if return_attention_probs:
-            losses['attention_probs'] = decoder_outs["attention_probs"]
+            losses['attention_probs'] = decoder_outs["attention_probs"] #.detach()
 
         if return_exact_match_acc:
             losses["exact_match_acc"] = decoder_outs["exact_match_acc"].item()
+
+        if return_latents:
+            losses["latents"] = latent_z.detach()
+
+        if return_mu_logvar:
+            losses["mu_logvar"] = torch.cat([mu, logvar], dim=1).detach()
 
         return losses
 

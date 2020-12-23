@@ -1,6 +1,6 @@
 #!/bin/bash
-#SBATCH -p gpu_short
-#SBATCH -t 00:50:00
+#SBATCH -p gpu
+#SBATCH -t 12:00:00
 #SBATCH -c 12
 #SBATCH --output /home/cbarkhof/slurm-logs/%j-slurm-log.out
 
@@ -20,51 +20,51 @@ conda activate thesisenv # activate environment
 python /home/cbarkhof/code-thesis/NewsVAE/train.py \
           --overwrite_args=False \
           \
-          --run_name_prefix="TEST-REFACTOR-17DEC" \
+          --run_name_prefix="17DEC-exp2-linear-beta-vae" \
           \
-          --batch_size=3 \
-          --max_train_steps_epoch_per_rank=50 \
-          --max_valid_steps_epoch_per_rank=30 \
-          --max_global_train_steps=150 \
+          --batch_size=32 \
+          --max_train_steps_epoch_per_rank=5000 \
+          --max_valid_steps_epoch_per_rank=1000 \
+          --max_global_train_steps=1000000 \
           --accumulate_n_batches_grad=2 \
           \
-          --lr=0.0001 \
+          --lr=2e-5 \
           --lr_scheduler=False \
           --warmup_updates=0 \
           \
           --gradient_checkpointing=False \
-          --use_amp=False \
-          --n_gpus=2 \
+          --use_amp=True \
+          --n_gpus=4 \
           --n_nodes=1 \
           --ddp=True \
           \
           --logging=True \
-          --log_every_n_steps=5 \
+          --log_every_n_steps=10 \
           --wandb_project="thesis" \
           \
           --tokenizer_name="roberta" \
           --dataset_name="cnn_dailymail" \
-          --num_workers=4 \
+          --num_workers=10 \
           --debug_data=False \
           --debug_data_len=10 \
           --max_seq_len=64 \
           \
           --print_stats=True \
-          --print_every_n_steps=1 \
+          --print_every_n_steps=100 \
           \
-          --checkpoint=False \
+          --checkpoint=True \
           --checkpoint_every_n_steps=1000 \
           --load_from_checkpoint=False \
-          --checkpoint_file="path/to/file.pth" \
+          --checkpoint_file="/home/cbarkhof/code-thesis/NewsVAE/Runs/TEST-REFACTOR-17DEC-run-2020-12-17-15:03:00/checkpoint-140.pth" \
           --continue_train_after_checkpoint_loading=False \
           \
           --seed=0 \
           --deterministic=True \
           \
-          --hinge_loss_lambda=1 \
-          --beta=0.5 \
-          --KL_annealing=False \
-          --KL_annealing_steps=1000 \
+          --hinge_loss_lambda=0.0 \
+          --beta=0.0 \
+          --KL_annealing=True \
+          --KL_annealing_steps=32000 \
           --objective="beta-vae" \
           --mmd_lambda=1000 \
           \

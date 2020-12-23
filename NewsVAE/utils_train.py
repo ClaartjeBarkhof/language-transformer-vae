@@ -25,6 +25,7 @@ def set_device(device_rank):
     """
     # GPU
     if type(device_rank) == int:
+        print(f"-> Setting device {device_rank}")
         torch.cuda.set_device(device_rank)
         cudnn.benchmark = True  # optimise backend algo
         device_name = f"cuda:{device_rank}"
@@ -170,7 +171,8 @@ def determine_max_epoch_steps_per_rank(max_train_steps_epoch_per_rank, max_valid
 # CHECKPOINTING
 # ----------------------------------------------------------------------------------------------------
 
-def load_from_checkpoint(vae_model, path, optimizer=None, scheduler=None, scaler=None, world_master=True, ddp=False):
+def load_from_checkpoint(vae_model, path, optimizer=None, scheduler=None, scaler=None,
+                         world_master=True, ddp=False, use_amp=True):
     # DETERMINE / CHECK PATH
     assert os.path.isfile(path), f"-> checkpoint file path ({path}) must exist for it to be loaded!"
 
@@ -187,26 +189,39 @@ def load_from_checkpoint(vae_model, path, optimizer=None, scheduler=None, scaler
     if scheduler is not None:
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
 
+    parameter_state_dict = checkpoint["VAE_model_state_dict"]
+
     # MODEL
     if "module." in list(checkpoint["VAE_model_state_dict"].keys())[0] and not ddp:
         print("Removing module string from state dict from checkpoint")
-        state_dict_without_module_string = add_remove_module_from_state_dict(checkpoint["VAE_model_state_dict"],
-                                                                             remove=True)
+        parameter_state_dict = add_remove_module_from_state_dict(parameter_state_dict, remove=True)
 
-        vae_model.load_state_dict(state_dict_without_module_string)
     elif "module." not in list(checkpoint["VAE_model_state_dict"].keys())[0] and ddp:
         print("Adding module string to state dict from checkpoint")
-        state_dict_with_module_string = add_remove_module_from_state_dict(checkpoint["VAE_model_state_dict"],
-                                                                          remove=False)
-        vae_model.load_state_dict(state_dict_with_module_string)
-    else:
-        vae_model.load_state_dict(checkpoint["VAE_model_state_dict"])
+        parameter_state_dict = add_remove_module_from_state_dict(remove=False)
 
-    # SCALER
-    # TODO: load scaler or amp?
-    # see: https://gist.github.com/giacaglia/aa74fc895fb62f8338ad752cbb36737b#file-checkpoint_apex-py
-    if scaler is not None:
-        scaler.load_state_dict(checkpoint["scaler_state_dict"])
+    # Adapt if checkpoint i from before refactor
+    from_before_refactor = False
+    for k in parameter_state_dict.keys():
+        if "encoder.encoder" in k:
+            from_before_refactor = True
+            break
+
+    if from_before_refactor:
+        print("Changing checkpoint to match after refactor.")
+        parameter_state_dict = change_checkpoint_to_after_refactor(parameter_state_dict)
+
+    # in place procedure
+    vae_model.load_state_dict(parameter_state_dict)
+
+    # AMP SCALER
+    # only load if using amp and a scaler is provided (when continue training from some point on).
+    if scaler is not None and use_amp:
+        if len(checkpoint["scaler_state_dict"]) == 0:
+            print("--> Warning! You are trying to load weights into a scaler that comes from a "
+                  "run with AMP disabled. Not loading any weights.")
+        else:
+            scaler.load_state_dict(checkpoint["scaler_state_dict"])
 
     # GLOBAL STEP, EPOCH, BEST VALIDATION LOSS
     global_step = checkpoint["global_step"]
@@ -219,6 +234,23 @@ def load_from_checkpoint(vae_model, path, optimizer=None, scheduler=None, scaler
 
     return optimizer, scheduler, vae_model, scaler, global_step, epoch, best_valid_loss
 
+def change_checkpoint_to_after_refactor(state_dict):
+    """
+    Before the refactor, the model looked slightly different. If you're trying
+    to load a checkpoint from before the refactor it needs to be adjusted a bit.
+    """
+
+    from collections import OrderedDict
+    new_state_dict = OrderedDict()
+    for k, v in state_dict.items():
+        if "decoder.latent" in k:
+            name = "latent_to_decoder." + k[8:]
+        elif "encoder" in k[:8]:
+            name = k.replace("encoder", "encoder.model", 1)
+        elif "decoder" in k[:8]:
+            name = k.replace("decoder", "decoder.model", 1)
+        new_state_dict[name] = v
+    return new_state_dict
 
 def save_checkpoint_model(vae_model, optimizer, scheduler, scaler, run_name, code_dir_path,
                           global_step, best_valid_loss, epoch, best=False):
@@ -245,25 +277,25 @@ def save_checkpoint_model(vae_model, optimizer, scheduler, scaler, run_name, cod
 
     # If just a regular checkpoint, remove the previous checkpoint
     if not best:
-        for ckpt in os.listdir('{}Runs/{}'.format(code_dir_path, run_name)):
+        for ckpt in os.listdir('{}/Runs/{}'.format(code_dir_path, run_name)):
             if ('best' not in ckpt) and ('checkpoint' in ckpt):
                 print("Removing previously saved checkpoint: 'Runs/{}/{}'".format(run_name, ckpt))
-                os.remove('{}Runs/{}/{}'.format(code_dir_path, run_name, ckpt))
+                os.remove('{}/Runs/{}/{}'.format(code_dir_path, run_name, ckpt))
 
     print(
-        "Saving checkpoint at '{}Runs/{}/checkpoint-{}.pth'...".format(code_dir_path, run_name, global_step))
+        "Saving checkpoint at '{}/Runs/{}/checkpoint-{}.pth'...".format(code_dir_path, run_name, global_step))
 
     checkpoint = {
         'VAE_model_state_dict': vae_model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'global_step': global_step,
         'scheduler_state_dict': scheduler.state_dict(),
-        'scaler_state_dict': scaler.state_dict(),
+        'scaler_state_dict': scaler.state_dict(), #TODO: save scaler or amp?
         'best_valid_loss': best_valid_loss,
         'epoch': epoch,
     }
 
-    torch.save(checkpoint, '{}Runs/{}/checkpoint-{}.pth'.format(code_dir_path, run_name, global_step))
+    torch.save(checkpoint, '{}/Runs/{}/checkpoint-{}.pth'.format(code_dir_path, run_name, global_step))
 
 
 def add_remove_module_from_state_dict(state_dict, remove=True):
@@ -318,7 +350,7 @@ def init_logging(vae_model, run_name, code_dir_path, wandb_project, config):
     wandb.watch(vae_model)
 
 
-def log_stats_epoch(stats, epoch):
+def log_stats_epoch(stats, epoch, global_step, global_grad_step):
     """
     Log stats of epoch to W&B.
 
@@ -333,6 +365,9 @@ def log_stats_epoch(stats, epoch):
         for stat_name, stat in phase_stats.items():
             log_name = "EPOCH-STATS-{}-{}".format(phase, stat_name)
             logs[log_name] = np.mean(stat)
+    logs['epoch'] = epoch
+    logs['global_step'] = global_step
+    logs['global_grad_step'] = global_grad_step
     wandb.log(logs)
 
 
