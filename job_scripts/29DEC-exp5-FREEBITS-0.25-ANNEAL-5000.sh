@@ -20,17 +20,17 @@ conda activate thesisenv # activate environment
 python /home/cbarkhof/code-thesis/NewsVAE/train.py \
           --overwrite_args=False \
           \
-          --run_name_prefix="21DEC-FREEBITS-0.25-ANNEAL-1000" \
+          --run_name_prefix="29DEC-exp5-FREEBITS-0.25-ANNEAL-5000" \
           \
           --batch_size=32 \
           --max_train_steps_epoch_per_rank=-1 \
           --max_valid_steps_epoch_per_rank=-1 \
-          --max_global_train_steps=54000 \
+          --max_global_train_steps=55000 \
           --accumulate_n_batches_grad=2 \
           \
           --lr=1.0 \
           --lr_scheduler=True \
-          --lr_warmup_updates=4000 \
+          --lr_warmup_updates=5000 \
           \
           --gradient_checkpointing=False \
           --use_amp=True \
@@ -39,7 +39,7 @@ python /home/cbarkhof/code-thesis/NewsVAE/train.py \
           --ddp=True \
           \
           --logging=True \
-          --log_every_n_steps=10 \
+          --log_every_n_steps=50 \
           --wandb_project="thesis" \
           \
           --tokenizer_name="roberta" \
@@ -64,7 +64,7 @@ python /home/cbarkhof/code-thesis/NewsVAE/train.py \
           --hinge_loss_lambda=0.25 \
           --beta=1.0 \
           --KL_linear_annealing=True \
-          --KL_annealing_grad_steps_linear=1000 \
+          --KL_annealing_grad_steps_linear=5000 \
           --KL_cyclical_annealing=False \
           --KL_annealing_grad_steps_per_cycle=0 \
           --objective="beta-vae" \

@@ -2,6 +2,7 @@ import argparse
 import distutils
 import utils_train
 
+
 def preprare_parser(jupyter=False, print_settings=True):
     parser = argparse.ArgumentParser()
 
@@ -119,17 +120,17 @@ def preprare_parser(jupyter=False, print_settings=True):
                         help="The balancing beta term between the reconstruction loss"
                              " and KL-divergence term.")
     # LINEAR KL ANNEALING
-    parser.add_argument("--KL_linear_annealing", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
+    parser.add_argument("--kl_linear_annealing", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to perform (linear) KL annealing from 0 to 1 in "
                              "KL_annealing_grad_steps_linear.")
-    parser.add_argument("--KL_annealing_grad_steps_linear", default=1000, type=int,
+    parser.add_argument("--kl_annealing_grad_steps_linear", default=1000, type=int,
                         help="How many steps to linearly anneal beta from 0 to 1 as a warmup. (default: 1000)")
 
     # CYCLICAL KL ANNEALING
-    parser.add_argument("--KL_cyclical_annealing", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
+    parser.add_argument("--kl_cyclical_annealing", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to perform (cyclic) KL annealing from 0 to 1 in "
                              "KL_annealing_grad_steps_per_cycle.")
-    parser.add_argument("--KL_annealing_grad_steps_per_cycle", default=9000, type=int,
+    parser.add_argument("--kl_annealing_grad_steps_per_cycle", default=9000, type=int,
                         help="How many gradient steps to perform per cycle (default: 9000).")
     # TODO: fix this to be grad steps from the beginning
 

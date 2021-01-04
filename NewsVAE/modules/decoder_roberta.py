@@ -57,6 +57,9 @@ from transformers.modeling_utils import (
     find_pruneable_heads_and_indices,
     prune_linear_layer,
 )
+
+from transformers import top_k_top_p_filtering
+
 from transformers.utils import logging
 
 logger = logging.get_logger(__name__)
@@ -73,7 +76,6 @@ ROBERTA_PRETRAINED_MODEL_ARCHIVE_LIST = [
     "roberta-large-openai-detector",
     # See all RoBERTa models at https://huggingface.co/models?filter=roberta
 ]
-
 
 class RobertaEmbeddings(nn.Module):
     """
@@ -728,31 +730,31 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
             input_ids=None,
             attention_mask=None,
             latent_to_decoder_output=None,
-            token_type_ids=None,
-            position_ids=None,
-            head_mask=None,
-            inputs_embeds=None,
-            encoder_hidden_states=None,
-            encoder_attention_mask=None,
             labels=None,
-            return_attention_probs=None,
-            output_hidden_states=None,
-            return_dict=None,
-            return_exact_match_acc=False,
-            return_predictions=False,
-            return_cross_entropy=True,
-            reduce_seq_dim="sum"
-            # reduce_loss=False
-    ):
-        r"""
-        encoder_hidden_states  (:obj:`torch.FloatTensor` of shape :obj:`(batch_size, sequence_length, hidden_size)`, `optional`):
-            Sequence of hidden-states at the output of the last layer of the encoder. Used in the cross-attention
-            if the model is configured as a decoder.
-        encoder_attention_mask (:obj:`torch.FloatTensor` of shape :obj:`(batch_size, sequence_length)`, `optional`):
-            Mask to avoid performing attention on the padding token indices of the encoder input. This mask
-            is used in the cross-attention if the model is configured as a decoder.
-            Mask values selected in ``[0, 1]``:
 
+            return_attention_probs=None,
+            return_attention_to_latent=None,
+
+            return_predictions=False,
+            return_probabilities=False,
+            return_logits=False,
+
+            return_exact_match=False,
+            return_cross_entropy=True,
+
+            reduce_seq_dim_exact_match="sum",
+            reduce_batch_dim_exact_match="mean",
+            reduce_seq_dim_ce="mean",
+
+            return_hidden_states=None,
+            return_last_hidden_state=False,
+
+            nucleus_sampling=False,
+            top_k=0,
+            top_p=0.9,
+    ):
+        """
+        attention_mask:
             - 1 for tokens that are **not masked**,
             - 0 for tokens that are **masked**.
 
@@ -762,142 +764,156 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
             Tokens with indices set to ``-100`` are ignored (masked), the loss is only computed for the tokens with
             labels in ``[0, ..., config.vocab_size]``
 
-        Returns:
 
-        Example::
-
-            from transformers import RobertaTokenizer, RobertaForCausalLM, RobertaConfig
-            import torch
-
-            tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
-            config = RobertaConfig.from_pretrained("roberta-base", return_dict=True)
-            config.is_decoder = True
-            model = RobertaForCausalLM.from_pretrained('roberta-base', config=config)
-
-            inputs = tokenizer(Hello, my dog is cute", return_tensors="pt")
-            outputs = model(**inputs)
-
-            prediction_logits = outputs.logits
         """
+        # Assert a few things
+        assert reduce_batch_dim_exact_match in ["mean", "sum", "none"], "reduce_batch_dim_" \
+               "exact_match must be one of the following: 'mean', 'sum', 'none'"
+        assert reduce_seq_dim_exact_match in ["mean", "sum", "none"] and reduce_seq_dim_ce in ["mean", "sum", "none"], \
+               "reduce_seq_dim_exact_match & _ce must be one of the following: 'mean', 'sum', 'none'"
 
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        if return_cross_entropy or return_exact_match and not labels:
+            print("Can't return cross entropy or exact match acc if no labels are provided"); quit()
 
-        # >>>>>> Claartje code
+        if return_attention_to_latent and not latent_to_decoder_output:
+            print("Can't return attention to latent if no latent is provided."); quit()
+
+        # Latent to decoder
         if latent_to_decoder_output is not None:
             latent_layer_memory = latent_to_decoder_output['latent_to_memory']
             latent_embedding = latent_to_decoder_output['latent_to_embeddings']
         else:
             latent_layer_memory, latent_embedding = None, None
-        # <<<<<< End Claartje code
 
+        # Forward through decoder
         outputs = self.roberta(
             input_ids,
             attention_mask=attention_mask,
             latent_layer_memory=latent_layer_memory,  # >>>>>> Claartje code
             latent_embedding=latent_embedding,  # >>>>>> Claartje code
-            token_type_ids=token_type_ids,
-            position_ids=position_ids,
-            head_mask=head_mask,
-            inputs_embeds=inputs_embeds,
-            encoder_hidden_states=encoder_hidden_states,
-            encoder_attention_mask=encoder_attention_mask,
+            token_type_ids=None,
+            position_ids=None,
+            head_mask=None,
+            inputs_embeds=None,
+            encoder_hidden_states=None,
+            encoder_attention_mask=None,
             output_attentions=return_attention_probs,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
+            output_hidden_states=return_last_hidden_state or return_hidden_states,
+            return_dict=True,
         )
-        # GET OUTPUS
+
+        # Get outputs and shift the predictions and labels so they align
         sequence_output = outputs[0]
+        logits = self.lm_head(sequence_output)
+        # we don't care about the last prediction, because that is the prediction at </s>
+        logits = logits[:, :-1, :].contiguous()
 
+        if labels is not None:
+            labels = labels[:, 1:].contiguous()  # skip <s> token
+            labels = labels.reshape(-1) # make into one big vector (no seq dimension)
+
+        # -> from now on the sequence length is thus 63 instead of 64
+        # logits are [<w1>' <w2>' ... <w62> </s>'] and labels [<w1> <w2> ... <w62> </s>]
+
+        # Attention probabilities
         # This is a tuple of 12 layers of size [batch, 12, seq_len, seq_len + 1]
-        attention_probs = outputs[1] if return_attention_probs else None
+        attention_probs = outputs[1] if (return_attention_probs or return_attention_to_latent) else None
+        attention_to_latent = None
 
-        prediction_scores = self.lm_head(sequence_output)
+        if attention_probs or return_attention_to_latent:
+            # stack all layers into one big tensor
+            attention_probs = torch.stack(attention_probs)
 
-        # SHIFT SOME THINGS TO MAKE SURE WE ARE COMPARING THE RIGHT THINGS
-        # we are doing next-token prediction; shift prediction scores and input ids by one
-        logits = prediction_scores[:, :-1, :].contiguous()
+            # batch, n_heads, n_layers, seq_len_query, seq_len_val
+            attention_probs = attention_probs.permute(1, 2, 0, 3, 4)
 
-        if return_cross_entropy:
-            if labels is not None:
-                labels = labels[:, 1:].contiguous()
-                labels = labels.reshape(-1)
-            else:
-                print("Can't return CE loss if no labels are provided! Quitting..."); quit()
+            if return_attention_to_latent:
+                # get attention to latent only, for all
+                attention_to_latent = attention_probs[:, :, :, :, 0]
 
-        # Get rid of the sequence dimension
+        # Get rid of the sequence dimension (merge into batch dimension)
         batch_size, seq_len, vocab_size = logits.shape
         logits = logits.reshape(-1, vocab_size)
 
         predictions = None
-        exact_match_acc = None
+        exact_match = None
         cross_entropy = None
+        probs = None
 
-        if return_cross_entropy or return_predictions:
+        # ONLY CROSS ENTROPY (at train time)
+        if return_cross_entropy and not (return_predictions or return_probabilities):
+            # cross entropy = log_softmax + nll_loss
+            cross_entropy = torch.nn.functional.cross_entropy(logits, labels, reduction='none')
+            cross_entropy = cross_entropy.reshape(batch_size, seq_len)  # bring back the sequence dimension
+
+        # ALSO PREDICT (at inference or validation time)
+        elif return_predictions or return_probabilities or nucleus_sampling:
+            if nucleus_sampling:
+                logits = top_k_top_p_filtering(logits, top_k=top_k, top_p=top_p)
+
             probs = torch.nn.functional.softmax(logits, dim=-1)
-            log_probs = torch.log(probs)
 
-            if labels is not None:
+            if return_cross_entropy:
+                cross_entropy = torch.nn.functional.cross_entropy(logits, labels, reduction='none') # use this as it is numerically stable
+                cross_entropy = cross_entropy.reshape(batch_size, seq_len)  # bring back the sequence dimension
 
-                # reduction = 'mean' if reduce_loss else 'none'
-
-                cross_entropy = torch.nn.functional.nll_loss(log_probs, labels, reduction='none')
-
-                # Either reduce the sequence dimension with mean or sum
-                # TODO: add this to arguments and pass all the way from train.
-                if reduce_seq_dim == "mean":
-                    cross_entropy = cross_entropy.reshape(batch_size, seq_len).mean(dim=1)
-                # Sum
+            if return_predictions or return_exact_match or nucleus_sampling:
+                if nucleus_sampling:
+                    predictions = torch.multinomial(probs, num_samples=1)
                 else:
-                    cross_entropy = cross_entropy.reshape(batch_size, seq_len).sum(dim=1)
+                    predictions = probs.argmax(-1)
 
-                # Mean over the batch dimension always
-                cross_entropy = cross_entropy.mean(dim=0)
-
-                # still reduce (sum) along sequence dimension
-                # if reduction == 'none':
-                #     # cross_entropy = cross_entropy.reshape(batch_size, seq_len).mean(dim=1)
-                #     print("cross_entropy.shape", cross_entropy.shape)
-                #     cross_entropy = cross_entropy.reshape(batch_size, seq_len).sum(dim=1).mean(dim=0)
-                #     print(cross_entropy.shape)
-
-            if return_predictions or return_exact_match_acc:
-                predictions = probs.argmax(-1)
-
-                if return_exact_match_acc and labels is not None:
-
-                    correct = (labels == predictions).float()
-                    correct = correct.reshape(batch_size, seq_len)
-                    correct = correct.mean(dim=-1)  # per sequence
-                    exact_match_acc = correct.mean(dim=0)
+                if return_exact_match:
+                    # TODO: take mask into account for loss (especially for longer sequences,
+                    #  now all longer than 64 so not really a problem).
+                    exact_match = (labels == predictions).float()
+                    exact_match = exact_match.reshape(batch_size, seq_len)
 
                 predictions = predictions.reshape((batch_size, seq_len))
+                probs = probs.reshape((batch_size, seq_len, -1))
 
         if logits is not None:
             logits = logits.reshape((batch_size, seq_len, vocab_size))
 
+        # Hidden states
+        if return_last_hidden_state and not return_hidden_states:
+            last_hidden_state = outputs.hidden_states[-1]
+            hidden_states = None
+        elif return_last_hidden_state and return_hidden_states:
+            last_hidden_state = outputs.hidden_states[-1]
+            hidden_states = outputs.hidden_states
+        else:
+            last_hidden_state, hidden_states = None, None
+
+        # REDUCE CORRECTLY
+        if cross_entropy is not None:
+            cross_entropy = self.reduce_correct(cross_entropy, reduce_seq_dim_ce, -1)  # seq dim
+
+        if exact_match is not None:
+            exact_match = self.reduce_correct(exact_match, reduce_seq_dim_exact_match, -1)  # seq dim
+            exact_match = self.reduce_correct(exact_match, reduce_batch_dim_exact_match, 0)  # batch dim
+
         return_dict = {
             "cross_entropy": cross_entropy,
-            "predictions": predictions,
-            "exact_match_acc": exact_match_acc,
-            "attention_probs": attention_probs,
-            "logits": logits,
-            "hidden_states": outputs.hidden_states,
-            "attentions": outputs.attentions
+            "predictions": predictions if return_predictions else None,
+            "exact_match": exact_match if return_exact_match else None,
+            "attention_probs": attention_probs if return_attention_probs else None,
+            "attention_to_latent": attention_to_latent if return_attention_to_latent else None,
+            "hidden_states": hidden_states if return_hidden_states else None,
+            "probabilities": probs if return_probabilities else None,
+            "last_hidden_state": last_hidden_state if return_last_hidden_state else None,
+            "logits": logits if return_logits else None
         }
-
-        if not return_dict:
-            output = (prediction_scores,) + outputs[2:]
-            return ((cross_entropy,) + output) if cross_entropy is not None else output
 
         return return_dict
 
-        # Used to be:
-        # return CausalLMOutput(
-        #     loss=cr,
-        #     logits=prediction_scores,
-        #     hidden_states=outputs.hidden_states,
-        #     attentions=outputs.attentions,
-        # )
+    @staticmethod
+    def reduce_correct(some_tensor, reduction_type, reduction_dim):
+        if reduction_type == "mean":
+            some_tensor = some_tensor.mean(dim=reduction_dim)
+        elif reduction_type == "sum":
+            some_tensor = some_tensor.sum(dim=reduction_dim)
+        return some_tensor
 
     def prepare_inputs_for_generation(self, input_ids, attention_mask=None, **model_kwargs):
         input_shape = input_ids.shape
@@ -907,7 +923,6 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
             attention_mask = input_ids.new_ones(input_shape)
 
         return {"input_ids": input_ids, "attention_mask": attention_mask}
-
 
 
 class RobertaLMHead(nn.Module):

@@ -365,6 +365,7 @@ def log_stats_epoch(stats, epoch, global_step, global_grad_step):
         for stat_name, stat in phase_stats.items():
             log_name = "EPOCH-STATS-{}-{}".format(phase, stat_name)
             logs[log_name] = np.mean(stat)
+
     logs['epoch'] = epoch
     logs['global_step'] = global_step
     logs['global_grad_step'] = global_grad_step

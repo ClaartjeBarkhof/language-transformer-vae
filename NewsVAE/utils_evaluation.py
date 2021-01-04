@@ -1,4 +1,51 @@
 import torch
+from datasets import load_from_disk
+from functools import partial
+from transformers import RobertaTokenizerFast
+from torch.utils.data import DataLoader
+import numpy as np
+
+# Functions in file:
+
+# valid_dataset_loader_tokenizer
+# sample_text_autoregressive
+# tokenizer_batch_decode
+# reconstruct_autoregressive
+
+
+def valid_dataset_loader_tokenizer(batch_size=32, num_workers=4,
+                                   dataset_path="/home/cbarkhof/code-thesis/NewsVAE/"
+                                                "NewsData/22DEC-cnn_dailymail-roberta-seqlen64/validation"):
+
+    def collate_fn(encoded_samples, tokenizer):
+        """
+        A function that assembles a batch. This is where padding is done, since it depends on
+        the maximum sequence length in the batch.
+
+        :param examples: list of truncated, tokenised & encoded sequences
+        :return: padded_batch (batch x max_seq_len)
+        """
+
+        # Combine the tensors into a padded batch
+        padded_batch = tokenizer.pad(encoded_samples, return_tensors='pt')
+
+        return padded_batch
+
+    # VALIDATION DATA
+    valid_dataset = load_from_disk(dataset_path)
+
+    # TOKENIZER
+    tokenizer = RobertaTokenizerFast.from_pretrained('roberta-base')
+
+    # TEST DATA LOADER
+    valid_loader = DataLoader(valid_dataset, collate_fn=partial(collate_fn, tokenizer=tokenizer),
+                              batch_size=batch_size, num_workers=num_workers, pin_memory=True)
+
+    print(f"Number of valid samples: {len(valid_dataset)}, "
+          f"number of batches of size {batch_size}: "
+          f"{int(np.floor(len(valid_dataset) / batch_size))}")
+
+    return valid_dataset, tokenizer, valid_loader
 
 
 def sample_text_autoregressive(vae_model, tokenizer, add_latent_via_embeddings=True,
@@ -44,7 +91,8 @@ def tokenizer_batch_decode(batch_of_samples, tokenizer):
 
 def reconstruct_autoregressive(vae_model, input_batch, tokenizer, add_latent_via_embeddings=True,
                                add_latent_via_memory=True, max_seq_len=32, nucleus_sampling=False,
-                               temperature=1.0, top_k=0, top_p=0.0, device_name="cuda:0"):
+                               temperature=1.0, top_k=0, top_p=0.0, device_name="cuda:0",
+                               return_attention_to_latent=False):
     """
     Reconstruct (forward through VAE with auto-regressive decoding) autoregressively
     without gradients (for evaluation purposes only).
@@ -68,19 +116,31 @@ def reconstruct_autoregressive(vae_model, input_batch, tokenizer, add_latent_via
         generated_text: List[str]
             List of reconstructed strings consisting of max <max_seq_len> tokens.
 
+        generated: Tensor [batch, max_seq_len]
+            Reconstructed inputs (ids)
     """
 
     with torch.no_grad():
-        _, _, latent_z, _, _, _ = vae_model.encode(input_batch['input_ids'], input_batch['attention_mask'])
+        # return mu, logvar, latent_z, kl_loss, hinge_kl_loss, mmd_loss
+        _, _, latent_z, _, _, _ = vae_model.encoder.encode(input_batch['input_ids'], input_batch['attention_mask'])
 
-        generated = vae_model.decoder.auto_regressive_decode(latent_z, tokenizer,
-                                                             add_latent_via_embeddings=add_latent_via_embeddings,
-                                                             add_latent_via_memory=add_latent_via_memory,
-                                                             max_seq_len=max_seq_len,
-                                                             nucleus_sampling=nucleus_sampling,
-                                                             temperature=temperature, top_k=top_k, top_p=top_p,
-                                                             device_name=device_name)
+        latent_to_decoder = vae_model.latent_to_decoder(latent_z)
+
+        autoreg_decode = vae_model.decoder.autoregressive_decode(latent_to_decoder, tokenizer,
+                                                                 max_seq_len=max_seq_len,
+                                                                 nucleus_sampling=nucleus_sampling,
+                                                                 temperature=temperature, top_k=top_k, top_p=top_p,
+                                                                 device_name=device_name,
+                                                                 return_attention_to_latent=return_attention_to_latent)
+
+        if return_attention_to_latent:
+            generated, atts = autoreg_decode
+        else:
+            generated = autoreg_decode
 
         generated_text = tokenizer_batch_decode(generated, tokenizer)
 
-        return generated_text
+        if return_attention_to_latent:
+            return generated_text, generated, atts
+        else:
+            return generated_text, generated

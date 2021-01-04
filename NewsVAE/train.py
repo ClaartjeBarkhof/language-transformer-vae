@@ -1,5 +1,4 @@
 import utils_train
-from arguments import preprare_parser
 import torch
 import torch.distributed as dist
 from torch.cuda.amp import GradScaler, autocast
@@ -50,7 +49,7 @@ def get_scheduler(optimizer, warmup_updates=4000, lr_scheduler=True, lr=2e-5):
         scheduler: LambdaLR scheduler
             This is the learning rate scheduler that may be updated during training by calling .step()
     """
-
+    # Note that my implementation uses step = gradient step (or global step / accumulate_n_steps)
     def get_lr_scale(step):
         step += 1  # to avoid zero division
 
@@ -140,6 +139,7 @@ def get_dataloader(phases, ddp=False, batch_size=12, num_workers=8, debug_data=F
             samplers[phase] = sampler
 
             # With distributed sampling, shuffle must be false, the sampler takes care of that
+            # TODO: maybe this guys is the problem? shuffle=False,
             loaders[phase] = DataLoader(data.datasets[phase], batch_size=batch_size,
                                         sampler=sampler, pin_memory=True, shuffle=False,
                                         num_workers=num_workers, collate_fn=data.collate_fn)
@@ -190,8 +190,12 @@ def get_model_on_device(device_name="cuda:0", latent_size=768, gradient_checkpoi
     return vae_model
 
 
-def determine_beta(global_grad_step, config_beta=0.5, KL_cyclical_annealing=False, KL_linear_annealing=True,
-                   KL_annealing_grad_steps_linear=1000, KL_annealing_grad_steps_per_cycle=9000):
+def determine_beta(global_grad_step,
+                   config_beta=0.5,
+                   kl_cyclical_annealing=False,
+                   kl_linear_annealing=True,
+                   kl_annealing_grad_steps_linear=1000,
+                   kl_annealing_grad_steps_per_cycle=9000):
     """
     Determine beta given the current global gradient step. Cycles consists
     for one half of annealing from 0 to 1 and the other half of keeping beta
@@ -200,13 +204,15 @@ def determine_beta(global_grad_step, config_beta=0.5, KL_cyclical_annealing=Fals
     Args:
         global_grad_step: int
             How many gradient steps are performed so far.
-        KL_cyclical_annealing: bool:
+        config_beta: float
+            The beta that the configuration was set at (statically).
+        kl_cyclical_annealing: bool:
             Whether or not to anneal the KL divergence cyclically
-        KL_annealing_grad_steps_per_cycle: int
+        kl_annealing_grad_steps_per_cycle: int
             How many gradient steps to perform a full cycle.
-        KL_linear_annealing: bool:
+        kl_linear_annealing: bool:
             Whether or not to anneal the KL divergence linearly (warm-up annealing)
-        KL_annealing_grad_steps_linear: int
+        kl_annealing_grad_steps_linear: int
             How many gradient steps to use to anneal from 0 to 1 linearly
     Returns:
         beta: float
@@ -214,13 +220,13 @@ def determine_beta(global_grad_step, config_beta=0.5, KL_cyclical_annealing=Fals
     """
 
     # CYCLICAL ANNEALING
-    if KL_cyclical_annealing:
-        cycle_step = global_grad_step % KL_annealing_grad_steps_per_cycle
+    if kl_cyclical_annealing:
+        cycle_step = global_grad_step % kl_annealing_grad_steps_per_cycle
 
         # First half of cycle grow linearly from 0 -> 1
-        if cycle_step < (KL_annealing_grad_steps_per_cycle / 2):
+        if cycle_step < (kl_annealing_grad_steps_per_cycle / 2):
             if global_grad_step > 0:
-                beta = cycle_step / (KL_annealing_grad_steps_per_cycle / 2)
+                beta = cycle_step / (kl_annealing_grad_steps_per_cycle / 2)
             else:
                 beta = 0.0
 
@@ -229,9 +235,9 @@ def determine_beta(global_grad_step, config_beta=0.5, KL_cyclical_annealing=Fals
             beta = 1.0
 
     # LINEAR / WARMUP ANNEALING
-    elif KL_linear_annealing:
-        if global_grad_step < KL_annealing_grad_steps_linear:
-            beta = (global_grad_step + 1) / KL_annealing_grad_steps_linear
+    elif kl_linear_annealing:
+        if global_grad_step < kl_annealing_grad_steps_linear:
+            beta = (global_grad_step + 1) / kl_annealing_grad_steps_linear
         else:
             beta = 1.0
 
@@ -261,16 +267,17 @@ def do_valid_step(vae_model, batch, beta, hinge_kl_loss_lambda):
     vae_model.eval()
 
     with torch.set_grad_enabled(False):
-        losses = vae_model(input_ids=batch['input_ids'],
-                           attention_mask=batch['attention_mask'],
-                           beta=beta,
-                           return_predictions=False,
-                           return_exact_match_acc=True,
-                           return_attention_probs=False,
-                           hinge_kl_loss_lambda=hinge_kl_loss_lambda)
-        losses['total_loss'] = losses['total_loss'].item()
+        vae_outputs = vae_model(input_ids=batch['input_ids'],
+                                attention_mask=batch['attention_mask'],
+                                beta=beta,
+                                hinge_kl_loss_lambda=hinge_kl_loss_lambda,
+                                return_cross_entropy=True,
+                                objective='beta-vae',
+                                reduce_seq_dim_ce="sum",
+                                return_exact_match=False)
+        vae_outputs['total_loss'] = vae_outputs['total_loss'].item()
 
-    return losses
+    return vae_outputs
 
 
 def do_train_step(vae_model, batch, optimizer, scheduler, scaler, global_step, beta, hinge_kl_loss_lambda,
@@ -292,10 +299,9 @@ def do_train_step(vae_model, batch, optimizer, scheduler, scaler, global_step, b
             Whether or not to use automatic mixed precision.
         accumulate_n_batches_grad: int
         beta: float
+        hinge_kl_loss_lambda: float
     """
 
-    # TODO: grad clipping see use in combo with amp:
-    # https://pytorch.org/docs/stable/notes/amp_examples.html#amp-examples
     vae_model.train()
 
     with torch.set_grad_enabled(True):
@@ -303,10 +309,11 @@ def do_train_step(vae_model, batch, optimizer, scheduler, scaler, global_step, b
             losses = vae_model(input_ids=batch['input_ids'],
                                attention_mask=batch['attention_mask'],
                                beta=beta,
-                               return_predictions=False,
-                               return_exact_match_acc=True,
-                               return_attention_probs=False,
-                               hinge_kl_loss_lambda=hinge_kl_loss_lambda)
+                               hinge_kl_loss_lambda=hinge_kl_loss_lambda,
+                               return_cross_entropy=True,
+                               objective='beta-vae',
+                               reduce_seq_dim_ce="sum",
+                               return_exact_match=False)
 
             loss = losses['total_loss'] / accumulate_n_batches_grad
 
@@ -315,8 +322,15 @@ def do_train_step(vae_model, batch, optimizer, scheduler, scaler, global_step, b
 
     # If gradient accumulated long enough: set a step
     if (global_step + 1) % accumulate_n_batches_grad == 0:
-        scaler.step(optimizer)  # instead of optimizer.step()
 
+        # GRADIENT CLIPPING
+        # Unscales the gradients of optimizer's assigned params in-place
+        scaler.unscale_(optimizer)
+        # Since the gradients of optimizer's assigned params are unscaled, clips as usual:
+        torch.nn.utils.clip_grad_norm_(vae_model.parameters(), 1.0)
+
+        # SCALER
+        scaler.step(optimizer)  # instead of optimizer.step()
         scaler.update()
 
         # Advance the learning rate scheduler by 1
@@ -402,14 +416,14 @@ def train(device_rank, config, run_name):
     if config.load_from_checkpoint:
         # Load model and all relevant states and counters
         if config.continue_train_after_checkpoint_loading:
-            optimizer, scheduler, VAE_model, scaler, global_step, \
+            optimizer, scheduler, v, vae_model, global_step, \
             epoch, best_valid_loss = utils_train.load_from_checkpoint(vae_model, config.checkpoint_file,
                                                                       optimizer=optimizer, scheduler=scheduler,
                                                                       scaler=scaler, world_master=world_master,
                                                                       ddp=config.ddp, use_amp=config.use_amp)
         # Only load the model
         else:
-            _, _, VAE_model, _, _, _, _ = utils_train.load_from_checkpoint(vae_model, config.checkpoint_file,
+            _, _, vae_model, _, _, _, _ = utils_train.load_from_checkpoint(vae_model, config.checkpoint_file,
                                                                            world_master=world_master, ddp=config.ddp)
 
     if world_master: print("Start or resume training!")
@@ -431,10 +445,6 @@ def train(device_rank, config, run_name):
 
             # TODO: add profiler to keep track of timing
             for batch_i, batch in enumerate(data_loaders[phase]):
-
-                print(
-                    f"{device_name} | batch_i {batch_i} | global_step {global_step} | global_grad_step {global_grad_step}")
-
                 # ----------------------------------------------------------------------------------------------------
                 # TRAIN / VALIDATION STEPS
                 # ----------------------------------------------------------------------------------------------------
@@ -444,16 +454,18 @@ def train(device_rank, config, run_name):
 
                 # Determine beta (annealed or fixed)
                 beta = determine_beta(global_grad_step, config_beta=config.beta,
-                                      KL_cyclical_annealing=config.KL_cyclical_annealing,
-                                      KL_annealing_grad_steps_per_cycle=config.KL_annealing_grad_steps_per_cycle,
-                                      KL_linear_annealing=config.KL_linear_annealing,
-                                      KL_annealing_grad_steps_linear=config.KL_annealing_grad_steps_linear)
+                                      kl_cyclical_annealing=config.kl_cyclical_annealing,
+                                      kl_annealing_grad_steps_per_cycle=config.kl_annealing_grad_steps_per_cycle,
+                                      kl_linear_annealing=config.kl_linear_annealing,
+                                      kl_annealing_grad_steps_linear=config.kl_annealing_grad_steps_linear)
 
                 # PERFORM TRAIN / VALIDATION
                 if phase == 'train':
-                    vae_model, optimizer, scheduler, losses = do_train_step(vae_model, batch, optimizer,
-                                                                            scheduler, scaler, global_step, beta,
-                                                                            config.hinge_loss_lambda)
+                    vae_model, optimizer, scheduler, losses = do_train_step(vae_model, batch, optimizer, scheduler,
+                                                                            scaler, global_step, beta,
+                                                                            config.hinge_loss_lambda,
+                                                                            use_amp=config.use_amp,
+                                                                            accumulate_n_batches_grad=config.accumulate_n_batches_grad)
                 else:
                     losses = do_valid_step(vae_model, batch, beta, config.hinge_loss_lambda)
 
@@ -555,15 +567,9 @@ if __name__ == "__main__":
     import warnings
     import arguments
 
-    config = arguments.preprare_parser(jupyter=False, print_settings=True)
-    # config.ddp = True
-    # config.n_gpus = 1
-    # config.max_global_train_steps = 30
-    # config.print_every_n_steps = 1
-    # config.num_workers = 2
-    # config.accumulate_n_batches_grad = 4
-    # config.logging = True
+    args = arguments.preprare_parser(jupyter=False, print_settings=True)
 
+    # Warning filter for dataset loading warning
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        main(config)
+        main(args)

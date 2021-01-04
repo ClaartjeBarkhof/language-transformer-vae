@@ -21,7 +21,7 @@ class EncoderNewsVAE(torch.nn.Module):
                                                  latent_size=latent_size)
         self.model.pooler.dense.weight.data.normal_(mean=0.0, std=self.model.config.initializer_range)
 
-    def forward(self, input_ids, attention_mask):
+    def forward(self, input_ids, attention_mask, return_embeddings=False):
         """
         Encode input sequences and sample from the approximate posterior.
 
@@ -42,13 +42,17 @@ class EncoderNewsVAE(torch.nn.Module):
                 Samples from encoded posterior:
         """
         # Encode
-        encoder_outs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+        encoder_outs = self.model(input_ids=input_ids, attention_mask=attention_mask,
+                                  output_hidden_states=return_embeddings)
 
         # Get pooled features
         pooled_output = encoder_outs.pooler_output
 
         # Interpret as mean, log variance
         mu, logvar = pooled_output.chunk(2, dim=1)
+
+        if return_embeddings:
+            return mu, logvar, encoder_outs["hidden_states"][0]
 
         return mu, logvar
 
