@@ -200,7 +200,7 @@ def load_from_checkpoint(vae_model, path, optimizer=None, scheduler=None, scaler
         print("Adding module string to state dict from checkpoint")
         parameter_state_dict = add_remove_module_from_state_dict(remove=False)
 
-    # Adapt if checkpoint i from before refactor
+    # Adapt if checkpoint i from before refactor 1
     from_before_refactor = False
     for k in parameter_state_dict.keys():
         if "encoder.encoder" in k:
@@ -210,6 +210,9 @@ def load_from_checkpoint(vae_model, path, optimizer=None, scheduler=None, scaler
     if from_before_refactor:
         print("Changing checkpoint to match after refactor.")
         parameter_state_dict = change_checkpoint_to_after_refactor(parameter_state_dict)
+
+    # refactor 2
+    parameter_state_dict = change_checkpoint_to_after_refactor_2(parameter_state_dict)
 
     # in place procedure
     vae_model.load_state_dict(parameter_state_dict)
@@ -234,6 +237,7 @@ def load_from_checkpoint(vae_model, path, optimizer=None, scheduler=None, scaler
 
     return optimizer, scheduler, vae_model, scaler, global_step, epoch, best_valid_loss
 
+
 def change_checkpoint_to_after_refactor(state_dict):
     """
     Before the refactor, the model looked slightly different. If you're trying
@@ -249,6 +253,18 @@ def change_checkpoint_to_after_refactor(state_dict):
             name = k.replace("encoder", "encoder.model", 1)
         elif "decoder" in k[:8]:
             name = k.replace("decoder", "decoder.model", 1)
+        new_state_dict[name] = v
+    return new_state_dict
+
+
+def change_checkpoint_to_after_refactor_2(state_dict):
+    from collections import OrderedDict
+    new_state_dict = OrderedDict()
+    for k, v in state_dict.items():
+        if "latent_to_decoder" in k:
+            name = k.replace("latent_to_decoder", "decoder.latent_to_decoder")
+        else:
+            name = k
         new_state_dict[name] = v
     return new_state_dict
 
@@ -290,7 +306,7 @@ def save_checkpoint_model(vae_model, optimizer, scheduler, scaler, run_name, cod
         'optimizer_state_dict': optimizer.state_dict(),
         'global_step': global_step,
         'scheduler_state_dict': scheduler.state_dict(),
-        'scaler_state_dict': scaler.state_dict(), #TODO: save scaler or amp?
+        'scaler_state_dict': scaler.state_dict(),
         'best_valid_loss': best_valid_loss,
         'epoch': epoch,
     }

@@ -3,7 +3,7 @@ from modules.decoder_roberta import VAE_Decoder_RobertaForCausalLM
 import copy
 from transformers import top_k_top_p_filtering
 import torch.nn as nn
-
+from utils_evaluation import tokenizer_batch_decode
 
 class DecoderNewsVAE(torch.nn.Module):
     def __init__(self,
@@ -32,6 +32,7 @@ class DecoderNewsVAE(torch.nn.Module):
                                                         initializer_range=self.initializer_range)
 
     def forward(self, latent_z, input_ids, attention_mask,
+                labels=None,
                 return_attention_probs=False,
                 return_attention_to_latent=False,
                 return_hidden_states=False,
@@ -41,9 +42,10 @@ class DecoderNewsVAE(torch.nn.Module):
                 return_last_hidden_state=False,
                 return_logits=False,
                 return_cross_entropy=True,
-                reduce_seq_dim_ce="sum",
                 reduce_seq_dim_exact_match="mean",
                 reduce_batch_dim_exact_match="mean",
+                reduce_seq_dim_ce="sum",
+                reduce_batch_dim_ce="mean",
                 nucleus_sampling=False,
                 top_k=0,
                 top_p=0.9):
@@ -57,6 +59,7 @@ class DecoderNewsVAE(torch.nn.Module):
                 Token input ids of the output so far or teacher-forced the whole seq.
             attention_mask: Tensor [batch x seq_len]
                 Mask marking the padded tokens (0)
+            labels: Tensor [batch x seq_len]
 
             return_attention_probs: bool
             return_attention_to_latent: bool
@@ -76,6 +79,8 @@ class DecoderNewsVAE(torch.nn.Module):
                 How to reduce the sequence dimension for exact match: 'mean', 'sum', 'none'
             reduce_batch_dim_exact_match:
                 How to reduce the batch dimension for exact match: 'mean', 'sum', 'none'
+            reduce_batch_dim_ce:
+                How to reduce the batch dimension for Cross Entropy: 'mean', 'sum', 'none'
             -> if the last two are mean, it returns exact match accuracy
 
             nucleus_sampling: bool
@@ -93,44 +98,46 @@ class DecoderNewsVAE(torch.nn.Module):
         decoder_outs = self.model(latent_to_decoder_output=latent_to_decoder_output,
                                   input_ids=input_ids,
                                   attention_mask=attention_mask,
-                                  return_attention_probs=False,
-                                  return_attention_to_latent=False,
-                                  return_hidden_states=False,
-                                  return_exact_match=False,
-                                  return_predictions=False,
-                                  return_probabilities=False,
-                                  return_last_hidden_state=False,
-                                  return_logits=False,
-                                  return_cross_entropy=True,
-                                  reduce_seq_dim_ce="sum",
-                                  reduce_seq_dim_exact_match="mean",
-                                  reduce_batch_dim_exact_match="mean",
-                                  nucleus_sampling=False,
-                                  top_k=0,
-                                  top_p=0.9)
+                                  labels=labels,
+                                  return_attention_probs=return_attention_probs,
+                                  return_attention_to_latent=return_attention_to_latent,
+                                  return_hidden_states=return_hidden_states,
+                                  return_exact_match=return_exact_match,
+                                  return_predictions=return_predictions,
+                                  return_probabilities=return_probabilities,
+                                  return_last_hidden_state=return_last_hidden_state,
+                                  return_logits=return_logits,
+                                  return_cross_entropy=return_cross_entropy,
+                                  reduce_seq_dim_ce=reduce_seq_dim_ce,
+                                  reduce_seq_dim_exact_match=reduce_seq_dim_exact_match,
+                                  reduce_batch_dim_exact_match=reduce_batch_dim_exact_match,
+                                  reduce_batch_dim_ce=reduce_batch_dim_ce,
+                                  nucleus_sampling=nucleus_sampling,
+                                  top_k=top_k,
+                                  top_p=top_p)
 
         return decoder_outs
 
-    # TODO: check whether this works. The performance of this run was very poort
-    def reset_to_base_checkpoint(self, gradient_checkpointing=False,
-                                 do_tie_weights=False):
-        """
-        This function resets the decoder (re-initialise with base checkpoint).
-
-        Args:
-            gradient_checkpointing: bool
-                Whether or not to use gradient checkpointing, default: False
-            do_tie_weights: bool
-                Whether or not the weights between encoder and decoder are shared (for warning), default: False
-
-        """
-
-        print("Checking if shared_weights == False, yields {}".format(do_tie_weights == False))
-        assert do_tie_weights is False, "Not resetting the decoder if the weights are shared. Aborting!"
-
-        print(f"Resetting the decoder to roberta-base checkpoint.")
-        self.model = VAE_Decoder_RobertaForCausalLM.from_pretrained("roberta-base",
-                                                                    gradient_checkpointing=gradient_checkpointing)
+    # # TODO: check whether this works. The performance of this run was very poort
+    # def reset_to_base_checkpoint(self, gradient_checkpointing=False,
+    #                              do_tie_weights=False):
+    #     """
+    #     This function resets the decoder (re-initialise with base checkpoint).
+    #
+    #     Args:
+    #         gradient_checkpointing: bool
+    #             Whether or not to use gradient checkpointing, default: False
+    #         do_tie_weights: bool
+    #             Whether or not the weights between encoder and decoder are shared (for warning), default: False
+    #
+    #     """
+    #
+    #     print("Checking if shared_weights == False, yields {}".format(do_tie_weights == False))
+    #     assert do_tie_weights is False, "Not resetting the decoder if the weights are shared. Aborting!"
+    #
+    #     print(f"Resetting the decoder to roberta-base checkpoint.")
+    #     self.model = VAE_Decoder_RobertaForCausalLM.from_pretrained("roberta-base",
+    #                                                                 gradient_checkpointing=gradient_checkpointing)
 
     # # TODO: NOT TESTED YET
     # def log_p_x_z(self, input_ids, attention_mask, latent_z, args):
@@ -172,34 +179,37 @@ class DecoderNewsVAE(torch.nn.Module):
     #     # so likelihood is the negative of that
     #     return - losses
 
-    @staticmethod
-    def sample_from_prior(latent_size=768, n_samples=8, device_name="cuda:0"):
-        """
-        Sampels from prior distribution (factorised standard normal).
+    def autoregressive_decode(self, latent_z, tokenizer, max_seq_len=32,
 
-        Args:
-            latent_size: int
-            n_samples: int
-            device_name: str
+                              labels=None,
 
-        Returns:
-            samples: Tensor [batch, latent_size]
-        """
-        loc = torch.zeros(latent_size, device=device_name)
-        scale = torch.ones(latent_size, device=device_name)
-        prior_dist = torch.distributions.normal.Normal(loc, scale)
-        samples = prior_dist.sample((n_samples,))
+                              return_exact_match=False,
+                              return_cross_entropy=False,
 
-        return samples
+                              reduce_seq_dim_ce="sum",
+                              reduce_batch_dim_ce="mean",
+                              reduce_seq_dim_exact_match="mean",
+                              reduce_batch_dim_exact_match="mean",
 
-    def autoregressive_decode(self, latent_to_decoder, tokenizer, max_seq_len=32, nucleus_sampling=False,
-                              temperature=1.0, top_k=0, top_p=0.0, device_name="cuda:0",
-                              return_attention_to_latent=False):
+                              return_attention_probs=False,
+                              return_attention_to_latent=False,
+
+                              return_hidden_states=False,
+                              return_last_hidden_state=False,
+
+                              return_predictions=True,
+                              return_text_predictions=True,
+
+                              return_probabilities=False,
+                              return_logits=False,
+
+                              nucleus_sampling=False, top_k=0, top_p=0.0,
+                              device_name="cuda:0"):
         """
         This function performs auto-regressive decoding (no grads), given samples from the latent space.
 
         Args:
-            latent_to_decoder: Dict[str, Tensor]
+            latent_z: Dict[str, Tensor]
                 Latents transformed into correct forms (embeddings / memory) for the decoder.
             tokenizer:
             max_seq_len: int:
@@ -208,7 +218,6 @@ class DecoderNewsVAE(torch.nn.Module):
             nucleus_sampling: bool
                 Whether or not to perform top_k_top_p_filtering (nucleus sampling)
                 top_k_top_p_filtering: Filter a distribution of logits using top-k and/or nucleus (top-p) filtering
-            temperature: float
             top_k: int
             top_p: float
             device_name: str:
@@ -218,73 +227,125 @@ class DecoderNewsVAE(torch.nn.Module):
             generated_so_far: Tensor [batch, max_seq_len]
                 Batch of decoded / generated token ids
         """
+        assert (return_exact_match or return_cross_entropy) is (
+                labels is not None), "provide labels if return_exact_match_acc or return_cross_entropy is set to True"
 
-        batch_size = latent_to_decoder["latent_to_embeddings"].shape[0]
+        latent_to_decoder = self.latent_to_decoder(latent_z)
+        batch_size = latent_z.shape[0]
 
         # Add <s> and </s>
         generated_so_far = torch.tensor([[tokenizer.bos_token_id, tokenizer.eos_token_id] for _ in range(batch_size)])
         generated_so_far = generated_so_far.to(device_name)
 
-        attention_to_latent = []
+        attention_to_latent, attention_probs = [], []
+        hidden_states, last_hidden_state = [], []
+        logits, probabilities = [], []
+        exact_match, cross_entropy = [], []
 
         # Sequence length includes start and end token
-        for i in range(max_seq_len-2):
-            # Forward the decoder
-            # decoder_outs = self.model(input_ids=generated_so_far, attention_mask=None,
-            #                           latent_to_decoder_output=latent_to_decoder, labels=None,
-            #                           add_latent_via_embeddings=add_latent_via_embeddings,
-            #                           add_latent_via_memory=add_latent_via_memory,
-            #                           return_cross_entropy=False, return_predictions=False,
-            #                           return_exact_match_acc=False)
+        for i in range(max_seq_len - 1):
+            if labels is not None:
+                labels_so_far = torch.cat([labels[:, :i + 1], labels[:, -1:]], dim=1)
+            else:
+                labels_so_far = None
 
             decoder_outs = self.model(input_ids=generated_so_far, attention_mask=None,
-                                      latent_to_decoder_output=latent_to_decoder, labels=None,
-                                      return_cross_entropy=False, return_predictions=True,
-                                      return_exact_match_acc=False,
-                                      return_attention_probs=return_attention_to_latent)
+                                      latent_to_decoder_output=latent_to_decoder, labels=labels_so_far,
 
+                                      return_cross_entropy=return_cross_entropy,
+                                      return_exact_match=return_exact_match,
 
+                                      reduce_seq_dim_ce="none",
+                                      reduce_batch_dim_ce="none",
+                                      reduce_seq_dim_exact_match="none",
+                                      reduce_batch_dim_exact_match="none",
 
+                                      return_predictions=True,  # needed for input at every time step
+                                      return_probabilities=return_probabilities,
+                                      return_attention_to_latent=return_attention_to_latent,
+                                      return_attention_probs=return_attention_probs,
+                                      return_hidden_states=return_hidden_states,
+                                      return_last_hidden_state=return_last_hidden_state,
+                                      return_logits=return_logits,
+                                      nucleus_sampling=nucleus_sampling,
+                                      top_k=top_k,
+                                      top_p=top_p)
+
+            # Get the predictions of this time step
+            new_preds = decoder_outs['predictions'][:, -1]
+
+            if return_exact_match:
+                exact_match.append(decoder_outs["exact_match"][:, -1])
+
+            if return_cross_entropy:
+                cross_entropy.append(decoder_outs["cross_entropy"][:, -1])
+
+            if return_probabilities:
+                probabilities.append(decoder_outs["probabilities"][:, -1, :])
+
+            if return_logits:
+                logits.append(decoder_outs["logits"][:, -1, :])
+
+            if return_attention_probs:
+                # batch, n_heads, n_layers, seq_len_query, seq_len_val
+                # we only want the query dimension of the current prediction (-1 would be </s> prediction)
+                attention_probs.append(decoder_outs["attention_probs"][:, :, :, -2, :])
 
             if return_attention_to_latent:
-                # a is a tuple of length 12 (12 layers)
-                a = decoder_outs["attention_probs"]
+                attention_to_latent.append(decoder_outs["attention_to_latent"][:, :, :, -2])
 
-                # stack all layers into one big tensor
-                a = torch.stack(a)
+            if return_hidden_states:
+                hidden_states.append(decoder_outs["hidden_states"][:, :, -2, :])
 
-                # batch, n_heads, n_layers, seq_len_query, seq_len_val
-                a = a.permute(1, 2, 0, 3, 4)
+            if return_last_hidden_state:
+                last_hidden_state.append(decoder_outs["last_hidden_state"][:, -2, :])
 
-                # only take the query second to last (-2) token to value latent (0)
-                a = a[:, :, :, -2, 0]
-
-                attention_to_latent.append(a)
-
-            if nucleus_sampling:
-                # The forward of the decoder already cuts of the prediction for the last token
-                logits = decoder_outs["logits"][:, -1, :]
-
-                # Temperature (higher temperature => more likely to sample low probability tokens)
-                if temperature != 1.0:
-                    scores = scores / temperature
-
-                # Top-p/top-k filtering
-                next_token_logscores = top_k_top_p_filtering(logits, top_k=top_k, top_p=top_p)
-
-                # Sample
-                probs = torch.nn.functional.softmax(next_token_logscores, dim=-1)
-                new_preds = torch.multinomial(probs, num_samples=1).squeeze(1)
-            else:
-                new_preds = decoder_outs['predictions'][:, -1]  # argmax predictions
-
+            # Concat into <s> <predictions> </s> format for next round
             generated_so_far = torch.cat(
                 (generated_so_far[:, :-1], new_preds.unsqueeze(1), generated_so_far[:, -1].unsqueeze(1)), dim=1)
 
+        outputs = {}
+
+        if return_logits:
+            outputs["logits"] = torch.stack(logits, dim=1)
+
+        if return_probabilities:
+            outputs["probabilities"] = torch.stack(probabilities, dim=1)
+
+        # what to do with attention_probs?
+        if return_attention_probs:
+            print("an ugly list of all (masked) attentionprobs coming back to you")
+            outputs["attention_probs"] = attention_probs
+
         if return_attention_to_latent:
-            return generated_so_far, torch.stack(attention_to_latent, dim=-1)
-        else:
-            return generated_so_far
+            outputs["attention_to_latent"] = torch.stack(attention_to_latent, dim=-1)
+
+        predictions = generated_so_far[:, 1:-1]
+        if return_predictions:
+            # the </s> is not predicted, neither is the added </s>
+            outputs["predictions"] = predictions
+
+        if return_text_predictions:
+            outputs["text_predictions"] = tokenizer_batch_decode(predictions, tokenizer)
+
+        if return_hidden_states:
+            outputs["hidden_states"] = torch.stack(hidden_states, dim=2)
+
+        if return_last_hidden_state:
+            outputs["last_hidden_state"] = torch.stack(last_hidden_state, dim=1)
+
+        if return_exact_match:
+            outputs["exact_match"] = torch.stack(exact_match, dim=-1)
+            outputs["exact_match"] = self.reduce_correct(outputs["exact_match"], reduce_seq_dim_exact_match, -1)  # seq dim
+            outputs["exact_match"] = self.reduce_correct(outputs["exact_match"], reduce_batch_dim_exact_match, 0)  # batch dim
+
+        if return_cross_entropy:
+            outputs["cross_entropy"] = torch.stack(cross_entropy, dim=-1)
+            outputs["cross_entropy"] = self.model.reduce_correct(outputs["cross_entropy"], reduce_seq_dim_ce, -1)  # seq dim
+            outputs["cross_entropy"] = self.model.reduce_correct(outputs["cross_entropy"], reduce_batch_dim_ce, 0)  # batch dim <- always mean
+
+        return outputs
+
 
 
 class LatentToDecoderNewsVAE(nn.Module):

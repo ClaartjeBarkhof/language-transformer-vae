@@ -742,9 +742,10 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
             return_exact_match=False,
             return_cross_entropy=True,
 
-            reduce_seq_dim_exact_match="sum",
+            reduce_seq_dim_exact_match="mean",
             reduce_batch_dim_exact_match="mean",
-            reduce_seq_dim_ce="mean",
+            reduce_seq_dim_ce="sum",
+            reduce_batch_dim_ce="mean",
 
             return_hidden_states=None,
             return_last_hidden_state=False,
@@ -766,16 +767,17 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
 
 
         """
+
         # Assert a few things
         assert reduce_batch_dim_exact_match in ["mean", "sum", "none"], "reduce_batch_dim_" \
                "exact_match must be one of the following: 'mean', 'sum', 'none'"
         assert reduce_seq_dim_exact_match in ["mean", "sum", "none"] and reduce_seq_dim_ce in ["mean", "sum", "none"], \
                "reduce_seq_dim_exact_match & _ce must be one of the following: 'mean', 'sum', 'none'"
 
-        if return_cross_entropy or return_exact_match and not labels:
+        if (return_cross_entropy or return_exact_match) and labels is None:
             print("Can't return cross entropy or exact match acc if no labels are provided"); quit()
 
-        if return_attention_to_latent and not latent_to_decoder_output:
+        if return_attention_to_latent and latent_to_decoder_output is None:
             print("Can't return attention to latent if no latent is provided."); quit()
 
         # Latent to decoder
@@ -797,14 +799,13 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
             inputs_embeds=None,
             encoder_hidden_states=None,
             encoder_attention_mask=None,
-            output_attentions=return_attention_probs,
+            output_attentions=True,
             output_hidden_states=return_last_hidden_state or return_hidden_states,
             return_dict=True,
         )
 
         # Get outputs and shift the predictions and labels so they align
-        sequence_output = outputs[0]
-        logits = self.lm_head(sequence_output)
+        logits = self.lm_head(outputs.last_hidden_state)
         # we don't care about the last prediction, because that is the prediction at </s>
         logits = logits[:, :-1, :].contiguous()
 
@@ -817,7 +818,7 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
 
         # Attention probabilities
         # This is a tuple of 12 layers of size [batch, 12, seq_len, seq_len + 1]
-        attention_probs = outputs[1] if (return_attention_probs or return_attention_to_latent) else None
+        attention_probs = outputs.attentions if (return_attention_probs or return_attention_to_latent) else None
         attention_to_latent = None
 
         if attention_probs or return_attention_to_latent:
@@ -841,21 +842,24 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
         probs = None
 
         # ONLY CROSS ENTROPY (at train time)
-        if return_cross_entropy and not (return_predictions or return_probabilities):
-            # cross entropy = log_softmax + nll_loss
+        if return_cross_entropy and not (return_predictions or return_probabilities or return_exact_match or nucleus_sampling):
+            # cross entropy = log_softmax + nll_loss, but use cross_entropy function for stability
             cross_entropy = torch.nn.functional.cross_entropy(logits, labels, reduction='none')
             cross_entropy = cross_entropy.reshape(batch_size, seq_len)  # bring back the sequence dimension
 
         # ALSO PREDICT (at inference or validation time)
-        elif return_predictions or return_probabilities or nucleus_sampling:
+        elif return_predictions or return_probabilities or return_exact_match or nucleus_sampling:
+            if return_cross_entropy:
+                # use this as it is numerically stable, not efficient together with softmax
+                # do cross entropy with normal logits, not filtered logits
+                cross_entropy = torch.nn.functional.cross_entropy(logits, labels, reduction='none')
+                cross_entropy = cross_entropy.reshape(batch_size, seq_len)  # bring back the sequence dimension
+
             if nucleus_sampling:
+                # logits are overwritten now
                 logits = top_k_top_p_filtering(logits, top_k=top_k, top_p=top_p)
 
             probs = torch.nn.functional.softmax(logits, dim=-1)
-
-            if return_cross_entropy:
-                cross_entropy = torch.nn.functional.cross_entropy(logits, labels, reduction='none') # use this as it is numerically stable
-                cross_entropy = cross_entropy.reshape(batch_size, seq_len)  # bring back the sequence dimension
 
             if return_predictions or return_exact_match or nucleus_sampling:
                 if nucleus_sampling:
@@ -866,7 +870,7 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
                 if return_exact_match:
                     # TODO: take mask into account for loss (especially for longer sequences,
                     #  now all longer than 64 so not really a problem).
-                    exact_match = (labels == predictions).float()
+                    exact_match = (labels == predictions.squeeze()).float()
                     exact_match = exact_match.reshape(batch_size, seq_len)
 
                 predictions = predictions.reshape((batch_size, seq_len))
@@ -875,23 +879,19 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
         if logits is not None:
             logits = logits.reshape((batch_size, seq_len, vocab_size))
 
-        # Hidden states
-        if return_last_hidden_state and not return_hidden_states:
-            last_hidden_state = outputs.hidden_states[-1]
-            hidden_states = None
-        elif return_last_hidden_state and return_hidden_states:
-            last_hidden_state = outputs.hidden_states[-1]
-            hidden_states = outputs.hidden_states
-        else:
-            last_hidden_state, hidden_states = None, None
-
         # REDUCE CORRECTLY
         if cross_entropy is not None:
             cross_entropy = self.reduce_correct(cross_entropy, reduce_seq_dim_ce, -1)  # seq dim
+            cross_entropy = self.reduce_correct(cross_entropy, reduce_batch_dim_ce, 0)  # batch dim <- always mean
 
         if exact_match is not None:
             exact_match = self.reduce_correct(exact_match, reduce_seq_dim_exact_match, -1)  # seq dim
             exact_match = self.reduce_correct(exact_match, reduce_batch_dim_exact_match, 0)  # batch dim
+
+        if return_hidden_states:
+            hidden_states = torch.stack(outputs.hidden_states, dim=0)
+        else:
+            hidden_states = None
 
         return_dict = {
             "cross_entropy": cross_entropy,
@@ -901,9 +901,15 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
             "attention_to_latent": attention_to_latent if return_attention_to_latent else None,
             "hidden_states": hidden_states if return_hidden_states else None,
             "probabilities": probs if return_probabilities else None,
-            "last_hidden_state": last_hidden_state if return_last_hidden_state else None,
+            "last_hidden_state": outputs.last_hidden_state if return_last_hidden_state else None,
             "logits": logits if return_logits else None
         }
+
+        # Remove everything that is None
+        key_list = list(return_dict.keys())
+        for k in key_list:
+            if return_dict[k] is None:
+                del return_dict[k]
 
         return return_dict
 

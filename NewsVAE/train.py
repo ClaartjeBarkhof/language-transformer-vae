@@ -248,7 +248,7 @@ def determine_beta(global_grad_step,
     return float(beta)
 
 
-def do_valid_step(vae_model, batch, beta, hinge_kl_loss_lambda):
+def do_valid_step(vae_model, batch, beta, hinge_kl_loss_lambda, device_name="cuda:0"):
     """
     Perform a validation step (no grads, eval mode, no autocast?)
 
@@ -274,14 +274,18 @@ def do_valid_step(vae_model, batch, beta, hinge_kl_loss_lambda):
                                 return_cross_entropy=True,
                                 objective='beta-vae',
                                 reduce_seq_dim_ce="sum",
-                                return_exact_match=False)
+                                reduce_batch_dim_ce="mean",
+                                return_exact_match=False,
+                                autoregressive=False,
+                                device_name=device_name)
+
         vae_outputs['total_loss'] = vae_outputs['total_loss'].item()
 
     return vae_outputs
 
 
 def do_train_step(vae_model, batch, optimizer, scheduler, scaler, global_step, beta, hinge_kl_loss_lambda,
-                  use_amp=False, accumulate_n_batches_grad=1):
+                  use_amp=False, accumulate_n_batches_grad=1, device_name="cuda:0"):
     """
     Perform a train step with autocast, gradients enabled and gradient accumulated backward.
 
@@ -313,7 +317,10 @@ def do_train_step(vae_model, batch, optimizer, scheduler, scaler, global_step, b
                                return_cross_entropy=True,
                                objective='beta-vae',
                                reduce_seq_dim_ce="sum",
-                               return_exact_match=False)
+                               reduce_batch_dim_ce="mean",
+                               return_exact_match=False,
+                               autoregressive=False,
+                               device_name=device_name)
 
             loss = losses['total_loss'] / accumulate_n_batches_grad
 
@@ -465,9 +472,10 @@ def train(device_rank, config, run_name):
                                                                             scaler, global_step, beta,
                                                                             config.hinge_loss_lambda,
                                                                             use_amp=config.use_amp,
-                                                                            accumulate_n_batches_grad=config.accumulate_n_batches_grad)
+                                                                            accumulate_n_batches_grad=config.accumulate_n_batches_grad,
+                                                                            device_name=device_name)
                 else:
-                    losses = do_valid_step(vae_model, batch, beta, config.hinge_loss_lambda)
+                    losses = do_valid_step(vae_model, batch, beta, config.hinge_loss_lambda, device_name=device_name)
 
                 # ----------------------------------------------------------------------------------------------------
                 # INSERT STATISTICS, PRINT, LOG, CHECKPOINT
