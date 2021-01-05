@@ -423,7 +423,7 @@ def train(device_rank, config, run_name):
     if config.load_from_checkpoint:
         # Load model and all relevant states and counters
         if config.continue_train_after_checkpoint_loading:
-            optimizer, scheduler, v, vae_model, global_step, \
+            optimizer, scheduler, vae_model, scaler, global_step, \
             epoch, best_valid_loss = utils_train.load_from_checkpoint(vae_model, config.checkpoint_file,
                                                                       optimizer=optimizer, scheduler=scheduler,
                                                                       scaler=scaler, world_master=world_master,

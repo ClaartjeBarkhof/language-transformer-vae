@@ -873,12 +873,6 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
                     exact_match = (labels == predictions.squeeze()).float()
                     exact_match = exact_match.reshape(batch_size, seq_len)
 
-                predictions = predictions.reshape((batch_size, seq_len))
-                probs = probs.reshape((batch_size, seq_len, -1))
-
-        if logits is not None:
-            logits = logits.reshape((batch_size, seq_len, vocab_size))
-
         # REDUCE CORRECTLY
         if cross_entropy is not None:
             cross_entropy = self.reduce_correct(cross_entropy, reduce_seq_dim_ce, -1)  # seq dim
@@ -892,6 +886,15 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
             hidden_states = torch.stack(outputs.hidden_states, dim=0)
         else:
             hidden_states = None
+
+        if return_probabilities:
+            probs = probs.reshape((batch_size, seq_len, -1))
+
+        if return_predictions:
+            predictions = predictions.reshape((batch_size, seq_len))
+
+        if logits is not None:
+            logits = logits.reshape((batch_size, seq_len, vocab_size))
 
         return_dict = {
             "cross_entropy": cross_entropy,

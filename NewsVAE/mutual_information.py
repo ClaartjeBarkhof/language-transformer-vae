@@ -1,11 +1,4 @@
 import os
-import sys;
-sys.path.append("/home/cbarkhof/code-thesis/NewsVAE/")
-sys.path.append("/home/cbarkhof/code-thesis/NewsVAE/evaluation/")
-sys.path.append("/home/cbarkhof/code-thesis/NewsVAE/evaluation/29DEC/")
-sys.path.append("/home/cbarkhof/code-thesis/NewsVAE")
-sys.path.append("/home/cbarkhof/code-thesis/NewsVAE/evaluation")
-sys.path.append("/home/cbarkhof/code-thesis/NewsVAE/evaluation/29DEC")
 from train import get_model_on_device
 from utils_evaluation import valid_dataset_loader_tokenizer
 import torch
@@ -201,15 +194,11 @@ def calc_upper_and_lower_bound_generative_mi(batch_probs, cat_dists=None):
     return lower, upper
 
 
-def main(model_path, valid_loader, device_name="cuda:0", max_batches=10, batch_size=128):
-    print(f"Evaluating mutual information bounds for {model_path}, over "
+def calc_all_mi_bounds(vae_model, valid_loader, device_name="cuda:0", max_batches=10, batch_size=128,
+                       auto_regressive=False):
+    print(f"Evaluating mutual information bounds for over "
           f"{max_batches} batches of size {batch_size}.")
 
-    vae_model = get_model_on_device(device_name=device_name, latent_size=768, gradient_checkpointing=False,
-                                    add_latent_via_memory=True, add_latent_via_embeddings=True,
-                                    do_tie_weights=True, world_master=True)
-
-    _, _, vae_model, _, _, _, _ = load_from_checkpoint(vae_model, model_path, world_master=True, ddp=False, use_amp=False)
 
     lower_rep_mi_all, upper_rep_mi_all = [], []
     lower_gen_mi_all, upper_gen_mi_all = [], []
@@ -219,13 +208,28 @@ def main(model_path, valid_loader, device_name="cuda:0", max_batches=10, batch_s
 
             batch = transfer_batch_to_device(batch, device_name)
 
-            vae_output = vae_model.forward(batch["input_ids"], batch["attention_mask"],
+            vae_output = vae_model.forward(input_ids=batch["input_ids"],
+                                           attention_mask=batch["attention_mask"],
                                            beta=1.0,
-                                           return_predictions=True,
-                                           return_attention_probs=False,
-                                           return_exact_match_acc=False,
+
+                                           auto_regressive=auto_regressive,
+
+                                           return_probabilities=True,
+                                           return_latents=True,
                                            return_mu_logvar=True,
-                                           return_latents=True)
+
+                                           return_exact_match=False,
+                                           return_cross_entropy=True,
+                                           return_predictions=False,
+                                           return_logits=False,
+                                           return_hidden_states=False,
+                                           return_last_hidden_state=False,
+                                           return_attention_to_latent=False,
+                                           return_attention_probs=False,
+                                           return_text_predictions=False,
+                                           tokenizer=None,
+
+                                           device_name=device_name)
 
             # -------------------------------------------#
             # REPRESENTATIONAL MUTUAL INFORMATION BOUNDS #
@@ -257,7 +261,14 @@ def main(model_path, valid_loader, device_name="cuda:0", max_batches=10, batch_s
                 if batch_i == max_batches:
                     break
 
-    return lower_rep_mi_all, upper_rep_mi_all, lower_gen_mi_all, upper_gen_mi_all
+    mi_results = {
+            "lower_rep_mi_all": lower_rep_mi_all,
+            "upper_rep_mi_all": upper_rep_mi_all,
+            "lower_gen_mi_all": lower_gen_mi_all,
+            "upper_gen_mi_all": upper_gen_mi_all
+        }
+
+    return mi_results
 
 
 if __name__ == "__main__":
@@ -282,18 +293,17 @@ if __name__ == "__main__":
     # Calculate MI bounds for these models
     mutual_information_results = {}
     for name, path in run_names_paths_to_evaluate:
-        lower_rep_mi_all, upper_rep_mi_all, lower_gen_mi_all, upper_gen_mi_all = main(path,
-                                                                                      VALID_LOADER,
-                                                                                      device_name=DEVICE_NAME,
-                                                                                      max_batches=MAX_BATCHES,
-                                                                                      batch_size=BATCH_SIZE)
 
-        mutual_information_results[name] = {
-            "lower_rep_mi_all": lower_rep_mi_all,
-            "upper_rep_mi_all": upper_rep_mi_all,
-            "lower_gen_mi_all": lower_gen_mi_all,
-            "upper_gen_mi_all": upper_gen_mi_all
-        }
+        vae_model = get_model_on_device(device_name=DEVICE_NAME, latent_size=768, gradient_checkpointing=False,
+                                        add_latent_via_memory=True, add_latent_via_embeddings=True,
+                                        do_tie_weights=True, world_master=True)
+
+        _, _, vae_model, _, _, _, _ = load_from_checkpoint(vae_model, path, world_master=True, ddp=False,
+                                                           use_amp=False)
+
+        mi_results = calc_all_mi_bounds(vae_model, VALID_LOADER, device_name=DEVICE_NAME, max_batches=MAX_BATCHES, batch_size=BATCH_SIZE)
+
+        mutual_information_results[name] = mi_results
 
     prefix = "/home/cbarkhof/code-thesis/NewsVAE/evaluation/29DEC/"
     pickle_filename = "29DEC-mutual-information-results.p"

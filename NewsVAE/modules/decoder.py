@@ -179,7 +179,7 @@ class DecoderNewsVAE(torch.nn.Module):
     #     # so likelihood is the negative of that
     #     return - losses
 
-    def autoregressive_decode(self, latent_z, tokenizer, max_seq_len=32,
+    def autoregressive_decode(self, latent_z, max_seq_len=32,
 
                               labels=None,
 
@@ -198,7 +198,6 @@ class DecoderNewsVAE(torch.nn.Module):
                               return_last_hidden_state=False,
 
                               return_predictions=True,
-                              return_text_predictions=True,
 
                               return_probabilities=False,
                               return_logits=False,
@@ -234,7 +233,9 @@ class DecoderNewsVAE(torch.nn.Module):
         batch_size = latent_z.shape[0]
 
         # Add <s> and </s>
-        generated_so_far = torch.tensor([[tokenizer.bos_token_id, tokenizer.eos_token_id] for _ in range(batch_size)])
+        eos_token_id, bos_token_id = 2, 0
+
+        generated_so_far = torch.tensor([[bos_token_id, eos_token_id] for _ in range(batch_size)])
         generated_so_far = generated_so_far.to(device_name)
 
         attention_to_latent, attention_probs = [], []
@@ -281,10 +282,10 @@ class DecoderNewsVAE(torch.nn.Module):
                 cross_entropy.append(decoder_outs["cross_entropy"][:, -1])
 
             if return_probabilities:
-                probabilities.append(decoder_outs["probabilities"][:, -1, :])
+                probabilities.append(decoder_outs["probabilities"][:, -1, :].cpu())
 
             if return_logits:
-                logits.append(decoder_outs["logits"][:, -1, :])
+                logits.append(decoder_outs["logits"][:, -1, :].cpu())
 
             if return_attention_probs:
                 # batch, n_heads, n_layers, seq_len_query, seq_len_val
@@ -292,13 +293,13 @@ class DecoderNewsVAE(torch.nn.Module):
                 attention_probs.append(decoder_outs["attention_probs"][:, :, :, -2, :])
 
             if return_attention_to_latent:
-                attention_to_latent.append(decoder_outs["attention_to_latent"][:, :, :, -2])
+                attention_to_latent.append(decoder_outs["attention_to_latent"][:, :, :, -2].cpu())
 
             if return_hidden_states:
-                hidden_states.append(decoder_outs["hidden_states"][:, :, -2, :])
+                hidden_states.append(decoder_outs["hidden_states"][:, :, -2, :].cpu())
 
             if return_last_hidden_state:
-                last_hidden_state.append(decoder_outs["last_hidden_state"][:, -2, :])
+                last_hidden_state.append(decoder_outs["last_hidden_state"][:, -2, :].cpu())
 
             # Concat into <s> <predictions> </s> format for next round
             generated_so_far = torch.cat(
@@ -325,9 +326,6 @@ class DecoderNewsVAE(torch.nn.Module):
             # the </s> is not predicted, neither is the added </s>
             outputs["predictions"] = predictions
 
-        if return_text_predictions:
-            outputs["text_predictions"] = tokenizer_batch_decode(predictions, tokenizer)
-
         if return_hidden_states:
             outputs["hidden_states"] = torch.stack(hidden_states, dim=2)
 
@@ -336,8 +334,8 @@ class DecoderNewsVAE(torch.nn.Module):
 
         if return_exact_match:
             outputs["exact_match"] = torch.stack(exact_match, dim=-1)
-            outputs["exact_match"] = self.reduce_correct(outputs["exact_match"], reduce_seq_dim_exact_match, -1)  # seq dim
-            outputs["exact_match"] = self.reduce_correct(outputs["exact_match"], reduce_batch_dim_exact_match, 0)  # batch dim
+            outputs["exact_match"] = self.model.reduce_correct(outputs["exact_match"], reduce_seq_dim_exact_match, -1)  # seq dim
+            outputs["exact_match"] = self.model.reduce_correct(outputs["exact_match"], reduce_batch_dim_exact_match, 0)  # batch dim
 
         if return_cross_entropy:
             outputs["cross_entropy"] = torch.stack(cross_entropy, dim=-1)

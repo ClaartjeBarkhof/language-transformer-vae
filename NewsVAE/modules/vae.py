@@ -1,5 +1,6 @@
 import torch.nn as nn
 from utils_external import tie_weights
+from utils_evaluation import tokenizer_batch_decode
 import torch
 from modules.decoder import DecoderNewsVAE
 from modules.encoder import EncoderNewsVAE
@@ -95,8 +96,6 @@ class NewsVAE(torch.nn.Module):
                 The result dictionary of the full forward pass with metrics
                 and possibly predictions.
         """
-        assert not (auto_regressive is (tokenizer is None) is True), "if auto-regressive, pass tokenizer!"
-
         # Forward through encoder and sample
         mu, logvar, latent_z, kl_loss, hinge_kl_loss, mmd_loss = self.encoder.encode(input_ids=input_ids,
                                                                                      attention_mask=attention_mask,
@@ -127,7 +126,6 @@ class NewsVAE(torch.nn.Module):
             decoder_outs = self.decoder.autoregressive_decode(
                                         latent_z,
                                         labels=copy.copy(input_ids),
-                                        tokenizer=tokenizer,
                                         max_seq_len=input_ids.shape[1],
                                         return_exact_match=return_exact_match,
                                         return_cross_entropy=return_cross_entropy,
@@ -136,7 +134,6 @@ class NewsVAE(torch.nn.Module):
                                         return_hidden_states=return_hidden_states,
                                         return_last_hidden_state=return_last_hidden_state,
                                         return_predictions=return_predictions,
-                                        return_text_predictions=return_text_predictions,
                                         return_probabilities=return_probabilities,
                                         return_logits=return_logits,
                                         nucleus_sampling=nucleus_sampling,
@@ -149,6 +146,12 @@ class NewsVAE(torch.nn.Module):
                                         device_name=device_name
                                        )
 
+        if return_text_predictions:
+            if tokenizer is None:
+                print("You have to provide a tokenizer in order to get text predictions.")
+            else:
+                decoder_outs["text_predictions"] = tokenizer_batch_decode(decoder_outs["predictions"], tokenizer)
+
         # Make sure the reconstruction loss that is part of the
         # total loss is always reduce with a sum over sequence dimension
         # and mean over batch dimension. This is called "recon_loss"
@@ -156,12 +159,13 @@ class NewsVAE(torch.nn.Module):
         recon_loss = decoder_outs["cross_entropy"]
         batch_size, seq_len = input_ids.shape
 
-        if recon_loss.shape == (batch_size, seq_len - 1):
-            recon_loss = recon_loss.sum(dim=1).mean(dim=0)
-        elif len(recon_loss) == (seq_len - 1):
-            recon_loss = recon_loss.sum()
-        elif len(recon_loss) == batch_size:
-            recon_loss = recon_loss.mean()
+        if recon_loss.dim() != 0:
+            if recon_loss.shape == (batch_size, seq_len - 1):
+                recon_loss = recon_loss.sum(dim=1).mean(dim=0)
+            elif len(recon_loss) == (seq_len - 1):
+                recon_loss = recon_loss.sum()
+            elif len(recon_loss) == batch_size:
+                recon_loss = recon_loss.mean()
 
         # Construct the total loss
         total_loss = None
