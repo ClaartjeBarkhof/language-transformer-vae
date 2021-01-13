@@ -246,7 +246,7 @@ class DecoderNewsVAE(torch.nn.Module):
         # Sequence length includes start and end token
         for i in range(max_seq_len - 1):
             if labels is not None:
-                labels_so_far = torch.cat([labels[:, :i + 1], labels[:, -1:]], dim=1)
+                labels_so_far = labels[:, :i+2]
             else:
                 labels_so_far = None
 
@@ -293,6 +293,7 @@ class DecoderNewsVAE(torch.nn.Module):
                 attention_probs.append(decoder_outs["attention_probs"][:, :, :, -2, :])
 
             if return_attention_to_latent:
+                # Get not the last token (which is predicting from </s> to nonsense), but the second to last
                 attention_to_latent.append(decoder_outs["attention_to_latent"][:, :, :, -2].cpu())
 
             if return_hidden_states:

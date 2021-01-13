@@ -22,8 +22,8 @@ class NewsData:
     """
     def __init__(self, dataset_name: str, tokenizer_name: str,
                  batch_size: int = 8, num_workers: int = 4,
-                 pin_memory: bool = True, debug=False, max_seq_len = 64,
-                 debug_data_len=1000, device="cuda:0"):
+                 pin_memory: bool = True, max_seq_len = 64, device="cuda:0"):
+
         # DATA DIRECTORY
         os.makedirs('NewsData', exist_ok=True)
 

@@ -98,46 +98,46 @@ class EncoderNewsVAE(torch.nn.Module):
 
         return mu, logvar, latent_z, kl_loss, hinge_kl_loss, mmd_loss
 
-    # TODO: NOT TESTED
-    def log_q_z_x(self, latent_z, input_ids=None, attention_mask=None, mu=None, logvar=None):
-        """
-        This function computes log q(z|x) for a set of latents z sampled from
-        posterior that is defined by the encoded input or by the parameters.
-
-        Args:
-            z: Tensor [batch, n_samples, latent_size]
-                Different latents that will be evaluated under the posterior q
-
-        Returns:
-            log_density: Tensor [batch, n_samples]
-                Log density, log q(z|x), for all samples
-        """
-
-        batch, n_samples, latent_size = latent_z.shape
-
-        # Either provide input or parameters of the distribution q_z_x
-        params_present = mu is not None and logvar is not None
-        inputs_present = input_ids is not None and attention_mask is not None
-
-        assert params_present or inputs_present, "Either provide inputs or provide parameters of the distributions"
-
-        # Do forward if only inputs are given
-        if not params_present:
-            mu, logvar = self.model(input_ids=input_ids,
-                                    attention_mask=attention_mask)
-
-        # (batch_size, 1, nz)
-        mu, logvar = mu.unsqueeze(1), logvar.unsqueeze(1)
-        var = logvar.exp()
-
-        # (batch_size, nsamples, nz)
-        dev = latent_z - mu
-
-        # (batch_size, nsamples)
-        log_density = -0.5 * ((dev ** 2) / var).sum(dim=-1) - 0.5 * (
-                    latent_size * math.log(2 * math.pi) + logvar.sum(-1))
-
-        return log_density
+    # # TODO: NOT TESTED
+    # def log_q_z_x(self, latent_z, input_ids=None, attention_mask=None, mu=None, logvar=None):
+    #     """
+    #     This function computes log q(z|x) for a set of latents z sampled from
+    #     posterior that is defined by the encoded input or by the parameters.
+    #
+    #     Args:
+    #         z: Tensor [batch, n_samples, latent_size]
+    #             Different latents that will be evaluated under the posterior q
+    #
+    #     Returns:
+    #         log_density: Tensor [batch, n_samples]
+    #             Log density, log q(z|x), for all samples
+    #     """
+    #
+    #     batch, n_samples, latent_size = latent_z.shape
+    #
+    #     # Either provide input or parameters of the distribution q_z_x
+    #     params_present = mu is not None and logvar is not None
+    #     inputs_present = input_ids is not None and attention_mask is not None
+    #
+    #     assert params_present or inputs_present, "Either provide inputs or provide parameters of the distributions"
+    #
+    #     # Do forward if only inputs are given
+    #     if not params_present:
+    #         mu, logvar = self.model(input_ids=input_ids,
+    #                                 attention_mask=attention_mask)
+    #
+    #     # (batch_size, 1, nz)
+    #     mu, logvar = mu.unsqueeze(1), logvar.unsqueeze(1)
+    #     var = logvar.exp()
+    #
+    #     # (batch_size, nsamples, nz)
+    #     dev = latent_z - mu
+    #
+    #     # (batch_size, nsamples)
+    #     log_density = -0.5 * ((dev ** 2) / var).sum(dim=-1) - 0.5 * (
+    #                 latent_size * math.log(2 * math.pi) + logvar.sum(-1))
+    #
+    #     return log_density
 
     @staticmethod
     def reparameterize(mu, logvar, n_samples=1):

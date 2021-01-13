@@ -34,7 +34,9 @@ def get_optimizer(vae_model, learning_rate=2e-5):
     return optimizer
 
 
-def get_scheduler(optimizer, warmup_updates=4000, lr_scheduler=True, lr=2e-5):
+def get_scheduler(optimizer, warmup_updates=4000, lr_scheduler=True,
+                  linear_lr_sched_grad_total_steps=5500,
+                  lr_scheduler_type="vaswani", lr=2e-5):
     """
     Returns a learning rate scheduler with linear warm-up (if lr_scheduler).
     Otherwise it returns the unscaled learning rate.
@@ -49,18 +51,29 @@ def get_scheduler(optimizer, warmup_updates=4000, lr_scheduler=True, lr=2e-5):
         scheduler: LambdaLR scheduler
             This is the learning rate scheduler that may be updated during training by calling .step()
     """
+
     # Note that my implementation uses step = gradient step (or global step / accumulate_n_steps)
     def get_lr_scale(step):
-        step += 1  # to avoid zero division
+        step = max(1.0, step)  # to avoid zero division
 
         # If using a scheduler, calculate the scaling coefficient
         if lr_scheduler:
             # Square root decay as described in Vaswani et al. (2017), section 5.3
-            # performs linear warm-up
-            arg1 = 1 / np.sqrt(step)
-            arg2 = step * (warmup_updates ** (-1.5))
-            d_model = 768
-            lr_scale = (1 / np.sqrt(d_model)) * np.min([arg1, arg2])
+            if lr_scheduler_type == "vaswani":
+                # performs linear warm-up
+                arg1 = 1 / np.sqrt(step)
+                arg2 = step * (warmup_updates ** (-1.5))
+                d_model = 768
+                lr_scale = (1 / np.sqrt(d_model)) * np.min([arg1, arg2])
+
+            # Else: linear warmup and decay
+            else:
+                if step < warmup_updates:
+                    lr_scale = float(step / warmup_updates) * lr
+                else:
+                    ratio = max(0.0, float(linear_lr_sched_grad_total_steps - step) /
+                                float(max(1, linear_lr_sched_grad_total_steps - warmup_updates)))
+                    lr_scale = ratio * lr
 
         # Scale to the set learning rate (fixed)
         else:
@@ -76,8 +89,7 @@ def get_scheduler(optimizer, warmup_updates=4000, lr_scheduler=True, lr=2e-5):
     return scheduler
 
 
-def get_dataloader(phases, ddp=False, batch_size=12, num_workers=8, debug_data=False,
-                   debug_data_len=200, max_seq_len=64, world_size=4,
+def get_dataloader(phases, ddp=False, batch_size=12, num_workers=8, max_seq_len=64, world_size=4,
                    dataset_name="cnn_dailymail", tokenizer_name="roberta",
                    device_name="cuda:0", world_master=True, gpu_rank=0):
     """
@@ -90,10 +102,6 @@ def get_dataloader(phases, ddp=False, batch_size=12, num_workers=8, debug_data=F
             Whether or not to use Distributed Data Parallel
         batch_size: int
         num_workers: int
-        debug_data: bool
-            Whether or not to use a fraction of the data for debugging
-        debug_data_len: int:
-            How many data points to use for debugging if debug mode is on.
         max_seq_len: int
         world_size: int
             Number of nodes x number of GPUs
@@ -127,8 +135,7 @@ def get_dataloader(phases, ddp=False, batch_size=12, num_workers=8, debug_data=F
     # Get data
     data = NewsData(dataset_name, tokenizer_name,
                     batch_size=batch_size, num_workers=num_workers,
-                    pin_memory=True, debug=debug_data,
-                    debug_data_len=debug_data_len, max_seq_len=max_seq_len,
+                    pin_memory=True, max_seq_len=max_seq_len,
                     device=device_name)
 
     for phase in phases:
@@ -175,13 +182,13 @@ def get_model_on_device(device_name="cuda:0", latent_size=768, gradient_checkpoi
 
     if world_master: print("Loading model...")
 
-    decoder = DecoderNewsVAE(gradient_checkpointing=gradient_checkpointing)
+    decoder = DecoderNewsVAE(gradient_checkpointing=gradient_checkpointing,
+                             add_latent_via_memory=add_latent_via_memory,
+                             add_latent_via_embeddings=add_latent_via_embeddings,
+                             latent_size=latent_size)
     encoder = EncoderNewsVAE(gradient_checkpointing=gradient_checkpointing, latent_size=latent_size)
 
-    vae_model = NewsVAE(encoder, decoder, latent_size=latent_size,
-                        add_latent_via_memory=add_latent_via_memory,
-                        add_latent_via_embeddings=add_latent_via_embeddings,
-                        do_tie_weights=do_tie_weights)
+    vae_model = NewsVAE(encoder, decoder, do_tie_weights=do_tie_weights)
 
     vae_model = vae_model.to(device_name)
 
@@ -226,26 +233,28 @@ def determine_beta(global_grad_step,
         # First half of cycle grow linearly from 0 -> 1
         if cycle_step < (kl_annealing_grad_steps_per_cycle / 2):
             if global_grad_step > 0:
-                beta = cycle_step / (kl_annealing_grad_steps_per_cycle / 2)
+                beta_scale = cycle_step / (kl_annealing_grad_steps_per_cycle / 2)
             else:
-                beta = 0.0
+                beta_scale = 0.0
 
         # Second half of the cycle, beta = 1.0
         else:
-            beta = 1.0
+            beta_scale = 1.0
 
     # LINEAR / WARMUP ANNEALING
     elif kl_linear_annealing:
         if global_grad_step < kl_annealing_grad_steps_linear:
-            beta = (global_grad_step + 1) / kl_annealing_grad_steps_linear
+            beta_scale = (global_grad_step + 1) / kl_annealing_grad_steps_linear
         else:
-            beta = 1.0
+            beta_scale = 1.0
 
     # NO ANNEALING
     else:
-        beta = config_beta
+        beta_scale = 1.0
 
-    return float(beta)
+    beta = float(config_beta) * float(beta_scale)
+
+    return beta
 
 
 def do_valid_step(vae_model, batch, beta, hinge_kl_loss_lambda, device_name="cuda:0"):
@@ -259,6 +268,7 @@ def do_valid_step(vae_model, batch, beta, hinge_kl_loss_lambda, device_name="cud
             The current beta to balance the KL divergence in the loss.
         hinge_kl_loss_lambda: float
             What the minimal value of KL should be capped at per dimension
+        device_name: str
     Returns:
         losses: Dict[str, Union[float, Tensor]]
             statistics accumulated in a dict
@@ -276,7 +286,7 @@ def do_valid_step(vae_model, batch, beta, hinge_kl_loss_lambda, device_name="cud
                                 reduce_seq_dim_ce="sum",
                                 reduce_batch_dim_ce="mean",
                                 return_exact_match=False,
-                                autoregressive=False,
+                                auto_regressive=False,
                                 device_name=device_name)
 
         vae_outputs['total_loss'] = vae_outputs['total_loss'].item()
@@ -285,7 +295,7 @@ def do_valid_step(vae_model, batch, beta, hinge_kl_loss_lambda, device_name="cud
 
 
 def do_train_step(vae_model, batch, optimizer, scheduler, scaler, global_step, beta, hinge_kl_loss_lambda,
-                  use_amp=False, accumulate_n_batches_grad=1, device_name="cuda:0"):
+                  use_amp=False, accumulate_n_batches_grad=1, device_name="cuda:0", gradient_clipping=True):
     """
     Perform a train step with autocast, gradients enabled and gradient accumulated backward.
 
@@ -304,6 +314,7 @@ def do_train_step(vae_model, batch, optimizer, scheduler, scaler, global_step, b
         accumulate_n_batches_grad: int
         beta: float
         hinge_kl_loss_lambda: float
+        device_name: str
     """
 
     vae_model.train()
@@ -319,29 +330,33 @@ def do_train_step(vae_model, batch, optimizer, scheduler, scaler, global_step, b
                                reduce_seq_dim_ce="sum",
                                reduce_batch_dim_ce="mean",
                                return_exact_match=False,
-                               autoregressive=False,
+                               auto_regressive=False,
                                device_name=device_name)
 
             loss = losses['total_loss'] / accumulate_n_batches_grad
+
+    # All steps below follow what is described on this page:
+    # https://pytorch.org/docs/stable/notes/amp_examples.html#gradient-clipping
 
     # Gradient accumulate in here
     scaler.scale(loss).backward()
 
     # If gradient accumulated long enough: set a step
     if (global_step + 1) % accumulate_n_batches_grad == 0:
+        # Advance the learning rate scheduler by 1 (needs to be done before optimizer.step())
+        scheduler.step()
 
         # GRADIENT CLIPPING
-        # Unscales the gradients of optimizer's assigned params in-place
-        scaler.unscale_(optimizer)
-        # Since the gradients of optimizer's assigned params are unscaled, clips as usual:
-        torch.nn.utils.clip_grad_norm_(vae_model.parameters(), 1.0)
+        if gradient_clipping:
+            # Unscales the gradients of optimizer's assigned params in-place
+            scaler.unscale_(optimizer)
+
+            # Since the gradients of optimizer's assigned params are unscaled, clips as usual:
+            torch.nn.utils.clip_grad_norm_(vae_model.parameters(), 1.0)
 
         # SCALER
         scaler.step(optimizer)  # instead of optimizer.step()
         scaler.update()
-
-        # Advance the learning rate scheduler by 1
-        scheduler.step()
 
         # Zero the gradients only here
         optimizer.zero_grad()
@@ -388,16 +403,18 @@ def train(device_rank, config, run_name):
 
     # Data loaders / data set / samplers (if ddp)
     data_loaders, data, samplers = get_dataloader(["train", "validation"], ddp=config.ddp, batch_size=config.batch_size,
-                                                  num_workers=config.num_workers, debug_data=config.debug_data,
-                                                  debug_data_len=config.debug_data_len, max_seq_len=config.max_seq_len,
+                                                  num_workers=config.num_workers, max_seq_len=config.max_seq_len,
                                                   world_size=world_size, dataset_name=config.dataset_name,
                                                   tokenizer_name=config.tokenizer_name,
                                                   device_name=device_name, world_master=world_master,
                                                   gpu_rank=device_rank)
 
     # Optimizer, learning rate scheduler and amp scaler
-    optimizer = get_optimizer(vae_model, 1.0)  # lr is set to 1.0 because the scheduler takes care of the actual learning rate
-    scheduler = get_scheduler(optimizer, config.lr_warmup_updates, config.lr_scheduler, config.lr)
+    optimizer = get_optimizer(vae_model,
+                              1.0)  # lr is set to 1.0 because the scheduler takes care of the actual learning rate
+    scheduler = get_scheduler(optimizer, warmup_updates=config.lr_warmup_updates, lr_scheduler=config.lr_scheduler,
+                              linear_lr_sched_grad_total_steps=config.linear_lr_sched_grad_total_steps,
+                              lr_scheduler_type=config.lr_scheduler_type, lr=config.lr)
     scaler = GradScaler(enabled=config.use_amp)
 
     # Set-up DDP
@@ -450,7 +467,6 @@ def train(device_rank, config, run_name):
 
             max_steps = max_train_steps_epoch_per_rank if phase == 'train' else max_valid_steps_epoch_per_rank
 
-            # TODO: add profiler to keep track of timing
             for batch_i, batch in enumerate(data_loaders[phase]):
                 # ----------------------------------------------------------------------------------------------------
                 # TRAIN / VALIDATION STEPS
@@ -473,7 +489,8 @@ def train(device_rank, config, run_name):
                                                                             config.hinge_loss_lambda,
                                                                             use_amp=config.use_amp,
                                                                             accumulate_n_batches_grad=config.accumulate_n_batches_grad,
-                                                                            device_name=device_name)
+                                                                            device_name=device_name,
+                                                                            gradient_clipping=config.gradient_clipping)
                 else:
                     losses = do_valid_step(vae_model, batch, beta, config.hinge_loss_lambda, device_name=device_name)
 

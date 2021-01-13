@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -p gpu
-#SBATCH -t 02:00:00
+#SBATCH -t 10:00:00
 #SBATCH --output /home/cbarkhof/slurm-logs/%j-slurm-log.out
 
 module purge  # unload all that are active

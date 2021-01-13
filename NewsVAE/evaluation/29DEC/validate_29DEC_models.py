@@ -1,7 +1,9 @@
+import sys
+sys.path.append("../../")
+sys.path.append("/home/cbarkhof/code-thesis/NewsVAE")
 import train
 import utils_train
 import os
-import sys; sys.path.append("../../")
 import validate_evaluate
 from utils_evaluation import valid_dataset_loader_tokenizer
 import pickle
@@ -29,9 +31,18 @@ def validate_models_29dec(max_batches=-1, batch_size_mi_calc=128, n_batches_mi_c
 
     run_dir = '/home/cbarkhof/code-thesis/NewsVAE/Runs'
 
-    runs_29DEC_names = ["-".join(run_name.split('-')[2:-5]) for run_name in os.listdir(run_dir) if "29DEC" in run_name]
-    runs_29DEC_paths = [run_dir + '/' + run_name + '/checkpoint-best.pth' for run_name in os.listdir(run_dir) if
-                        "29DEC" in run_name]
+    # runs_29DEC_names = ["-".join(run_name.split('-')[2:-5]) for run_name in os.listdir(run_dir) if "29DEC" in run_name]
+    # runs_29DEC_paths = [run_dir + '/' + run_name + '/checkpoint-54000.pth' for run_name in os.listdir(run_dir) if
+    #                     "29DEC" in run_name]
+    #
+    # runs_29DEC_names.append("Beta-VAE-18NOV-sanity-check-model")
+    # runs_29DEC_paths.append("/home/cbarkhof/code-thesis/NewsVAE/Runs/18NOV-BETA-VAE-run-2020-11-18-12:36:55/checkpoint-best.pth")
+    #
+    # runs_29DEC_names.append("MMD-VAE-18NOV-sanity-check-model")
+    # runs_29DEC_paths.append("/home/cbarkhof/code-thesis/NewsVAE/Runs/18NOV-MMD-VAE-run-2020-11-18-12:36:55/checkpoint-50000.pth")
+
+    runs_29DEC_paths = ["/home/cbarkhof/code-thesis/NewsVAE/Runs/23NOV-AUTOENCODER-run-2020-11-23-18:36:12/checkpoint-best.pth"]
+    runs_29DEC_names = ["23NOV-autoencoder"]
 
     save_dir = "/home/cbarkhof/code-thesis/NewsVAE/evaluation/29DEC/results-validation/"
     os.makedirs(save_dir, exist_ok=True)

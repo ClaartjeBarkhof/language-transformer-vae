@@ -8,6 +8,7 @@ import torch.backends.cudnn as cudnn
 import numpy as np
 import wandb
 
+
 # ----------------------------------------------------------------------------------------------------
 # INITIALISATION STUFF
 # ----------------------------------------------------------------------------------------------------
@@ -123,7 +124,8 @@ def determine_max_epoch_steps_per_rank(max_train_steps_epoch_per_rank, max_valid
     Args:
 
     """
-    assert "train" in datasets_dict and "validation" in datasets_dict, "-> Expects a dataset with both train and validation keys present."
+    assert "train" in datasets_dict and "validation" in datasets_dict, \
+        "-> Expects a dataset with both train and validation keys present."
 
     # How many batches are there in the dataset per rank
     n_train_batches_per_rank = int(len(datasets_dict['train']) / (world_size * batch_size))
@@ -268,6 +270,7 @@ def change_checkpoint_to_after_refactor_2(state_dict):
         new_state_dict[name] = v
     return new_state_dict
 
+
 def save_checkpoint_model(vae_model, optimizer, scheduler, scaler, run_name, code_dir_path,
                           global_step, best_valid_loss, epoch, best=False):
     """
@@ -368,23 +371,26 @@ def init_logging(vae_model, run_name, code_dir_path, wandb_project, config):
 
 def log_stats_epoch(stats, epoch, global_step, global_grad_step):
     """
-    Log stats of epoch to W&B.
+    Log mean stats of epoch to W&B.
 
     Args:
         stats: defaultDict
             Nested dict containing all the statistics that are kept track of.
         epoch: int
+        global_step: int
+        global_grad_step: int
     """
 
     logs = {}
     for phase, phase_stats in stats[epoch].items():
         for stat_name, stat in phase_stats.items():
-            log_name = "EPOCH-STATS-{}-{}".format(phase, stat_name)
+            log_name = "Epoch mean ({}) {}".format(phase, stat_name)
+            print(log_name)
             logs[log_name] = np.mean(stat)
 
     logs['epoch'] = epoch
-    logs['global_step'] = global_step
-    logs['global_grad_step'] = global_grad_step
+    logs['global step'] = global_step
+    logs['global grad step'] = global_grad_step
     wandb.log(logs)
 
 
@@ -407,14 +413,13 @@ def log_losses_step(losses, phase, epoch, log_every_n_steps, global_step, global
         beta: float
     """
 
-    logs = {"STEP-STATS-{}-{} (steps x {})".format(phase, stat_name, log_every_n_steps): v for stat_name, v in
+    logs = {"Step log ({}) {}".format(phase, stat_name, log_every_n_steps): v for stat_name, v in
             losses.items()}
-    logs["{}-epoch".format(phase)] = epoch
+    logs["epoch"] = epoch
     logs["beta"] = beta
-    logs["beta_KL"] = beta * losses["kl_loss"]  # scaled KL loss
-    logs["global_step"] = global_step
-    logs["global_grad_step"] = global_grad_step
-    logs["STEP-STATS-Learning rate (steps x {})".format(log_every_n_steps)] = lr
+    logs["global step"] = global_step
+    logs["global gradient step"] = global_grad_step
+    logs["Step log ({}) learning rate".format(phase)] = lr
     wandb.log(logs)
 
 
@@ -440,8 +445,10 @@ def insert_stats(stats, new_stats, epoch, phase):
         # Make a list to save values to if first iteration of epoch
         if type(stats[epoch][phase][stat_name]) != list:
             stats[epoch][phase][stat_name] = []
-
-        stats[epoch][phase][stat_name].append(value)
+        if torch.is_tensor(value):
+            stats[epoch][phase][stat_name].append(value.item())
+        else:
+            stats[epoch][phase][stat_name].append(value)
 
     return stats
 
@@ -500,8 +507,8 @@ def print_stats(stats, epoch, phase, global_step, max_global_train_steps,
         lr: float
     """
     print_string = "EPOCH {:4} | STEP {:5}/{:5} | GRAD STEP {:5}/{:5} | {:5} {:6}/{:6}".format(
-        epoch, global_step+1, max_global_train_steps, global_grad_step+1,
-        max_global_grad_train_steps, phase, batch_i+1, phase_max_steps)
+        epoch, global_step + 1, max_global_train_steps, global_grad_step + 1,
+        max_global_grad_train_steps, phase, batch_i + 1, phase_max_steps)
 
     for s, v in stats[epoch][phase].items():
         print_string += " | {:8}: {:8.4f}".format(s, v[-1])

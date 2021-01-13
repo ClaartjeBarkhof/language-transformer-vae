@@ -6,11 +6,9 @@ from modules.decoder import DecoderNewsVAE
 from modules.encoder import EncoderNewsVAE
 import copy
 
+
 class NewsVAE(torch.nn.Module):
     def __init__(self, encoder, decoder,
-                 latent_size=768,
-                 add_latent_via_memory=True,
-                 add_latent_via_embeddings=True,
                  do_tie_weights=True):
         super(NewsVAE, self).__init__()
 
@@ -91,6 +89,7 @@ class NewsVAE(torch.nn.Module):
             nucleus_sampling: bool
             top_k: int
             top_p: float
+            device_name: str
         Returns:
             losses: Dict[str, Union[float, Tensor]
                 The result dictionary of the full forward pass with metrics
@@ -237,12 +236,13 @@ if __name__ == "__main__":
     memory_mechanism = True
     tied_weights = True
 
-    dec_model = DecoderNewsVAE(gradient_checkpointing=False, )
+    dec_model = DecoderNewsVAE(gradient_checkpointing=False,
+                               add_latent_via_memory=memory_mechanism,
+                               add_latent_via_embeddings=embedding_mechanism,
+                               latent_size=latent_dim)
     enc_model = EncoderNewsVAE(gradient_checkpointing=False, latent_size=latent_dim)
 
-    vae_model = NewsVAE(enc_model, dec_model, latent_size=latent_dim,
-                        add_latent_via_memory=memory_mechanism,
-                        add_latent_via_embeddings=embedding_mechanism,
+    vae_model = NewsVAE(enc_model, dec_model,
                         do_tie_weights=tied_weights)
 
     print("done loading VAE!")

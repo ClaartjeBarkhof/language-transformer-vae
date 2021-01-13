@@ -823,14 +823,15 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
 
         if attention_probs or return_attention_to_latent:
             # stack all layers into one big tensor
+            # dimensions are: layers, batch, n_heads, query_dim, key_value_dim
             attention_probs = torch.stack(attention_probs)
 
             # batch, n_heads, n_layers, seq_len_query, seq_len_val
             attention_probs = attention_probs.permute(1, 2, 0, 3, 4)
 
             if return_attention_to_latent:
-                # get attention to latent only, for all
-                attention_to_latent = attention_probs[:, :, :, :, 0]
+                # get attention to latent only, for all tokens except start and end
+                attention_to_latent = attention_probs[:, :, :, 1:-1, 0]
 
         # Get rid of the sequence dimension (merge into batch dimension)
         batch_size, seq_len, vocab_size = logits.shape

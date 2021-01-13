@@ -12,6 +12,37 @@ import numpy as np
 # tokenizer_batch_decode
 # reconstruct_autoregressive
 
+
+def ngrams_to_positions(ngrams):
+    ngram_to_pos = {}
+    for i, ngram in enumerate(ngrams):
+        if ngram in ngram_to_pos:
+            ngram_to_pos[ngram].append(i)
+        else:
+            ngram_to_pos[ngram] = [i]
+    return ngram_to_pos
+
+
+def find_ngrams(input_list, n):
+    ngrams = list(zip(*[input_list[i:] for i in range(n)]))
+    ngrams = [frozenset(ng) for ng in ngrams]
+    return ngrams
+
+
+def get_matching_ngram_stats(pred_list, target_list, n):
+
+    pred_ngrams = find_ngrams(pred_list, n)
+    target_ngrams = find_ngrams(target_list, n)
+    target_ngrams_to_pos = ngrams_to_positions(target_ngrams)
+
+    matching_pos = []
+    for ngram in pred_ngrams:
+        if ngram in target_ngrams_to_pos:
+            matching_pos.extend(target_ngrams_to_pos[ngram])
+
+    return matching_pos
+
+
 def valid_dataset_loader_tokenizer(batch_size=32, num_workers=4,
                                    dataset_path="/home/cbarkhof/code-thesis/NewsVAE/"
                                                 "NewsData/22DEC-cnn_dailymail-roberta-seqlen64/validation"):
@@ -45,8 +76,6 @@ def valid_dataset_loader_tokenizer(batch_size=32, num_workers=4,
           f"{int(np.floor(len(valid_dataset) / batch_size))}")
 
     return valid_dataset, tokenizer, valid_loader
-
-
 
 
 def sample_text_autoregressive(vae_model, tokenizer, add_latent_via_embeddings=True,

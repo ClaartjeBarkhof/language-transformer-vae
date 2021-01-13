@@ -9,6 +9,9 @@ from mutual_information import calc_all_mi_bounds
 
 def validation_set_results(vae_model, valid_loader, tokenizer, device_name="cuda:0",
                            max_batches=-1, batch_size_mi_calc=128, n_batches_mi_calc=20):
+
+    vae_model.eval()
+
     result_dict = {
         "text_predictions": [],
         "predictions": [],
@@ -134,6 +137,8 @@ def validation_set_results(vae_model, valid_loader, tokenizer, device_name="cuda
         for k, v in group_results.items():
             if isinstance(v[0], np.ndarray) and k != "recon_loss" and k != "total_loss":
                 stacked_results[group_name][k] = np.concatenate(v, axis=0)
+            elif k == 'text_predictions':
+                stacked_results[group_name][k] = [item for sublist in v for item in sublist]
             else:
                 stacked_results[group_name][k] = v
 
@@ -149,6 +154,21 @@ def validation_set_results(vae_model, valid_loader, tokenizer, device_name="cuda
         mi_results = calc_all_mi_bounds(vae_model, valid_loader, max_batches=n_batches_mi_calc,
                                         batch_size=batch_size_mi_calc, auto_regressive=mode)
         results[name]["mi_results"] = mi_results
+
+    ###############################
+    #    N-GRAM MATCH STATS       #
+    ###############################
+
+    for name in ["teacher_forced", "auto_regressive"]:
+        labels = results["labels"]["labels_ids"].tolist()
+        preds = results[name]["predictions"].tolist()
+        n_gram_results = {}
+        for n in range(1, 10):
+            matching_pos = []
+            for i in range(len(preds)):
+                matching_pos.extend(utils_evaluation.get_matching_ngram_stats(preds[i], labels[i], n))
+            n_gram_results[n] = matching_pos
+        results[name]["n_gram_results"] = n_gram_results
 
     ###############################
     #       BLEU                  #
