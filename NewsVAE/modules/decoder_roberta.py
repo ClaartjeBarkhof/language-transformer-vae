@@ -830,8 +830,8 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
             attention_probs = attention_probs.permute(1, 2, 0, 3, 4)
 
             if return_attention_to_latent:
-                # get attention to latent only, for all tokens except start and end
-                attention_to_latent = attention_probs[:, :, :, 1:-1, 0]
+                # Get attention to latent only, for all tokens except end token
+                attention_to_latent = attention_probs[:, :, :, :-1, 0]
 
         # Get rid of the sequence dimension (merge into batch dimension)
         batch_size, seq_len, vocab_size = logits.shape

@@ -293,8 +293,8 @@ class DecoderNewsVAE(torch.nn.Module):
                 attention_probs.append(decoder_outs["attention_probs"][:, :, :, -2, :])
 
             if return_attention_to_latent:
-                # Get not the last token (which is predicting from </s> to nonsense), but the second to last
-                attention_to_latent.append(decoder_outs["attention_to_latent"][:, :, :, -2].cpu())
+                # Last one is already cut-off so the last one here is the right one
+                attention_to_latent.append(decoder_outs["attention_to_latent"][:, :, :, -1].cpu())
 
             if return_hidden_states:
                 hidden_states.append(decoder_outs["hidden_states"][:, :, -2, :].cpu())

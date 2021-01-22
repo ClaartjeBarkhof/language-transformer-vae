@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -p gpu
-#SBATCH -t 10:00:00
+#SBATCH -t 02:00:00
 #SBATCH --output /home/cbarkhof/slurm-logs/%j-slurm-log.out
 
 module purge  # unload all that are active
@@ -16,4 +16,4 @@ source $CONDA_PREFIX/etc/profile.d/conda.sh
 conda deactivate # just to make sure other envs are not active
 conda activate thesisenv # activate environment
 
-python /home/cbarkhof/code-thesis/NewsVAE/evaluation/29DEC/validate_29DEC_models.py
+python /Users/claartje/Dropbox/Studie/Master AI/Thesis/code-thesis/NewsVAE/run_validation.py

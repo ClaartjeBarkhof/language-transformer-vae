@@ -174,14 +174,17 @@ def determine_max_epoch_steps_per_rank(max_train_steps_epoch_per_rank, max_valid
 # ----------------------------------------------------------------------------------------------------
 
 def load_from_checkpoint(vae_model, path, optimizer=None, scheduler=None, scaler=None,
-                         world_master=True, ddp=False, use_amp=True):
+                         world_master=True, ddp=False, use_amp=True, device_name="cuda:0"):
+
+    vae_model = vae_model.cpu()
+
     # DETERMINE / CHECK PATH
     assert os.path.isfile(path), f"-> checkpoint file path ({path}) must exist for it to be loaded!"
 
     if world_master: print("Loading VAE_model, optimizer and scheduler from {}".format(path))
 
     # LOAD CHECKPOINT
-    checkpoint = torch.load(path)
+    checkpoint = torch.load(path, map_location='cpu')
 
     # OPTIMIZER
     if optimizer is not None:
@@ -218,6 +221,7 @@ def load_from_checkpoint(vae_model, path, optimizer=None, scheduler=None, scaler
 
     # in place procedure
     vae_model.load_state_dict(parameter_state_dict)
+    vae_model = vae_model.to(device_name)
 
     # AMP SCALER
     # only load if using amp and a scaler is provided (when continue training from some point on).
@@ -263,8 +267,10 @@ def change_checkpoint_to_after_refactor_2(state_dict):
     from collections import OrderedDict
     new_state_dict = OrderedDict()
     for k, v in state_dict.items():
-        if "latent_to_decoder" in k:
+        if "latent_to_decoder" in k[:17]:
             name = k.replace("latent_to_decoder", "decoder.latent_to_decoder")
+        elif "decoder.decoder.latent_to_decoder." in k:
+            name = k[8:]
         else:
             name = k
         new_state_dict[name] = v
