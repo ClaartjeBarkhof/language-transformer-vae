@@ -11,14 +11,18 @@ from pathlib import Path
 import time
 
 
-def load_model_for_eval(path, device_name="cuda:0"):
+def load_model_for_eval(path, device_name="cuda:0", latent_size=32, add_latent_via_memory=True,
+                        add_latent_via_embeddings=False, do_tie_weights=True, do_tie_embedding_spaces=True,
+                        add_decoder_output_embedding_bias=False):
     vae_model = train.get_model_on_device(device_name=device_name,
-                                          latent_size=768,
+                                          latent_size=latent_size,
                                           gradient_checkpointing=False,
-                                          add_latent_via_memory=True,
-                                          add_latent_via_embeddings=True,
-                                          do_tie_weights=True,
-                                          world_master=True)
+                                          add_latent_via_memory=add_latent_via_memory,
+                                          add_latent_via_embeddings=add_latent_via_embeddings,
+                                          do_tie_weights=do_tie_weights,
+                                          do_tie_embedding_spaces=do_tie_embedding_spaces,
+                                          world_master=True,
+                                          add_decoder_output_embedding_bias=add_decoder_output_embedding_bias)
 
     _, _, vae_model, _, _, _, _ = utils_train.load_from_checkpoint(vae_model, path)
     vae_model.eval()

@@ -7,7 +7,9 @@ import numpy as np
 from torch.distributions import MultivariateNormal, Normal
 from torch.distributions.categorical import Categorical
 import pickle
-
+from modules.encoder import gaussian_kernel
+import math
+from scipy.stats import gaussian_kde
 
 """
 Functions in this file:
@@ -19,6 +21,88 @@ Functions in this file:
     
     - main(model_path) <- executes calculation of MI bounds for whole validation set
 """
+
+
+def _gaussian_log_likelihood(sample, mask, dim, mu=None, var=None):
+    """Computes the log likelihood of a given sample under a gaussian with given parameters.
+    If mu or var is not given they are assumed to be standard.
+    """
+
+
+    if mu is None and var is None:
+        # log_q_z_x = (-0.5 * ((dev ** 2) / var) - 0.5 * (math.log(2 * math.pi) - logvar)).sum(dim=-1)
+        return -0.5 * torch.sum((torch.log(sample.new_tensor(2 * np.pi)) + sample ** 2) * mask.unsqueeze(dim), dim=dim)
+    elif mu is None:
+        return -0.5 * torch.sum((torch.log(2 * np.pi * var) + sample ** 2 / var) * mask.unsqueeze(dim), dim=dim)
+    elif var is None:
+        return -0.5 * torch.sum((torch.log(sample.new_tensor(2 * np.pi)) + (sample - mu) ** 2)
+                                * mask.unsqueeze(dim), dim=dim)
+    else:
+        return -0.5 * torch.sum((torch.log(2 * np.pi * var) + (sample - mu) ** 2 / var) * mask.unsqueeze(dim), dim=dim)
+
+
+def q_z_estimate(z, mu, var, device="cuda:0"):
+    """Computes an estimate of q(z), the marginal posterior."""
+    # z = [S, z_dim], mu = [N, z_dim], var = [N, z_dim], log_q_z = [S, N]
+    log_q_z_x = _gaussian_log_likelihood(sample=z.unsqueeze(1), mask=torch.tensor([[1.]], device=device), dim=2, mu=mu, var=var)
+    # [S,]
+    print("log_q_z_x.shape", log_q_z_x.shape)
+    print('first 10 vals of log_q_z_x in q_z_estimate', log_q_z_x[:10])
+    log_q_z = torch.logsumexp(log_q_z_x.unsqueeze(0), dim=1) - torch.log(torch.tensor(log_q_z_x.shape[1], device=device, dtype=torch.float))
+    return log_q_z
+
+
+# Altered from: https://github.com/tom-pelsmaeker/deep-generative-lm/blob/master/util/evaluation.py
+def calc_mi_estimate(log_q_z_x, latents, mu, logvar, log_p_z, avg_KL, log_q_z_method="aggregate_posterior", mi_method="zhao"):
+    """Computes the mutual information given a batch of samples and their LL under the sampling distribution.
+    If log_q_z is not provided, this method uses kernel density estimation on the provided samples to compute this
+    quantity. Otherwise, we will use the provided log_q_z to estimate the MI, either through Hoffman's or Zhao's method.
+    Args:
+        samples(torch.FloatTensor): [N, z_dim] dimensional tensor of samples from q(z|x).
+        log_p_z(torch.FloatTensor): [N] dimensional tensor of log-probabilities of the samples under p(z).
+        avg_H(torch.FloatTensor): [] dimensional tensor containing the average entropy of q(z|x).
+        avg_KL(torch.FloatTensor): [] dimensional tensor containing the average KL[q(z|x)||p(z)].
+        method: method for estimating the mutual information.
+        kde_method: method for obtaining the kde likelihood estimates of the samples under q(z).
+        log_q_z: [N] dimensional tensor of log-probabilities of the samples under q(z), or None.
+    Returns:
+        mi_estimate(float): estimated mutual information between X and Z given N samples from q(z|x).
+        marg_KL(float): estimated KL[q(z)||p(z)] given N samples from q(z|x).
+    """
+
+    if log_q_z_method is "kernel":
+        print("kernel method for calculating log_q_z of latents")
+        # log_q_z = kde_gauss(samples, kde_method)
+        samples_cpu = latents.cpu().numpy().transpose()
+        print("samples_cpu.shape", samples_cpu.shape)
+        kde = gaussian_kde(samples_cpu)
+        # [num] with p(samples) under kernels
+        print("first 10 vals of scikit gauss kde", kde.logpdf(samples_cpu)[:10])
+
+        log_q_z = torch.log(gaussian_kernel(latents, latents).mean(dim=1) + 1e-80)
+        print("first 10 vals of pytorch gauss kde", log_q_z[:10])
+    elif log_q_z_method is "aggregate_posterior":
+        log_q_z = torch.logsumexp(log_q_z_x, dim=0) - math.log(len(log_q_z_x))
+    else:
+        raise NotImplementedError
+
+    print(log_q_z.shape, log_p_z.shape)
+    print(log_q_z, log_p_z.mean())
+
+
+    # KL(q||p) = E_q[log q / log p] = E_q[log_q] - E_q[log_p]
+    marg_KL = (log_q_z - log_p_z.mean())
+
+    if mi_method == 'zhao':  # https://arxiv.org/pdf/1806.06514.pdf (Lagrangian VAE)
+        # recall that avg_h = log_q_z_x.mean()
+        mi_estimate = (log_q_z_x.mean() - log_q_z.mean()).item()
+
+    elif mi_method == 'hoffman':  # http://approximateinference.org/accepted/HoffmanJohnson2016.pdf (ELBO surgery)
+        mi_estimate = (avg_KL - marg_KL).item()
+    else:
+        print('MI method {} is unknown. Please choose [zhao, hoffman], quitting...'.format(mi_method)); quit()
+
+    return mi_estimate, marg_KL.item()
 
 
 def log_prob_pairs(dists, sample_batch):
@@ -196,6 +280,7 @@ def calc_upper_and_lower_bound_generative_mi(batch_probs, cat_dists=None):
 
 def calc_all_mi_bounds(vae_model, valid_loader, device_name="cuda:0", max_batches=10, batch_size=128,
                        auto_regressive=False):
+
     print(f"Evaluating mutual information bounds for over "
           f"{max_batches} batches of size {batch_size}.")
 

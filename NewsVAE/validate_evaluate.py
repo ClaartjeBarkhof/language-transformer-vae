@@ -23,7 +23,7 @@ def validation_set_results(vae_model, valid_loader, tokenizer, device_name="cuda
         "recon_loss": [],
         "hinge_kl_loss": [],
         "total_loss": [],
-        "latents": [],
+        "latents": []
     }
 
     results = {

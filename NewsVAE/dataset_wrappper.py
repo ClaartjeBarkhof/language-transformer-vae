@@ -22,13 +22,11 @@ class NewsData:
     """
     def __init__(self, dataset_name: str, tokenizer_name: str,
                  batch_size: int = 8, num_workers: int = 4,
-                 pin_memory: bool = True, max_seq_len = 64, device="cuda:0"):
+                 pin_memory: bool = True, max_seq_len: int = 64,
+                 device="cuda:0"):
 
         # DATA DIRECTORY
         os.makedirs('NewsData', exist_ok=True)
-
-        print("test")
-
         self.device = device
 
         # FOR GPU USE
@@ -53,8 +51,7 @@ class NewsData:
 
         path_to_file = pathlib.Path(__file__).parent.absolute()
         # debug_ext = "[:{}]".format(debug_data_len) if debug else ""
-        data_path = "{}/NewsData/22DEC-{}-{}-seqlen{}".format(path_to_file, self.dataset_name, self.tokenizer_name, max_seq_len)
-        print(data_path)
+        data_path = "{}/NewsData/{}-{}-seqlen{}".format(path_to_file, self.dataset_name, self.tokenizer_name, max_seq_len)
 
         if os.path.isdir(data_path):
             print("Is file!")
@@ -121,7 +118,12 @@ class NewsData:
         :return: encoded_batch: batch of samples with the encodings with the defined tokenizer added
         """
 
-        encoded_batch = self.tokenizer(data_batch['article'], truncation=True, max_length=self.max_seq_len)
+        if self.dataset_name == "cnn_dailymail":
+            key = "article"
+        else:
+            key = "sentence"
+
+        encoded_batch = self.tokenizer(data_batch[key], truncation=True, max_length=self.max_seq_len)
 
         return encoded_batch
 
@@ -130,6 +132,10 @@ if __name__ == "__main__":
     print("-> Begin!")
     data = NewsData('cnn_dailymail', 'roberta', max_seq_len=64)
     print("-> End!")
+
+    print(data.datasets['train'].shape)
+    print(data.datasets['validation'].shape)
+    print(data.datasets['test'].shape)
 
     for batch in data.train_dataloader():
         for k, v in batch.items():

@@ -2,6 +2,27 @@ import torch.nn as nn
 from transformers import RobertaModel
 import torch
 import math
+from modules.encoder_roberta import VAE_Encoder_RobertaModel
+
+
+def gaussian_kernel(x, y):
+    """
+    Gaussian kernel
+    Taken from: https://github.com/aktersnurra/information-maximizing-variational-autoencoders/blob/master/model/loss_functions/mmd_loss.py
+
+    :param x:
+    :param y:
+    :return:
+    """
+    x_size = x.size(0)
+    y_size = y.size(0)
+    dim = x.size(1)
+    x = x.unsqueeze(1)
+    y = y.unsqueeze(0)
+    tiled_x = x.expand(x_size, y_size, dim)
+    tiled_y = y.expand(x_size, y_size, dim)
+    kernel_input = (tiled_x - tiled_y).pow(2).mean(2) / float(dim)
+    return torch.exp(-kernel_input)
 
 
 class EncoderNewsVAE(torch.nn.Module):
@@ -11,17 +32,17 @@ class EncoderNewsVAE(torch.nn.Module):
         """
         super(EncoderNewsVAE, self).__init__()
 
-        self.model = RobertaModel.from_pretrained("roberta-base",
-                                                  add_pooling_layer=False,
-                                                  return_dict=True,
-                                                  gradient_checkpointing=gradient_checkpointing)
+        self.model = VAE_Encoder_RobertaModel.from_pretrained("roberta-base",
+                                                              add_pooling_layer=False,
+                                                              return_dict=True,
+                                                              gradient_checkpointing=gradient_checkpointing)
 
         # Add a fresh pooling layer
         self.model.pooler = PoolerEncoderNewsVAE(hidden_size=self.model.config.hidden_size,
                                                  latent_size=latent_size)
         self.model.pooler.dense.weight.data.normal_(mean=0.0, std=self.model.config.initializer_range)
 
-    def forward(self, input_ids, attention_mask, return_embeddings=False):
+    def forward(self, input_ids, attention_mask, return_embeddings=True):
         """
         Encode input sequences and sample from the approximate posterior.
 
@@ -41,7 +62,7 @@ class EncoderNewsVAE(torch.nn.Module):
             latent_z: Tensor [batch, n_samples, latent_size]
                 Samples from encoded posterior:
         """
-        # Encode
+        # Encoder
         encoder_outs = self.model(input_ids=input_ids, attention_mask=attention_mask,
                                   output_hidden_states=return_embeddings)
 
@@ -52,11 +73,20 @@ class EncoderNewsVAE(torch.nn.Module):
         mu, logvar = pooled_output.chunk(2, dim=1)
 
         if return_embeddings:
-            return mu, logvar, encoder_outs["hidden_states"][0]
+            word_embeddings = encoder_outs["hidden_states"][0]
+        else:
+            word_embeddings = None
 
-        return mu, logvar
+        return_dict = {
+            "mu": mu,
+            "logvar": logvar,
+            "word_embeddings": word_embeddings
+        }
 
-    def encode(self, input_ids, attention_mask, n_samples=1, hinge_kl_loss_lambda=0.5):
+        return return_dict
+
+    def encode(self, input_ids, attention_mask, n_samples=1, hinge_kl_loss_lambda=0.5,
+               return_log_q_z_x=False, return_log_p_z=False, return_embeddings=True):
         """
         This function encodes samples into latents by sampling and returns losses (kl, hinge_kl & mmd).
 
@@ -83,12 +113,29 @@ class EncoderNewsVAE(torch.nn.Module):
         """
 
         # Forward
-        mu, logvar = self.forward(input_ids=input_ids, attention_mask=attention_mask)
+        encoder_out = self.forward(input_ids=input_ids, attention_mask=attention_mask,
+                                   return_embeddings=return_embeddings)
+
+        mu, logvar = encoder_out["mu"], encoder_out["logvar"]
 
         # Sample latents from posterior
-        latent_z = self.reparameterize(mu, logvar, n_samples=n_samples)
-
+        latent_z = self.reparameterize(encoder_out["mu"], encoder_out["logvar"], n_samples=n_samples)
         latent_z = latent_z.squeeze(1)
+
+        log_q_z_x = None
+        if return_log_q_z_x:
+            # sum the per dimension log density:
+            # log_q_z_x = sum_D [-1/2 ( log var + log 2pi + (x-mu)^2/var)]_d
+
+            var = logvar.exp()
+            log_q_z_x = (- 0.5 * (logvar + math.log(2 * math.pi) + ((latent_z - mu) ** 2 / var))).sum(dim=-1)
+            log_q_z_x = log_q_z_x.detach()
+
+        log_p_z = None
+        if return_log_p_z:
+            # log_p_z = sum_D [-1/2 ( log 2pi + x^2)]_d
+            log_p_z = (- 0.5 * (math.log(2 * math.pi) + (latent_z ** 2))).sum(dim=-1)
+            log_p_z = log_p_z.detach()
 
         # Calculate the KL divergence
         kl_loss, hinge_kl_loss = self.kl_divergence(mu, logvar, hinge_kl_loss_lambda=hinge_kl_loss_lambda)
@@ -96,48 +143,19 @@ class EncoderNewsVAE(torch.nn.Module):
         # Calculate the Maximum Mean Discrepancy
         mmd_loss = self.maximum_mean_discrepancy(latent_z)
 
-        return mu, logvar, latent_z, kl_loss, hinge_kl_loss, mmd_loss
+        return_dict = {
+            "mu": mu,
+            "logvar": logvar,
+            "latent_z": latent_z,
+            "kl_loss": kl_loss,
+            "hinge_kl_loss": hinge_kl_loss,
+            "mmd_loss": mmd_loss,
+            "log_q_z_x": log_q_z_x,
+            "log_p_z": log_p_z,
+            "word_embeddings": encoder_out["word_embeddings"]
+        }
 
-    # # TODO: NOT TESTED
-    # def log_q_z_x(self, latent_z, input_ids=None, attention_mask=None, mu=None, logvar=None):
-    #     """
-    #     This function computes log q(z|x) for a set of latents z sampled from
-    #     posterior that is defined by the encoded input or by the parameters.
-    #
-    #     Args:
-    #         z: Tensor [batch, n_samples, latent_size]
-    #             Different latents that will be evaluated under the posterior q
-    #
-    #     Returns:
-    #         log_density: Tensor [batch, n_samples]
-    #             Log density, log q(z|x), for all samples
-    #     """
-    #
-    #     batch, n_samples, latent_size = latent_z.shape
-    #
-    #     # Either provide input or parameters of the distribution q_z_x
-    #     params_present = mu is not None and logvar is not None
-    #     inputs_present = input_ids is not None and attention_mask is not None
-    #
-    #     assert params_present or inputs_present, "Either provide inputs or provide parameters of the distributions"
-    #
-    #     # Do forward if only inputs are given
-    #     if not params_present:
-    #         mu, logvar = self.model(input_ids=input_ids,
-    #                                 attention_mask=attention_mask)
-    #
-    #     # (batch_size, 1, nz)
-    #     mu, logvar = mu.unsqueeze(1), logvar.unsqueeze(1)
-    #     var = logvar.exp()
-    #
-    #     # (batch_size, nsamples, nz)
-    #     dev = latent_z - mu
-    #
-    #     # (batch_size, nsamples)
-    #     log_density = -0.5 * ((dev ** 2) / var).sum(dim=-1) - 0.5 * (
-    #                 latent_size * math.log(2 * math.pi) + logvar.sum(-1))
-    #
-    #     return log_density
+        return return_dict
 
     @staticmethod
     def reparameterize(mu, logvar, n_samples=1):
@@ -204,26 +222,6 @@ class EncoderNewsVAE(torch.nn.Module):
 
         return kl_loss, hinge_kl_loss
 
-    @staticmethod
-    def gaussian_kernel(x, y):
-        """
-        Gaussian kernel
-        Taken from: https://github.com/aktersnurra/information-maximizing-variational-autoencoders/blob/master/model/loss_functions/mmd_loss.py
-
-        :param x:
-        :param y:
-        :return:
-        """
-        x_size = x.size(0)
-        y_size = y.size(0)
-        dim = x.size(1)
-        x = x.unsqueeze(1)
-        y = y.unsqueeze(0)
-        tiled_x = x.expand(x_size, y_size, dim)
-        tiled_y = y.expand(x_size, y_size, dim)
-        kernel_input = (tiled_x - tiled_y).pow(2).mean(2) / float(dim)
-        return torch.exp(-kernel_input)  # TODO: check this, gives type error
-
     def maximum_mean_discrepancy(self, latent_z):
         """
         Taken from: https://github.com/aktersnurra/information-maximizing-variational-autoencoders/blob/master/model/loss_functions/mmd_loss.py
@@ -233,9 +231,9 @@ class EncoderNewsVAE(torch.nn.Module):
         """
         x = torch.randn_like(latent_z).to(latent_z.device)
         y = latent_z
-        x_kernel = self.gaussian_kernel(x, x)
-        y_kernel = self.gaussian_kernel(y, y)
-        xy_kernel = self.gaussian_kernel(x, y)
+        x_kernel = gaussian_kernel(x, x)
+        y_kernel = gaussian_kernel(y, y)
+        xy_kernel = gaussian_kernel(x, y)
         mmd = x_kernel.mean() + y_kernel.mean() - 2 * xy_kernel.mean()
 
         return mmd

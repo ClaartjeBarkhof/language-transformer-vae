@@ -81,6 +81,10 @@ def tie_weights(encoder, decoder, base_model_prefix):
                 else:
                     # print("else")
                     decoder_name = encoder_name = name
+
+                    # print("decoder_name = encoder_name = name")
+                    # print("decoder_name:", decoder_name)
+
                 tie_encoder_to_decoder_recursively(
                     decoder_modules[decoder_name],
                     encoder_modules[encoder_name],

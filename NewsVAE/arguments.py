@@ -6,13 +6,11 @@ import utils_train
 def preprare_parser(jupyter=False, print_settings=True):
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--overwrite_args", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
-                        help="Overwrite arguments with the rules below (if from job, then is set to False).")
-    parser.add_argument("--run_name_prefix", default='TEST-7JAN', type=str,
+    parser.add_argument("--run_name_prefix", default='TEST-1FEB', type=str,
                         help="Prefix of the run name (to give it a marker or hparam settins) (default: '').")
 
     # TRAIN / VALIDATION
-    parser.add_argument("--batch_size", default=32, type=int,
+    parser.add_argument("--batch_size", default=3, type=int,
                         help="Batch size for data loading and training.")
     parser.add_argument("--max_train_steps_epoch_per_rank", default=20, type=int,
                         help="Maximum number of train steps (per epoch / phase) (for all set to -1).") # max 192246
@@ -65,7 +63,7 @@ def preprare_parser(jupyter=False, print_settings=True):
                              "(default: True if n_gpus > 1, else: False).")
 
     # LOGGING
-    parser.add_argument("--logging", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
+    parser.add_argument("--logging", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to log the process of the model (default: True).")
     parser.add_argument("--log_every_n_steps", default=1, type=int,
                         help="Every how many steps to log (default: 20).")
@@ -75,8 +73,8 @@ def preprare_parser(jupyter=False, print_settings=True):
     # DATA & TOKENISATION
     parser.add_argument("--tokenizer_name", default='roberta', type=str,
                         help="The name of the tokenizer, 'roberta' by default.")
-    parser.add_argument("--dataset_name", default='cnn_dailymail', type=str,
-                        help="The name of the dataset, 'cnn_dailymail' by default.")
+    parser.add_argument("--dataset_name", default='ptb_text_only', type=str,
+                        help="The name of the dataset, 'cnn_dailymail' by default, else: ptb_text_only.")
     parser.add_argument("--num_workers", default=4, type=int,
                         help="Num workers for data loading.")
     parser.add_argument("--max_seq_len", default=64, type=int,
@@ -89,7 +87,7 @@ def preprare_parser(jupyter=False, print_settings=True):
                         help="Every how many steps to print.")
 
     # CHECKPOINTING
-    parser.add_argument("--checkpoint", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
+    parser.add_argument("--checkpoint", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to checkpoint (save) the model. (default: False).")
     parser.add_argument("--checkpoint_every_n_steps", default=1000, type=int,
                         help="Every how many (training) steps to checkpoint (default: 1000).")
@@ -114,6 +112,14 @@ def preprare_parser(jupyter=False, print_settings=True):
     parser.add_argument("--beta", default=0.5, type=float,
                         help="The balancing beta term between the reconstruction loss"
                              " and KL-divergence term.")
+    # EMBEDDING SPACE LOSS
+    parser.add_argument("--return_embedding_loss", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
+                        help="Whether or not to log the embedding space loss L2.")
+    parser.add_argument("--reduce_seq_dim_embedding_loss", default="mean", type=str,
+                        help="How to reduce the embedding space loss along the sequence dimension (default: sum).")
+    parser.add_argument("--reduce_batch_dim_embedding_loss", default="mean", type=str,
+                        help="How to reduce the embedding space loss along the batch dimension (default: mean).")
+
     # LINEAR KL ANNEALING
     parser.add_argument("--kl_linear_annealing", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to perform (linear) KL annealing from 0 to 1 in "
@@ -150,6 +156,12 @@ def preprare_parser(jupyter=False, print_settings=True):
     parser.add_argument("--do_tie_weights", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to tie the weights of the encoder and decoder"
                              "(default: True).")
+    parser.add_argument("--do_tie_embedding_spaces", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
+                        help="Whether or not to tie the weights of all embedding matrices: encoder input embeddings,"
+                             "decoder input embeddings, decoder output embeddings (default: True).")
+    parser.add_argument("--add_decoder_output_embedding_bias", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
+                        help="Whether or not to add decoder output embedding bias, which makes the"
+                             "embedding space different from the input embedding spaces (default: True).")
 
     code_dir_path = utils_train.get_code_dir()
     parser.add_argument("--code_dir_path", default=code_dir_path, type=str,

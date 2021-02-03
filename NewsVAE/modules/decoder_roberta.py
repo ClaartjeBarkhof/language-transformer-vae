@@ -45,7 +45,7 @@ import torch.nn as nn
 from torch.nn import CrossEntropyLoss
 
 from transformers.activations import ACT2FN, gelu
-from transformers.configuration_roberta import RobertaConfig
+from transformers import RobertaConfig
 from transformers.modeling_outputs import (
     BaseModelOutput,
     BaseModelOutputWithPooling,
@@ -735,6 +735,8 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
             return_attention_probs=None,
             return_attention_to_latent=None,
 
+            return_output_word_embeddings=False,
+
             return_predictions=False,
             return_probabilities=False,
             return_logits=False,
@@ -804,13 +806,19 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
             return_dict=True,
         )
 
+        return_exact_match = True
+
         # Get outputs and shift the predictions and labels so they align
-        logits = self.lm_head(outputs.last_hidden_state)
+        logits, output_embeddings = self.lm_head(outputs.last_hidden_state)
         # we don't care about the last prediction, because that is the prediction at </s>
         logits = logits[:, :-1, :].contiguous()
 
         if labels is not None:
             labels = labels[:, 1:].contiguous()  # skip <s> token
+
+            # pad token is int 1
+            label_mask = (labels != 1).float()
+
             labels = labels.reshape(-1) # make into one big vector (no seq dimension)
 
         # -> from now on the sequence length is thus 63 instead of 64
@@ -876,12 +884,15 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
 
         # REDUCE CORRECTLY
         if cross_entropy is not None:
-            cross_entropy = self.reduce_correct(cross_entropy, reduce_seq_dim_ce, -1)  # seq dim
-            cross_entropy = self.reduce_correct(cross_entropy, reduce_batch_dim_ce, 0)  # batch dim <- always mean
+            cross_entropy = cross_entropy * label_mask
+            cross_entropy_per_word = (cross_entropy.sum(dim=-1) / label_mask.sum(dim=-1)).mean()
+            cross_entropy = self.reduce_correct(cross_entropy, reduce_seq_dim_ce, -1, label_mask)  # seq dim
+            cross_entropy = self.reduce_correct(cross_entropy, reduce_batch_dim_ce, 0, label_mask)  # batch dim <- always mean
 
         if exact_match is not None:
-            exact_match = self.reduce_correct(exact_match, reduce_seq_dim_exact_match, -1)  # seq dim
-            exact_match = self.reduce_correct(exact_match, reduce_batch_dim_exact_match, 0)  # batch dim
+            exact_match = exact_match * label_mask
+            exact_match = self.reduce_correct(exact_match, reduce_seq_dim_exact_match, -1, label_mask)  # seq dim
+            exact_match = self.reduce_correct(exact_match, reduce_batch_dim_exact_match, 0, label_mask)  # batch dim
 
         if return_hidden_states:
             hidden_states = torch.stack(outputs.hidden_states, dim=0)
@@ -906,7 +917,9 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
             "hidden_states": hidden_states if return_hidden_states else None,
             "probabilities": probs if return_probabilities else None,
             "last_hidden_state": outputs.last_hidden_state if return_last_hidden_state else None,
-            "logits": logits if return_logits else None
+            "logits": logits if return_logits else None,
+            "output_word_embeddings": output_embeddings if return_output_word_embeddings else None,
+            "cross_entropy_per_word": cross_entropy_per_word
         }
 
         # Remove everything that is None
@@ -918,11 +931,23 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
         return return_dict
 
     @staticmethod
-    def reduce_correct(some_tensor, reduction_type, reduction_dim):
-        if reduction_type == "mean":
+    def reduce_correct(some_tensor, reduction_type, reduction_dim, label_mask):
+        # Here we assume the label mask has already been applied to 'some_tensor'
+
+        # Average the sequence dimension: summed loss / sequence lengths
+        if reduction_type == "mean" and reduction_dim == -1:
+            label_mask = label_mask.sum(dim=reduction_dim)
+            some_tensor = some_tensor.sum(dim=reduction_dim)
+            some_tensor = some_tensor / label_mask
+
+        # Average batch dimension: just take the average over the batch dim
+        elif reduction_type == "mean" and reduction_dim == 0:
             some_tensor = some_tensor.mean(dim=reduction_dim)
+
+        # Sum over either sequence or batch dimension, just sum
         elif reduction_type == "sum":
             some_tensor = some_tensor.sum(dim=reduction_dim)
+
         return some_tensor
 
     def prepare_inputs_for_generation(self, input_ids, attention_mask=None, **model_kwargs):
@@ -938,12 +963,13 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
 class RobertaLMHead(nn.Module):
     """Roberta Head for masked language modeling."""
 
-    def __init__(self, config):
+    def __init__(self, config, ):
         super().__init__()
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
         self.layer_norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
 
-        self.decoder = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        # Whether or not to add bias to the output embedding layer
+        self.decoder = nn.Linear(config.hidden_size, config.vocab_size, bias=True)
         self.bias = nn.Parameter(torch.zeros(config.vocab_size))
 
         # Need a link between the two variables so that the bias is correctly resized with `resize_token_embeddings`
@@ -955,9 +981,9 @@ class RobertaLMHead(nn.Module):
         x = self.layer_norm(x)
 
         # project back to size of vocabulary with bias
-        x = self.decoder(x)
+        logits = self.decoder(x)
 
-        return x
+        return logits, x
 
 
 def create_position_ids_from_input_ids(input_ids, padding_idx):

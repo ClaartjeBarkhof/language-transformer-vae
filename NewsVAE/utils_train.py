@@ -56,8 +56,9 @@ def get_run_name(run_name_prefix=""):
         run_name_prefix: str
     """
 
-    datetime_stamp = datetime.datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
-    run_name = "{}-run-{}".format(run_name_prefix, datetime_stamp)
+    datetime_stamp = datetime.datetime.now().strftime("%Y-%m-%d--%H:%M:%S")
+    date, time = datetime_stamp.split("--")[0], datetime_stamp.split("--")[1]
+    run_name = "{}-{}-run-{}".format(date, run_name_prefix, time)
     print("Run is called: {}...".format(run_name))
     return run_name
 

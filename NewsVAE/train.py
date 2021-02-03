@@ -164,7 +164,8 @@ def get_dataloader(phases, ddp=False, batch_size=12, num_workers=8, max_seq_len=
 
 def get_model_on_device(device_name="cuda:0", latent_size=768, gradient_checkpointing=False,
                         add_latent_via_memory=True, add_latent_via_embeddings=True,
-                        do_tie_weights=True, world_master=True):
+                        add_decoder_output_embedding_bias=True,
+                        do_tie_weights=True, world_master=True, do_tie_embedding_spaces=True):
     """
     Get a VAE model on correct device.
 
@@ -185,10 +186,13 @@ def get_model_on_device(device_name="cuda:0", latent_size=768, gradient_checkpoi
     decoder = DecoderNewsVAE(gradient_checkpointing=gradient_checkpointing,
                              add_latent_via_memory=add_latent_via_memory,
                              add_latent_via_embeddings=add_latent_via_embeddings,
+                             add_decoder_output_embedding_bias=add_decoder_output_embedding_bias,
                              latent_size=latent_size)
+
     encoder = EncoderNewsVAE(gradient_checkpointing=gradient_checkpointing, latent_size=latent_size)
 
-    vae_model = NewsVAE(encoder, decoder, do_tie_weights=do_tie_weights)
+    vae_model = NewsVAE(encoder, decoder, do_tie_weights=do_tie_weights,
+                        do_tie_embedding_spaces=do_tie_embedding_spaces)
 
     vae_model = vae_model.to(device_name)
 
@@ -257,7 +261,9 @@ def determine_beta(global_grad_step,
     return beta
 
 
-def do_valid_step(vae_model, batch, beta, hinge_kl_loss_lambda, device_name="cuda:0"):
+def do_valid_step(vae_model, batch, beta, hinge_kl_loss_lambda, device_name="cuda:0",
+                  return_embedding_loss=True, reduce_batch_dim_embedding_loss="mean",
+                  reduce_seq_dim_embedding_loss="sum"):
     """
     Perform a validation step (no grads, eval mode, no autocast?)
 
@@ -287,7 +293,11 @@ def do_valid_step(vae_model, batch, beta, hinge_kl_loss_lambda, device_name="cud
                                 reduce_batch_dim_ce="mean",
                                 return_exact_match=False,
                                 auto_regressive=False,
-                                device_name=device_name)
+                                device_name=device_name,
+                                return_embedding_distance=return_embedding_loss,
+                                reduce_seq_dim_embedding_loss=reduce_seq_dim_embedding_loss,
+                                reduce_batch_dim_embedding_loss=reduce_batch_dim_embedding_loss
+                                )
 
         vae_outputs['total_loss'] = vae_outputs['total_loss'].item()
 
@@ -295,7 +305,9 @@ def do_valid_step(vae_model, batch, beta, hinge_kl_loss_lambda, device_name="cud
 
 
 def do_train_step(vae_model, batch, optimizer, scheduler, scaler, global_step, beta, hinge_kl_loss_lambda,
-                  use_amp=False, accumulate_n_batches_grad=1, device_name="cuda:0", gradient_clipping=True):
+                  use_amp=False, accumulate_n_batches_grad=1, device_name="cuda:0", gradient_clipping=True,
+                  return_embedding_loss=True, reduce_batch_dim_embedding_loss="mean",
+                  reduce_seq_dim_embedding_loss="sum"):
     """
     Perform a train step with autocast, gradients enabled and gradient accumulated backward.
 
@@ -326,6 +338,9 @@ def do_train_step(vae_model, batch, optimizer, scheduler, scaler, global_step, b
                                beta=beta,
                                hinge_kl_loss_lambda=hinge_kl_loss_lambda,
                                return_cross_entropy=True,
+                               return_embedding_distance=return_embedding_loss,
+                               reduce_seq_dim_embedding_loss=reduce_seq_dim_embedding_loss,
+                               reduce_batch_dim_embedding_loss=reduce_batch_dim_embedding_loss,
                                objective='beta-vae',
                                reduce_seq_dim_ce="sum",
                                reduce_batch_dim_ce="mean",
@@ -395,6 +410,8 @@ def train(device_rank, config, run_name):
                                     gradient_checkpointing=config.gradient_checkpointing,
                                     add_latent_via_memory=config.add_latent_via_memory,
                                     add_latent_via_embeddings=config.add_latent_via_embeddings,
+                                    do_tie_embedding_spaces=config.do_tie_embedding_spaces,
+                                    add_decoder_output_embedding_bias=config.add_decoder_output_embedding_bias,
                                     do_tie_weights=config.do_tie_weights, world_master=world_master)
 
     # Initalise logging
@@ -490,9 +507,15 @@ def train(device_rank, config, run_name):
                                                                             use_amp=config.use_amp,
                                                                             accumulate_n_batches_grad=config.accumulate_n_batches_grad,
                                                                             device_name=device_name,
+                                                                            return_embedding_loss=config.return_embedding_loss,
+                                                                            reduce_batch_dim_embedding_loss=config.reduce_batch_dim_embedding_loss,
+                                                                            reduce_seq_dim_embedding_loss=config.reduce_seq_dim_embedding_loss,
                                                                             gradient_clipping=config.gradient_clipping)
                 else:
-                    losses = do_valid_step(vae_model, batch, beta, config.hinge_loss_lambda, device_name=device_name)
+                    losses = do_valid_step(vae_model, batch, beta, config.hinge_loss_lambda, device_name=device_name,
+                                           return_embedding_loss=config.return_embedding_loss,
+                                           reduce_batch_dim_embedding_loss=config.reduce_batch_dim_embedding_loss,
+                                           reduce_seq_dim_embedding_loss=config.reduce_seq_dim_embedding_loss)
 
                 # ----------------------------------------------------------------------------------------------------
                 # INSERT STATISTICS, PRINT, LOG, CHECKPOINT
@@ -538,7 +561,7 @@ def train(device_rank, config, run_name):
 
             # BEST MODEL CHECKPOINT
             if phase == 'validation' and world_master:
-                mean_valid_loss = np.mean(stats[epoch]['validation']['total_loss'])
+                mean_valid_loss = np.mean(stats[epoch]['validation']['recon_loss'])
                 if config.checkpoint and mean_valid_loss < best_valid_loss:
                     print(f"Found better (mean) validation loss (at this device): "
                           f"{mean_valid_loss:.4f}. Saving checkpoint!")
