@@ -847,7 +847,7 @@ class VAE_Decoder_RobertaForCausalLM(RobertaPreTrainedModel):
 
         predictions = None
         exact_match = None
-        cross_entropy = None
+        cross_entropy, cross_entropy_per_word = None, None
         probs = None
 
         # ONLY CROSS ENTROPY (at train time)

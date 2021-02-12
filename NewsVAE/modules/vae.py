@@ -219,7 +219,11 @@ class NewsVAE(torch.nn.Module):
         # total loss is always reduce with a sum over sequence dimension
         # and mean over batch dimension. This is called "recon_loss"
         # cross entropy may be reduced differently or not reduced
-        recon_loss = decoder_outs["cross_entropy"]
+        if "cross_entropy" in decoder_outs:
+            recon_loss = decoder_outs["cross_entropy"]
+        else:
+            recon_loss = torch.tensor(0.0)
+
         batch_size, seq_len = input_ids.shape
 
         if recon_loss.dim() != 0:

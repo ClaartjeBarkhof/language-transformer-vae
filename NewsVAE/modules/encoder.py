@@ -120,15 +120,21 @@ class EncoderNewsVAE(torch.nn.Module):
 
         # Sample latents from posterior
         latent_z = self.reparameterize(encoder_out["mu"], encoder_out["logvar"], n_samples=n_samples)
-        latent_z = latent_z.squeeze(1)
+
+        if n_samples == 1:
+            latent_z = latent_z.squeeze(1)
+            logvar_, mu_ = logvar, mu
+        else:
+            # repeat along the sample dimension (1)
+            logvar_, mu_ = logvar.unsqueeze(1).repeat(1, n_samples, 1), mu.unsqueeze(1).repeat(1, n_samples, 1)
 
         log_q_z_x = None
         if return_log_q_z_x:
             # sum the per dimension log density:
             # log_q_z_x = sum_D [-1/2 ( log var + log 2pi + (x-mu)^2/var)]_d
 
-            var = logvar.exp()
-            log_q_z_x = (- 0.5 * (logvar + math.log(2 * math.pi) + ((latent_z - mu) ** 2 / var))).sum(dim=-1)
+            var = logvar_.exp()
+            log_q_z_x = (- 0.5 * (logvar_ + math.log(2 * math.pi) + ((latent_z - mu_) ** 2 / var))).sum(dim=-1)
             log_q_z_x = log_q_z_x.detach()
 
         log_p_z = None
@@ -137,11 +143,18 @@ class EncoderNewsVAE(torch.nn.Module):
             log_p_z = (- 0.5 * (math.log(2 * math.pi) + (latent_z ** 2))).sum(dim=-1)
             log_p_z = log_p_z.detach()
 
+        # print("log_p_z.shape", log_p_z.shape)
+        # print("log_q_z_x.shape", log_q_z_x.shape)
+
         # Calculate the KL divergence
         kl_loss, hinge_kl_loss = self.kl_divergence(mu, logvar, hinge_kl_loss_lambda=hinge_kl_loss_lambda)
 
         # Calculate the Maximum Mean Discrepancy
-        mmd_loss = self.maximum_mean_discrepancy(latent_z)
+        if n_samples != 1:
+            # print("Warning, MMD loss not implemented for multiple samples.")
+            mmd_loss = None
+        else:
+            mmd_loss = self.maximum_mean_discrepancy(latent_z)
 
         return_dict = {
             "mu": mu,
