@@ -1,10 +1,11 @@
 import torch
-from modules.decoder_roberta import VAE_Decoder_RobertaForCausalLM
+from modules.decoder_roberta_new import VaeDecoderRobertaForCausalLM
 from transformers import RobertaConfig
 import copy
 from transformers import top_k_top_p_filtering
 import torch.nn as nn
 from utils_evaluation import tokenizer_batch_decode
+
 
 class DecoderNewsVAE(torch.nn.Module):
     def __init__(self,
@@ -19,8 +20,8 @@ class DecoderNewsVAE(torch.nn.Module):
         super(DecoderNewsVAE, self).__init__()
 
         config = RobertaConfig.from_pretrained("roberta-base")
-        self.model = VAE_Decoder_RobertaForCausalLM.from_pretrained("roberta-base",
-                                                                    gradient_checkpointing=gradient_checkpointing)
+        self.model = VaeDecoderRobertaForCausalLM.from_pretrained("roberta-base",
+                                                                  gradient_checkpointing=gradient_checkpointing)
 
         if add_decoder_output_embedding_bias is False:
             print("Replacing linear output layer with one without bias!")
@@ -195,20 +196,33 @@ class DecoderNewsVAE(torch.nn.Module):
         exact_match, cross_entropy = [], []
         out_w_embs = []
 
+        # Init with nothing
+        past_key_values = None
+
         if labels is not None:
             label_mask = labels[:, 1:].contiguous()
             # pad token is int 1
             label_mask = (label_mask != 1).float()
 
+        predictions = []
         # Sequence length includes start and end token
         for i in range(max_seq_len - 1):
             if labels is not None:
-                labels_so_far = labels[:, :i+2]
+                labels_so_far = labels[:, i:i + 2]
             else:
                 labels_so_far = None
 
+            # Only add at the beginning. In the second forward past,
+            # it should be contained in the cache (past_key_values)
+            if i > 0:
+                latent_to_decoder = None
+
             decoder_outs = self.model(input_ids=generated_so_far, attention_mask=None,
-                                      latent_to_decoder_output=latent_to_decoder, labels=labels_so_far,
+                                      latent_to_decoder_output=latent_to_decoder,
+                                      labels=labels_so_far,
+
+                                      use_cache=True,
+                                      past_key_values=past_key_values,
 
                                       return_cross_entropy=return_cross_entropy,
                                       return_exact_match=return_exact_match,
@@ -231,8 +245,16 @@ class DecoderNewsVAE(torch.nn.Module):
                                       top_k=top_k,
                                       top_p=top_p)
 
+            # Since I pass <s> ... <eos>, the cache will also consist of <eos> key, value pairs.
+            # we do not want that in the cache, we only want things that belong to the actual past.
+            past_key_values = decoder_outs["past_key_values"]
+            # p_k_v is a tuple of 12 layers, with tuples of key, value matrices
+            # of dimension batch, n_heads, seq_len, head_dim
+            past_key_values = tuple([tuple([pair[0][:, :, :-1, :], pair[1][:, :, :-1, :]]) for pair in past_key_values])
+
             # Get the predictions of this time step
             new_preds = decoder_outs['predictions'][:, -1]
+            predictions.append(new_preds)
 
             if return_exact_match:
                 exact_match.append(decoder_outs["exact_match"][:, -1])
@@ -264,9 +286,9 @@ class DecoderNewsVAE(torch.nn.Module):
             if return_last_hidden_state:
                 last_hidden_state.append(decoder_outs["last_hidden_state"][:, -2, :].cpu())
 
-            # Concat into <s> <predictions> </s> format for next round
+            # Concat into <last prediction> </s> format for next round
             generated_so_far = torch.cat(
-                (generated_so_far[:, :-1], new_preds.unsqueeze(1), generated_so_far[:, -1].unsqueeze(1)), dim=1)
+                (new_preds.unsqueeze(1), generated_so_far[:, -1].unsqueeze(1)), dim=1)
 
         outputs = {}
 
@@ -287,7 +309,7 @@ class DecoderNewsVAE(torch.nn.Module):
         if return_attention_to_latent:
             outputs["attention_to_latent"] = torch.stack(attention_to_latent, dim=-1)
 
-        predictions = generated_so_far[:, 1:-1]
+        predictions = torch.stack(predictions, dim=0)
         if return_predictions:
             # the </s> is not predicted, neither is the added </s>
             outputs["predictions"] = predictions
@@ -301,14 +323,18 @@ class DecoderNewsVAE(torch.nn.Module):
         if return_exact_match:
             outputs["exact_match"] = torch.stack(exact_match, dim=-1)
             outputs["exact_match"] = outputs["exact_match"] * label_mask
-            outputs["exact_match"] = self.model.reduce_correct(outputs["exact_match"], reduce_seq_dim_exact_match, -1, label_mask)  # seq dim
-            outputs["exact_match"] = self.model.reduce_correct(outputs["exact_match"], reduce_batch_dim_exact_match, 0, label_mask)  # batch dim
+            outputs["exact_match"] = self.model.reduce_correct(outputs["exact_match"], reduce_seq_dim_exact_match, -1,
+                                                               label_mask)  # seq dim
+            outputs["exact_match"] = self.model.reduce_correct(outputs["exact_match"], reduce_batch_dim_exact_match, 0,
+                                                               label_mask)  # batch dim
 
         if return_cross_entropy:
             outputs["cross_entropy"] = torch.stack(cross_entropy, dim=-1)
             outputs["cross_entropy"] = outputs["cross_entropy"] * label_mask
-            outputs["cross_entropy"] = self.model.reduce_correct(outputs["cross_entropy"], reduce_seq_dim_ce, -1, label_mask)  # seq dim
-            outputs["cross_entropy"] = self.model.reduce_correct(outputs["cross_entropy"], reduce_batch_dim_ce, 0, label_mask)  # batch dim <- always mean
+            outputs["cross_entropy"] = self.model.reduce_correct(outputs["cross_entropy"], reduce_seq_dim_ce, -1,
+                                                                 label_mask)  # seq dim
+            outputs["cross_entropy"] = self.model.reduce_correct(outputs["cross_entropy"], reduce_batch_dim_ce, 0,
+                                                                 label_mask)  # batch dim <- always mean
 
         return outputs
 
