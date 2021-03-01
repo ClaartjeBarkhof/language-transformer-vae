@@ -149,3 +149,4 @@ NewsVAE/Data/
 /NewsVAE/evaluation/23NOV-evaluate-beta-vs-mmd/
 /NewsVAE/evaluation/29DEC/
 /NewsVAE/evaluation/30NOV-autoencoder-vs-MMD-VAE/
+/NewsVAE/evaluation/train_latents.pickle
