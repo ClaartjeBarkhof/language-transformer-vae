@@ -9,12 +9,19 @@ import copy
 
 class NewsVAE(torch.nn.Module):
     def __init__(self, encoder, decoder,
-                 do_tie_weights=True, do_tie_embedding_spaces=True):
+                 do_tie_weights=True, do_tie_embedding_spaces=True,
+                 drop_inputs_decoder=False, drop_inputs_decoder_prob=0.2):
         super(NewsVAE, self).__init__()
+        """
+        This class implements a VAE by wrapping an EncoderNewsVAE and DecoderNewsVAE.
+        """
 
         # Main parts
         self.encoder = encoder
         self.decoder = decoder
+
+        self.decoder.drop_inputs_decoder = drop_inputs_decoder
+        self.decoder.drop_inputs_decoder_prob = drop_inputs_decoder_prob
 
         # Weight tying / sharing between encoder and decoder RoBERTa part
         if do_tie_weights:
@@ -28,6 +35,10 @@ class NewsVAE(torch.nn.Module):
             self.tie_all_embeddings()
 
     def tie_all_embeddings(self):
+        """
+        This function ties all embedding matrices: input encoder, input decoder, output decoder.
+        """
+
         # Get all relevant embeddings
         encoder_input_embeddings = self.encoder.model.embeddings.word_embeddings
         decoder_input_embeddings = self.decoder.model.roberta.embeddings.word_embeddings
@@ -49,7 +60,11 @@ class NewsVAE(torch.nn.Module):
         if hasattr(decoder_input_embeddings, "num_embeddings") and hasattr(encoder_input_embeddings, "num_embeddings"):
             decoder_input_embeddings.num_embeddings = encoder_input_embeddings.num_embeddings
 
-    def forward(self, input_ids, beta, attention_mask,
+    def forward(self,
+                input_ids,
+                attention_mask=None,
+
+                beta=1.0,
                 auto_regressive=False,
 
                 objective="beta-vae",
@@ -94,14 +109,16 @@ class NewsVAE(torch.nn.Module):
                 device_name="cuda:0"):
 
         """
-        Perform a forward pass through the whole VAE with the sampling operation in between.
+        Perform a forward pass through the whole VAE with the sampling operation in between (reparameterisation).
         """
+
         # Forward through encoder and sample (reparameterisation)
         enc_out = self.encoder.encode(input_ids=input_ids, attention_mask=attention_mask,
                                       n_samples=1, hinge_kl_loss_lambda=hinge_kl_loss_lambda,
                                       return_log_q_z_x=return_log_q_z_x, return_log_p_z=return_log_p_z,
                                       return_embeddings=return_embedding_distance)
 
+        # Hinge KL has already capped the KL at the "Free bits" level
         beta_hinge_kl = beta * enc_out["hinge_kl_loss"]
 
         # If instead use a sample from the prior, go ahead and sample it
@@ -120,9 +137,9 @@ class NewsVAE(torch.nn.Module):
                                         return_hidden_states=return_hidden_states,
                                         return_exact_match=return_exact_match,
                                         return_predictions=return_predictions,
-                                        return_output_word_embeddings=return_embedding_distance,
                                         return_probabilities=return_probabilities,
                                         return_last_hidden_state=return_last_hidden_state,
+                                        return_output_embeddings=return_embedding_distance,
                                         return_logits=return_logits,
                                         return_cross_entropy=return_cross_entropy,
                                         reduce_seq_dim_ce=reduce_seq_dim_ce,
@@ -146,9 +163,9 @@ class NewsVAE(torch.nn.Module):
                 return_attention_to_latent=return_attention_to_latent,
                 return_hidden_states=return_hidden_states,
                 return_last_hidden_state=return_last_hidden_state,
+                return_output_embeddings=return_embedding_distance,
                 return_predictions=return_predictions,
                 return_probabilities=return_probabilities,
-                return_output_word_embeddings=return_embedding_distance,
                 return_logits=return_logits,
                 tokenizer=tokenizer,
                 nucleus_sampling=nucleus_sampling,
@@ -169,14 +186,11 @@ class NewsVAE(torch.nn.Module):
         if return_embedding_distance:
             if auto_regressive is False:
                 # cut off last token prediction (already done with auto-regressive)
-                decoder_outs["output_word_embeddings"] = decoder_outs["output_word_embeddings"][:, :-1, :]
+                decoder_outs["output_embeddings"] = decoder_outs["output_embeddings"][:, :-1, :]
             embedding_loss = self.calculate_embedding_space_loss(copy.deepcopy(input_ids), enc_out["word_embeddings"],
-                                                                 decoder_outs["output_word_embeddings"],
+                                                                 decoder_outs["output_embeddings"],
                                                                  reduce_seq_dim_embedding_loss,
                                                                  reduce_batch_dim_embedding_loss)
-
-            embedding_loss = embedding_loss.item()
-            del decoder_outs["output_word_embeddings"]
 
         if return_text_predictions:
             if tokenizer is None:
@@ -188,8 +202,9 @@ class NewsVAE(torch.nn.Module):
         # total loss is always reduce with a sum over sequence dimension
         # and mean over batch dimension. This is called "recon_loss"
         # cross entropy may be reduced differently or not reduced
-        if "cross_entropy" in decoder_outs:
+        if torch.is_tensor(decoder_outs["cross_entropy"]):
             recon_loss = decoder_outs["cross_entropy"]
+        # If cross_entropy is None, just set it to zero (at inference time this may be the case)
         else:
             recon_loss = torch.tensor(0.0)
 
@@ -208,6 +223,10 @@ class NewsVAE(torch.nn.Module):
         else:
             ce_per_word = None
 
+        ########################
+        # TOTAL TRAIN LOSS     #
+        ########################
+
         # Construct the total loss
         total_loss = None
 
@@ -215,9 +234,13 @@ class NewsVAE(torch.nn.Module):
             total_loss = recon_loss + beta_hinge_kl
         elif objective == 'mmd-vae':
             total_loss = recon_loss + enc_out["mmd_loss"]
+        elif objective == "autoencoder":
+            total_loss = recon_loss
         else:
             print("Not supported objective. Set valid option: beta-vae or mmd-vae.")
 
+        # reconloss = negative log likelihood
+        # elbo = likelihood - KL -> -elbo = negative likelihood + KL
         minus_elbo = recon_loss + enc_out["kl_loss"]
 
         # Detach all except the total loss on which we need to base our backward pass
@@ -233,9 +256,6 @@ class NewsVAE(torch.nn.Module):
                        "embedding_loss": embedding_loss,
                        "ce_per_word": ce_per_word}
 
-        # Delete to avoid confusion
-        # del decoder_outs['cross_entropy']
-
         if return_latents:
             vae_outputs["latents"] = enc_out["latent_z"]
 
@@ -246,7 +266,7 @@ class NewsVAE(torch.nn.Module):
         # Merge all the outputs together
         vae_outputs = {**vae_outputs, **decoder_outs}
 
-        # Detach everything except for floats and total loss
+        # Detach everything except for non-tensors and total loss
         for k, v in vae_outputs.items():
             if torch.is_tensor(v) and k != "total_loss":
                 vae_outputs[k] = v.detach()
@@ -282,20 +302,19 @@ class NewsVAE(torch.nn.Module):
     def calculate_embedding_space_loss(self, input_ids, in_w_emb, out_w_emb,
                                        reduce_seq_dim_embedding_loss,
                                        reduce_batch_dim_embedding_loss):
+
         labels = input_ids[:, 1:].contiguous()  # skip <s> token
 
         # pad token is int 1
         label_mask = (labels != 1).float()
 
         # cut off start token
+        # end token is already cut off for out_w_emb
         in_w_emb = in_w_emb[:, 1:, :]
 
-        latent_size = in_w_emb.shape[-1]
-        embedding_loss = torch.nn.functional.mse_loss(in_w_emb.reshape(-1, latent_size),
-                                                      out_w_emb.reshape(-1, latent_size),
+        embedding_loss = torch.nn.functional.mse_loss(in_w_emb, out_w_emb,
                                                       reduce=False, reduction='none')
         embedding_loss = embedding_loss.mean(dim=-1)
-        embedding_loss = embedding_loss.reshape(labels.shape)
         embedding_loss = embedding_loss * label_mask
 
         if reduce_seq_dim_embedding_loss == "mean":

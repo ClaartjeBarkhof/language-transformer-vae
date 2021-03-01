@@ -10,7 +10,9 @@ class DecoderNewsVAE(torch.nn.Module):
                  add_latent_via_memory=True,
                  add_latent_via_embeddings=True,
                  latent_size=768,
-                 add_decoder_output_embedding_bias=True):
+                 add_decoder_output_embedding_bias=True,
+                 drop_inputs_decoder=False,
+                 drop_inputs_decoder_prob=0.2):
         """
         This class serves as a wrapper to the functional class VaeDecoderRobertaForCausalLM class.
         It additionally can take care of weight tying, auto-regressive decoding, etc. It also
@@ -18,10 +20,16 @@ class DecoderNewsVAE(torch.nn.Module):
         """
         super(DecoderNewsVAE, self).__init__()
 
+
+
         # The functional part of this class
         config = RobertaConfig.from_pretrained("roberta-base")
         self.model = VaeDecoderRobertaForCausalLM.from_pretrained("roberta-base",
                                                                   gradient_checkpointing=gradient_checkpointing)
+
+        # Set dropout variables
+        self.model.roberta.embeddings.drop_inputs_decoder = drop_inputs_decoder
+        self.model.roberta.embeddings.drop_inputs_decoder_prob = drop_inputs_decoder_prob
 
         # Replace the output embedding layer with one without bias if in config
         if add_decoder_output_embedding_bias is False:
@@ -53,8 +61,8 @@ class DecoderNewsVAE(torch.nn.Module):
                 return_predictions=False,
                 return_probabilities=False,
                 return_last_hidden_state=False,
+                return_output_embeddings=False,
                 return_logits=False,
-                return_output_word_embeddings=False,
                 return_cross_entropy=True,
                 reduce_seq_dim_exact_match="mean",
                 reduce_batch_dim_exact_match="mean",
@@ -64,7 +72,7 @@ class DecoderNewsVAE(torch.nn.Module):
                 top_k=0,
                 top_p=0.9):
         """
-        Make a (teacher-forced) forward pass through the decoder.
+        Make a parallel, forward pass (with teacher-forcing) through the decoder.
 
         Args:
             latent_z: Tensor [batch x latent_size]:
@@ -118,9 +126,9 @@ class DecoderNewsVAE(torch.nn.Module):
                                   return_hidden_states=return_hidden_states,
                                   return_exact_match=return_exact_match,
                                   return_predictions=return_predictions,
-                                  return_output_word_embeddings=return_output_word_embeddings,
                                   return_probabilities=return_probabilities,
                                   return_last_hidden_state=return_last_hidden_state,
+                                  return_output_embeddings=return_output_embeddings,
                                   return_logits=return_logits,
                                   return_cross_entropy=return_cross_entropy,
                                   reduce_seq_dim_ce=reduce_seq_dim_ce,
@@ -145,15 +153,12 @@ class DecoderNewsVAE(torch.nn.Module):
                               reduce_seq_dim_exact_match="mean",
                               reduce_batch_dim_exact_match="mean",
 
-                              return_output_word_embeddings=False,
-
                               return_attention_probs=False,
                               return_attention_to_latent=False,
 
                               return_hidden_states=False,
                               return_last_hidden_state=False,
-
-                              tokenizer=None,
+                              return_output_embeddings=False,
 
                               return_predictions=True,
 
@@ -240,14 +245,13 @@ class DecoderNewsVAE(torch.nn.Module):
                                       reduce_seq_dim_exact_match="none",
                                       reduce_batch_dim_exact_match="none",
 
-                                      return_output_word_embeddings=return_output_word_embeddings,
-
                                       return_predictions=True,  # needed for input at every time step
                                       return_probabilities=return_probabilities,
                                       return_attention_to_latent=return_attention_to_latent,
                                       return_attention_probs=return_attention_probs,
                                       return_hidden_states=return_hidden_states,
                                       return_last_hidden_state=return_last_hidden_state,
+                                      return_output_embeddings=return_output_embeddings,
                                       return_logits=return_logits,
                                       nucleus_sampling=nucleus_sampling,
                                       top_k=top_k,
@@ -272,13 +276,12 @@ class DecoderNewsVAE(torch.nn.Module):
                 # eos has already been cut off, so take the last element
                 exact_match.append(decoder_outs["exact_match"][:, -1])
 
+            if return_output_embeddings:
+                out_w_embs.append(decoder_outs["output_embeddings"][:, -2, :])
+
             if return_cross_entropy:
                 # eos has already been cut off, so take the last element
                 cross_entropy.append(decoder_outs["cross_entropy"][:, -1])
-
-            if return_output_word_embeddings:
-                # eos has not been cut off, so take the second to last element
-                out_w_embs.append(decoder_outs["output_word_embeddings"][:, -2, :])
 
             if return_probabilities:
                 # eos has already been cut off, so take the last element
@@ -311,9 +314,6 @@ class DecoderNewsVAE(torch.nn.Module):
 
         outputs = {}
 
-        if return_output_word_embeddings:
-            outputs["output_word_embeddings"] = torch.stack(out_w_embs, dim=1)
-
         if return_logits:
             outputs["logits"] = torch.stack(logits, dim=1)
 
@@ -338,6 +338,9 @@ class DecoderNewsVAE(torch.nn.Module):
 
         if return_last_hidden_state:
             outputs["last_hidden_state"] = torch.stack(last_hidden_state, dim=1)
+
+        if return_output_embeddings:
+            outputs["output_embeddings"] = torch.stack(out_w_embs, dim=1)
 
         if return_exact_match:
             outputs["exact_match"] = torch.stack(exact_match, dim=-1)

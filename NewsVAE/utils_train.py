@@ -7,7 +7,7 @@ import os
 import torch.backends.cudnn as cudnn
 import numpy as np
 import wandb
-
+from utils_external import tie_weights
 
 # ----------------------------------------------------------------------------------------------------
 # INITIALISATION STUFF
@@ -175,7 +175,8 @@ def determine_max_epoch_steps_per_rank(max_train_steps_epoch_per_rank, max_valid
 # ----------------------------------------------------------------------------------------------------
 
 def load_from_checkpoint(vae_model, path, optimizer=None, scheduler=None, scaler=None,
-                         world_master=True, ddp=False, use_amp=True, device_name="cuda:0"):
+                         world_master=True, ddp=False, use_amp=True, device_name="cuda:0",
+                         do_tie_embeddings=True, do_tie_weights=True):
 
     vae_model = vae_model.cpu()
 
@@ -241,6 +242,17 @@ def load_from_checkpoint(vae_model, path, optimizer=None, scheduler=None, scaler
     print("Checkpoint global_step: {}, epoch: {}, best_valid_loss: {}".format(global_step,
                                                                               epoch,
                                                                               best_valid_loss))
+
+    # Weight tying / sharing between encoder and decoder RoBERTa part
+    if do_tie_weights:
+        print("Tying encoder decoder RoBERTa checkpoint weights!")
+        base_model_prefix = vae_model.decoder.model.base_model_prefix
+        tie_weights(vae_model.encoder.model, vae_model.decoder.model._modules[base_model_prefix], base_model_prefix)
+
+    # Make all embedding spaces the same (encoder input, decoder input, decoder output)
+    if do_tie_embeddings:
+        print("Tying embedding spaces!")
+        vae_model.tie_all_embeddings()
 
     return optimizer, scheduler, vae_model, scaler, global_step, epoch, best_valid_loss
 

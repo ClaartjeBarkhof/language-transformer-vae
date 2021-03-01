@@ -95,6 +95,9 @@ class RobertaEmbeddings(nn.Module):
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
+        self.drop_inputs_decoder = None
+        self.drop_inputs_decoder_prob = None
+
         # position_ids (1, len position emb) is contiguous in memory and exported when serialized
         self.register_buffer("position_ids", torch.arange(config.max_position_embeddings).expand((1, -1)))
         self.position_embedding_type = getattr(config, "position_embedding_type", "absolute")
@@ -127,6 +130,14 @@ class RobertaEmbeddings(nn.Module):
 
         if inputs_embeds is None:
             inputs_embeds = self.word_embeddings(input_ids)
+
+        # TODO: implement dropout here, mind the scaling <-- do I want that?
+        # if self.drop_inputs_decoder:
+        #     print(self.training)
+        #     mask = torch.nn.functional.dropout(torch.ones(input_ids.shape), p=self.drop_inputs_decoder_prob,
+        #                                        training=self.training, inplace=False)
+        #     mask_rep =
+
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
 
         embeddings = inputs_embeds + token_type_embeddings
@@ -914,7 +925,6 @@ class VaeDecoderRobertaForCausalLM(RobertaPreTrainedModel):
             return_attention_to_latent=None,
 
             latent_to_decoder_output=None,
-            return_output_word_embeddings=False,
             return_predictions=False,
             return_probabilities=False,
             return_logits=False,
@@ -929,6 +939,7 @@ class VaeDecoderRobertaForCausalLM(RobertaPreTrainedModel):
 
             return_hidden_states=None,
             return_last_hidden_state=False,
+            return_output_embeddings=False,
 
             nucleus_sampling=False,
             top_k=0,
@@ -968,7 +979,7 @@ class VaeDecoderRobertaForCausalLM(RobertaPreTrainedModel):
 
         # >>>> Claartje code
         # Get outputs and shift the predictions and labels so they align
-        logits = self.lm_head(outputs.last_hidden_state)
+        logits, output_embeddings = self.lm_head(outputs.last_hidden_state)
         # we don't care about the last prediction, because that is the prediction at </s>
         logits = logits[:, :-1, :].contiguous()
 
@@ -1081,7 +1092,7 @@ class VaeDecoderRobertaForCausalLM(RobertaPreTrainedModel):
             "probabilities": probs if return_probabilities else None,
             "last_hidden_state": outputs.last_hidden_state if return_last_hidden_state else None,
             "logits": logits if return_logits else None,
-            # "output_word_embeddings": output_embeddings if return_output_word_embeddings else None,
+            "output_embeddings": output_embeddings if return_output_embeddings else None,
             "past_key_values": outputs.past_key_values if use_cache else None,
             "cross_attentions": outputs.cross_attentions
         }
@@ -1146,12 +1157,12 @@ class RobertaLMHead(nn.Module):
     def forward(self, features, **kwargs):
         x = self.dense(features)
         x = gelu(x)
-        x = self.layer_norm(x)
+        output_embedding = self.layer_norm(x)
 
         # project back to size of vocabulary with bias
-        x = self.decoder(x)
+        logits = self.decoder(output_embedding)
 
-        return x
+        return logits, output_embedding
 
 
 def create_position_ids_from_input_ids(input_ids, padding_idx, past_key_values_length=0):

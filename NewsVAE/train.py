@@ -36,7 +36,7 @@ def get_scheduler(optimizer, warmup_updates=4000, lr_scheduler=True,
     Args:
         optimizer: torch.optim
         warmup_updates: int:
-            How many steps to warm-up (linearly) to the initial learning rate
+            How many steps to warm-up (linearly) to the initial learning rate.
         lr_scheduler: bool:
             Whether or not to actually apply the scheduler.
     Returns:
@@ -157,7 +157,8 @@ def get_dataloader(phases, ddp=False, batch_size=12, num_workers=8, max_seq_len=
 def get_model_on_device(device_name="cuda:0", latent_size=768, gradient_checkpointing=False,
                         add_latent_via_memory=True, add_latent_via_embeddings=True,
                         add_decoder_output_embedding_bias=True,
-                        do_tie_weights=True, world_master=True, do_tie_embedding_spaces=True):
+                        do_tie_weights=True, world_master=True, do_tie_embedding_spaces=True,
+                        drop_inputs_decoder=False, drop_inputs_decoder_prob=0.2):
     """
     Get a VAE model on correct device.
 
@@ -179,12 +180,16 @@ def get_model_on_device(device_name="cuda:0", latent_size=768, gradient_checkpoi
                              add_latent_via_memory=add_latent_via_memory,
                              add_latent_via_embeddings=add_latent_via_embeddings,
                              add_decoder_output_embedding_bias=add_decoder_output_embedding_bias,
-                             latent_size=latent_size)
+                             latent_size=latent_size,
+                             drop_inputs_decoder=drop_inputs_decoder,
+                             drop_inputs_decoder_prob=drop_inputs_decoder_prob)
 
     encoder = EncoderNewsVAE(gradient_checkpointing=gradient_checkpointing, latent_size=latent_size)
 
     vae_model = NewsVAE(encoder, decoder, do_tie_weights=do_tie_weights,
-                        do_tie_embedding_spaces=do_tie_embedding_spaces)
+                        do_tie_embedding_spaces=do_tie_embedding_spaces,
+                        drop_inputs_decoder=drop_inputs_decoder,
+                        drop_inputs_decoder_prob=drop_inputs_decoder_prob)
 
     vae_model = vae_model.to(device_name)
 
@@ -255,7 +260,7 @@ def determine_beta(global_grad_step,
 
 def do_valid_step(vae_model, batch, beta, hinge_kl_loss_lambda, device_name="cuda:0",
                   return_embedding_loss=True, reduce_batch_dim_embedding_loss="mean",
-                  reduce_seq_dim_embedding_loss="sum"):
+                  reduce_seq_dim_embedding_loss="sum", objective="beta-vae"):
     """
     Perform a validation step (no grads, eval mode, no autocast?)
 
@@ -280,7 +285,7 @@ def do_valid_step(vae_model, batch, beta, hinge_kl_loss_lambda, device_name="cud
                                 beta=beta,
                                 hinge_kl_loss_lambda=hinge_kl_loss_lambda,
                                 return_cross_entropy=True,
-                                objective='beta-vae',
+                                objective=objective,
                                 reduce_seq_dim_ce="sum",
                                 reduce_batch_dim_ce="mean",
                                 return_exact_match=False,
@@ -299,7 +304,7 @@ def do_valid_step(vae_model, batch, beta, hinge_kl_loss_lambda, device_name="cud
 def do_train_step(vae_model, batch, optimizer, scheduler, scaler, global_step, beta, hinge_kl_loss_lambda,
                   use_amp=False, accumulate_n_batches_grad=1, device_name="cuda:0", gradient_clipping=True,
                   return_embedding_loss=True, reduce_batch_dim_embedding_loss="mean",
-                  reduce_seq_dim_embedding_loss="sum"):
+                  reduce_seq_dim_embedding_loss="sum",  objective="beta-vae"):
     """
     Perform a train step with autocast, gradients enabled and gradient accumulated backward.
 
@@ -333,7 +338,7 @@ def do_train_step(vae_model, batch, optimizer, scheduler, scaler, global_step, b
                                return_embedding_distance=return_embedding_loss,
                                reduce_seq_dim_embedding_loss=reduce_seq_dim_embedding_loss,
                                reduce_batch_dim_embedding_loss=reduce_batch_dim_embedding_loss,
-                               objective='beta-vae',
+                               objective=objective,
                                reduce_seq_dim_ce="sum",
                                reduce_batch_dim_ce="mean",
                                return_exact_match=False,
@@ -502,12 +507,14 @@ def train(device_rank, config, run_name):
                                                                             return_embedding_loss=config.return_embedding_loss,
                                                                             reduce_batch_dim_embedding_loss=config.reduce_batch_dim_embedding_loss,
                                                                             reduce_seq_dim_embedding_loss=config.reduce_seq_dim_embedding_loss,
-                                                                            gradient_clipping=config.gradient_clipping)
+                                                                            gradient_clipping=config.gradient_clipping,
+                                                                            objective=config.objective)
                 else:
                     losses = do_valid_step(vae_model, batch, beta, config.hinge_loss_lambda, device_name=device_name,
                                            return_embedding_loss=config.return_embedding_loss,
                                            reduce_batch_dim_embedding_loss=config.reduce_batch_dim_embedding_loss,
-                                           reduce_seq_dim_embedding_loss=config.reduce_seq_dim_embedding_loss)
+                                           reduce_seq_dim_embedding_loss=config.reduce_seq_dim_embedding_loss,
+                                           objective=config.objective)
 
                 # ----------------------------------------------------------------------------------------------------
                 # INSERT STATISTICS, PRINT, LOG, CHECKPOINT

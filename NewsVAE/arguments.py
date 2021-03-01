@@ -137,7 +137,8 @@ def preprare_parser(jupyter=False, print_settings=True):
     parser.add_argument("--objective", default='mmd-vae', type=str,
                         help="Which objective to use, options:"
                              "  - beta-vae"
-                             "  - mmd-vae")
+                             "  - mmd-vae"
+                             "  - autoencoder")
     parser.add_argument("--mmd_lambda", default=10000, type=float,
                         help="How much to weight the mmd loss.")
 
@@ -162,6 +163,15 @@ def preprare_parser(jupyter=False, print_settings=True):
     parser.add_argument("--add_decoder_output_embedding_bias", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to add decoder output embedding bias, which makes the"
                              "embedding space different from the input embedding spaces (default: True).")
+
+    # NOISY TEACHER-FORCED
+    parser.add_argument("--drop_inputs_decoder", default=True,
+                        type=lambda x: bool(distutils.util.strtobool(x)),
+                        help="Whether or not to drop input embeddings at the decoder (default: True).")
+    parser.add_argument("--drop_inputs_decoder_prob", default=0.2, type=float,
+                        help="The probability with which dropping input embeddings at the decoder should happen"
+                             "(default: 0.2).")
+
 
     code_dir_path = utils_train.get_code_dir()
     parser.add_argument("--code_dir_path", default=code_dir_path, type=str,
