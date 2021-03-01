@@ -95,43 +95,8 @@ class NewsVAE(torch.nn.Module):
 
         """
         Perform a forward pass through the whole VAE with the sampling operation in between.
-
-        Args:
-            input_ids: Tensor [batch, seq_len]
-                The input sequence token ids
-            beta: float
-                What weight to give to the KL-term in the loss for beta-vae objective
-            attention_mask: Tensor [batch, seq_len]
-                The input sequence mask, masking padded tokens with 0
-            objective: str ["beta-vae" or "mmd-vae"]
-                According to what objective to calculate the full loss (to perform backward pass on).
-            hinge_kl_loss_lambda: float
-                Losses under this threshold are remitted.
-            return_latents: bool
-            return_mu_logvar: bool
-            return_attention_probs: bool
-            return_attention_to_latent: bool
-            return_exact_match: bool
-            return_predictions: bool
-            return_probabilities: bool
-            return_last_hidden_state: bool
-            return_hidden_states: bool
-            return_logits: bool
-            return_cross_entropy: bool
-            reduce_seq_dim_ce: str
-            reduce_seq_dim_exact_match: str
-            reduce_batch_dim_exact_match: str
-            reduce_batch_dim_ce: str
-            nucleus_sampling: bool
-            top_k: int
-            top_p: float
-            device_name: str
-        Returns:
-            losses: Dict[str, Union[float, Tensor]
-                The result dictionary of the full forward pass with metrics
-                and possibly predictions.
         """
-        # Forward through encoder and sample
+        # Forward through encoder and sample (reparameterisation)
         enc_out = self.encoder.encode(input_ids=input_ids, attention_mask=attention_mask,
                                       n_samples=1, hinge_kl_loss_lambda=hinge_kl_loss_lambda,
                                       return_log_q_z_x=return_log_q_z_x, return_log_p_z=return_log_p_z,
@@ -139,14 +104,15 @@ class NewsVAE(torch.nn.Module):
 
         beta_hinge_kl = beta * enc_out["hinge_kl_loss"]
 
-
+        # If instead use a sample from the prior, go ahead and sample it
         if decode_sample_from_prior:
             latent_z = self.sample_from_prior(latent_size=self.decoder.latent_size,
-                                         n_samples=input_ids.shape[0],
-                                         device_name=input_ids.get_device())
+                                              n_samples=input_ids.shape[0],
+                                              device_name=input_ids.get_device())
         else:
             latent_z = enc_out["latent_z"]
 
+        # Parallel predictions with teacher forcing (during training)
         if auto_regressive is False:
             decoder_outs = self.decoder(latent_z, input_ids, attention_mask,
                                         return_attention_probs=return_attention_probs,
@@ -167,6 +133,8 @@ class NewsVAE(torch.nn.Module):
                                         top_k=top_k,
                                         top_p=top_p,
                                         labels=copy.copy(input_ids))
+
+        # Recurrent, auto-regressive predictions during inference
         else:
             decoder_outs = self.decoder.autoregressive_decode(
                 latent_z,
@@ -182,6 +150,7 @@ class NewsVAE(torch.nn.Module):
                 return_probabilities=return_probabilities,
                 return_output_word_embeddings=return_embedding_distance,
                 return_logits=return_logits,
+                tokenizer=tokenizer,
                 nucleus_sampling=nucleus_sampling,
                 reduce_seq_dim_ce=reduce_seq_dim_ce,
                 reduce_seq_dim_exact_match=reduce_seq_dim_exact_match,

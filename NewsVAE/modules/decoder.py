@@ -1,10 +1,7 @@
 import torch
 from modules.decoder_roberta_new import VaeDecoderRobertaForCausalLM
 from transformers import RobertaConfig
-import copy
-from transformers import top_k_top_p_filtering
 import torch.nn as nn
-from utils_evaluation import tokenizer_batch_decode
 
 
 class DecoderNewsVAE(torch.nn.Module):
@@ -15,24 +12,31 @@ class DecoderNewsVAE(torch.nn.Module):
                  latent_size=768,
                  add_decoder_output_embedding_bias=True):
         """
-        Decoder of VAE based on a RobertaForCausalLM initialised with roberta-base checkpoint.
+        This class serves as a wrapper to the functional class VaeDecoderRobertaForCausalLM class.
+        It additionally can take care of weight tying, auto-regressive decoding, etc. It also
+        contains the weights to connect the latent representation to the decoder.
         """
         super(DecoderNewsVAE, self).__init__()
 
+        # The functional part of this class
         config = RobertaConfig.from_pretrained("roberta-base")
         self.model = VaeDecoderRobertaForCausalLM.from_pretrained("roberta-base",
                                                                   gradient_checkpointing=gradient_checkpointing)
 
+        # Replace the output embedding layer with one without bias if in config
         if add_decoder_output_embedding_bias is False:
             print("Replacing linear output layer with one without bias!")
             self.model.lm_head.decoder = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
             del self.model.lm_head.bias
 
+        # Store some variables for convenience
         self.latent_size = latent_size
         self.n_layers = self.model.config.num_hidden_layers
         self.hidden_size = self.model.config.hidden_size
         self.initializer_range = self.model.config.initializer_range
 
+        # Initialise dense layers to connect the encoder and the decoder
+        # via embeddings or via memory or both
         self.latent_to_decoder = LatentToDecoderNewsVAE(add_latent_via_memory=add_latent_via_memory,
                                                         add_latent_via_embeddings=add_latent_via_embeddings,
                                                         latent_size=self.latent_size,
@@ -149,6 +153,8 @@ class DecoderNewsVAE(torch.nn.Module):
                               return_hidden_states=False,
                               return_last_hidden_state=False,
 
+                              tokenizer=None,
+
                               return_predictions=True,
 
                               return_probabilities=False,
@@ -178,10 +184,12 @@ class DecoderNewsVAE(torch.nn.Module):
             generated_so_far: Tensor [batch, max_seq_len]
                 Batch of decoded / generated token ids
         """
+
         assert (return_exact_match or return_cross_entropy) is (
                 labels is not None), "provide labels if return_exact_match_acc or return_cross_entropy is set to True"
 
         latent_to_decoder = self.latent_to_decoder(latent_z)
+
         batch_size = latent_z.shape[0]
 
         # Add <s> and </s>
@@ -212,10 +220,10 @@ class DecoderNewsVAE(torch.nn.Module):
             else:
                 labels_so_far = None
 
-            # Only add at the beginning. In the second forward past,
-            # it should be contained in the cache (past_key_values)
-            if i > 0:
-                latent_to_decoder = None
+            # # Only add at the beginning. In the second forward past,
+            # # it should be contained in the cache (past_key_values)
+            # if i > 0:
+            #     latent_to_decoder = None
 
             decoder_outs = self.model(input_ids=generated_so_far, attention_mask=None,
                                       latent_to_decoder_output=latent_to_decoder,
@@ -245,30 +253,39 @@ class DecoderNewsVAE(torch.nn.Module):
                                       top_k=top_k,
                                       top_p=top_p)
 
-            # Since I pass <s> ... <eos>, the cache will also consist of <eos> key, value pairs.
+            # print("decoder_outs[predictions].shape", decoder_outs["predictions"].shape)
+
+            # Since I pass <t_1> <eos>, the cache will also consist of <eos> key-, value-pairs.
             # we do not want that in the cache, we only want things that belong to the actual past.
             past_key_values = decoder_outs["past_key_values"]
             # p_k_v is a tuple of 12 layers, with tuples of key, value matrices
-            # of dimension batch, n_heads, seq_len, head_dim
-            past_key_values = tuple([tuple([pair[0][:, :, :-1, :], pair[1][:, :, :-1, :]]) for pair in past_key_values])
+            # of dimension [batch, n_heads, seq_len, head_dim]. we want to trim seq_len by 1
+            past_key_values = tuple([tuple([pair[0][:, :, 1:-1, :], pair[1][:, :, 1:-1, :]]) for pair in past_key_values])
+            #print("past_key_values[0][0].shape", past_key_values[0][0].shape)
 
             # Get the predictions of this time step
             new_preds = decoder_outs['predictions'][:, -1]
+            #print("new_preds.shape", new_preds.shape)
             predictions.append(new_preds)
 
             if return_exact_match:
+                # eos has already been cut off, so take the last element
                 exact_match.append(decoder_outs["exact_match"][:, -1])
 
             if return_cross_entropy:
+                # eos has already been cut off, so take the last element
                 cross_entropy.append(decoder_outs["cross_entropy"][:, -1])
 
             if return_output_word_embeddings:
+                # eos has not been cut off, so take the second to last element
                 out_w_embs.append(decoder_outs["output_word_embeddings"][:, -2, :])
 
             if return_probabilities:
+                # eos has already been cut off, so take the last element
                 probabilities.append(decoder_outs["probabilities"][:, -1, :].cpu())
 
             if return_logits:
+                # eos has already been cut off, so take the last element
                 logits.append(decoder_outs["logits"][:, -1, :].cpu())
 
             if return_attention_probs:
@@ -281,9 +298,11 @@ class DecoderNewsVAE(torch.nn.Module):
                 attention_to_latent.append(decoder_outs["attention_to_latent"][:, :, :, -1].cpu())
 
             if return_hidden_states:
+                # eos has not been cut off, so take the second to last element
                 hidden_states.append(decoder_outs["hidden_states"][:, :, -2, :].cpu())
 
             if return_last_hidden_state:
+                # eos has not been cut off, so take the second to last element
                 last_hidden_state.append(decoder_outs["last_hidden_state"][:, -2, :].cpu())
 
             # Concat into <last prediction> </s> format for next round
@@ -309,7 +328,7 @@ class DecoderNewsVAE(torch.nn.Module):
         if return_attention_to_latent:
             outputs["attention_to_latent"] = torch.stack(attention_to_latent, dim=-1)
 
-        predictions = torch.stack(predictions, dim=0)
+        predictions = torch.stack(predictions, dim=1)
         if return_predictions:
             # the </s> is not predicted, neither is the added </s>
             outputs["predictions"] = predictions

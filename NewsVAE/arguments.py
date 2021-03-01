@@ -113,7 +113,7 @@ def preprare_parser(jupyter=False, print_settings=True):
                         help="The balancing beta term between the reconstruction loss"
                              " and KL-divergence term.")
     # EMBEDDING SPACE LOSS
-    parser.add_argument("--return_embedding_loss", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
+    parser.add_argument("--return_embedding_loss", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to log the embedding space loss L2.")
     parser.add_argument("--reduce_seq_dim_embedding_loss", default="mean", type=str,
                         help="How to reduce the embedding space loss along the sequence dimension (default: sum).")

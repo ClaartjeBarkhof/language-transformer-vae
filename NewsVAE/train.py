@@ -1,4 +1,3 @@
-import utils_train
 import torch
 import torch.distributed as dist
 from torch.cuda.amp import GradScaler, autocast
@@ -9,10 +8,10 @@ from dataset_wrappper import NewsData
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 import multiprocessing
-
 import numpy as np
 from torch.optim.lr_scheduler import LambdaLR
 
+import utils_train
 from modules.decoder import DecoderNewsVAE
 from modules.encoder import EncoderNewsVAE
 
@@ -20,13 +19,6 @@ from modules.encoder import EncoderNewsVAE
 def get_optimizer(vae_model, learning_rate=2e-5):
     """
     Return a simple AdamW optimiser.
-
-    Args:
-        vae_model: nn.module
-        learning_rate: float
-
-    Returns:
-        optimizer: torch.optizer
     """
 
     optimizer = torch.optim.AdamW(vae_model.parameters(), lr=learning_rate)

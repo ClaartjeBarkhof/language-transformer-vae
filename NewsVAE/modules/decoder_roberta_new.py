@@ -214,14 +214,34 @@ class VaeDecoderRobertaSelfAttention(nn.Module):
             key_layer = self.transpose_for_scores(self.key(encoder_hidden_states))
             value_layer = self.transpose_for_scores(self.value(encoder_hidden_states))
             attention_mask = encoder_attention_mask
+
         # Normal attention with cache (use_cache is True and time_step > 0)
         elif past_key_value is not None:
             mixed_key_layer = self.key(hidden_states)
             mixed_value_layer = self.value(hidden_states)
+
             key_layer = self.transpose_for_scores(mixed_key_layer)
             value_layer = self.transpose_for_scores(mixed_value_layer)
+
+            # print("normal attention WITH cache")
+            # print("latent_layer_memory_i.shape", latent_layer_memory_i.shape)
+            # print("mixed_key_layer.shape", mixed_key_layer.shape)
+            # print("past_key_value[0].shape", past_key_value[0].shape)
+            # print("key_layer.shape", key_layer.shape)
+
+            # First cat the cache
             key_layer = torch.cat([past_key_value[0], key_layer], dim=2)
             value_layer = torch.cat([past_key_value[1], value_layer], dim=2)
+
+            # Then the latent (if given)
+            if latent_layer_memory_i is not None:
+                key_latent_layer = self.transpose_for_scores(latent_layer_memory_i)
+                value_latent_layer = self.transpose_for_scores(latent_layer_memory_i)
+                key_layer = torch.cat([key_latent_layer, key_layer], dim=2)
+
+                # print("key layer with latent and cache", key_layer.shape)
+                value_layer = torch.cat([value_latent_layer, value_layer], dim=2)
+
         # Normal attention no cache or time_step is 0 with using cache
         else:
             mixed_key_layer = self.key(hidden_states)
@@ -278,9 +298,11 @@ class VaeDecoderRobertaSelfAttention(nn.Module):
                 # so we will concat series of 0.0 to the attention mask (in front) to not mask the latent.
                 batch, _, seq_l, _ = attention_mask.shape
                 extension = torch.zeros(batch, 1, seq_l, 1).type_as(attention_mask)
+
                 attention_mask_extended_for_memory = torch.cat((extension,
                                                                 attention_mask), dim=3)
                 attention_scores = attention_scores + attention_mask_extended_for_memory
+
             # <<<<<< End Claartje code
             else:
                 # Apply the attention mask is (precomputed for all layers in RobertaModel forward() function)
@@ -884,7 +906,6 @@ class VaeDecoderRobertaForCausalLM(RobertaPreTrainedModel):
             position_ids=None,
             head_mask=None,
             inputs_embeds=None,
-            # return_dict=None,>>>> Claartje: remove this, I will always work with my own dict, no tuples
             encoder_hidden_states=None,
             encoder_attention_mask=None,
 
@@ -916,9 +937,6 @@ class VaeDecoderRobertaForCausalLM(RobertaPreTrainedModel):
 
     ):
 
-        assert not (past_key_values and latent_to_decoder_output), \
-            "Can not pass latent and cache, latent is included in the cache from time step > 0"
-
         # >>>> Claartje code
         # Latent to decoder
         if latent_to_decoder_output is not None:
@@ -928,8 +946,7 @@ class VaeDecoderRobertaForCausalLM(RobertaPreTrainedModel):
             latent_layer_memory, latent_embedding = None, None
         # <<<< Claartje code
 
-        # if labels is not None:
-        #     use_cache = False
+        output_attentions = True if (return_attention_to_latent or return_attention_probs) else False
 
         outputs = self.roberta(
             input_ids,
@@ -955,6 +972,10 @@ class VaeDecoderRobertaForCausalLM(RobertaPreTrainedModel):
         # we don't care about the last prediction, because that is the prediction at </s>
         logits = logits[:, :-1, :].contiguous()
 
+        cross_entropy, predictions, exact_match, cross_entropy_per_word, \
+        cross_entropy, probs, attention_probs, attention_to_latent, hidden_states = None, None, \
+        None, None, None, None, None, None, None
+
         # Reformat labels and create a mask (based on pad token id = 1)
         if labels is not None:
             labels = labels[:, 1:].contiguous()  # skip <s> token
@@ -965,86 +986,84 @@ class VaeDecoderRobertaForCausalLM(RobertaPreTrainedModel):
             # -> from now on the sequence length is thus 63 instead of 64
             # logits are [<w1>' <w2>' ... <w62> </s>'] and labels [<w1> <w2> ... <w62> </s>]
 
-            # Attention probabilities
-            # This is a tuple of 12 layers of size [batch, 12, seq_len, seq_len + 1]
-            attention_probs = outputs.attentions if (return_attention_probs or return_attention_to_latent) else None
-            attention_to_latent = None
+        # Attention probabilities
+        # This is a tuple of 12 layers of size [batch, 12, seq_len, seq_len + 1]
+        attention_probs = outputs.attentions if (return_attention_probs or return_attention_to_latent) else None
+        attention_to_latent = None
 
-            if attention_probs or return_attention_to_latent:
-                # stack all layers into one big tensor
-                # dimensions are: layers, batch, n_heads, query_dim, key_value_dim
-                attention_probs = torch.stack(attention_probs)
+        if attention_probs or return_attention_to_latent:
+            # stack all layers into one big tensor
+            # dimensions are: layers, batch, n_heads, query_dim, key_value_dim
+            attention_probs = torch.stack(attention_probs)
 
-                # batch, n_heads, n_layers, seq_len_query, seq_len_val
-                attention_probs = attention_probs.permute(1, 2, 0, 3, 4)
+            # batch, n_heads, n_layers, seq_len_query, seq_len_val
+            attention_probs = attention_probs.permute(1, 2, 0, 3, 4)
 
-                if return_attention_to_latent:
-                    # Get attention to latent only, for all tokens except end token
-                    attention_to_latent = attention_probs[:, :, :, :-1, 0]
+            if return_attention_to_latent:
+                # Get attention to latent only, for all tokens except end token
+                attention_to_latent = attention_probs[:, :, :, :-1, 0]
 
-            # Get rid of the sequence dimension (merge into batch dimension)
-            batch_size, seq_len, vocab_size = logits.shape
-            logits = logits.reshape(-1, vocab_size)
+        # Get rid of the sequence dimension (merge into batch dimension)
+        batch_size, seq_len, vocab_size = logits.shape
+        logits = logits.reshape(-1, vocab_size)
 
-            cross_entropy, predictions, exact_match, cross_entropy_per_word, probs = None, None, None, None, None
+        # ONLY CROSS ENTROPY (at train time)
+        if return_cross_entropy and not (
+                return_predictions or return_probabilities or return_exact_match or nucleus_sampling):
+            # cross entropy = log_softmax + nll_loss, but use cross_entropy function for stability
+            cross_entropy = torch.nn.functional.cross_entropy(logits, labels, reduction='none')
+            cross_entropy = cross_entropy.reshape(batch_size, seq_len)  # bring back the sequence dimension
 
-            # ONLY CROSS ENTROPY (at train time)
-            if return_cross_entropy and not (
-                    return_predictions or return_probabilities or return_exact_match or nucleus_sampling):
-                # cross entropy = log_softmax + nll_loss, but use cross_entropy function for stability
+        # ALSO PREDICT (at inference or validation time)
+        elif return_predictions or return_probabilities or return_exact_match or nucleus_sampling:
+            if return_cross_entropy:
+                # use this as it is numerically stable, not efficient together with softmax
+                # do cross entropy with normal logits, not filtered logits
                 cross_entropy = torch.nn.functional.cross_entropy(logits, labels, reduction='none')
                 cross_entropy = cross_entropy.reshape(batch_size, seq_len)  # bring back the sequence dimension
 
-            # ALSO PREDICT (at inference or validation time)
-            elif return_predictions or return_probabilities or return_exact_match or nucleus_sampling:
-                if return_cross_entropy:
-                    # use this as it is numerically stable, not efficient together with softmax
-                    # do cross entropy with normal logits, not filtered logits
-                    cross_entropy = torch.nn.functional.cross_entropy(logits, labels, reduction='none')
-                    cross_entropy = cross_entropy.reshape(batch_size, seq_len)  # bring back the sequence dimension
+            if nucleus_sampling:
+                # logits are overwritten now
+                logits = top_k_top_p_filtering(logits, top_k=top_k, top_p=top_p)
 
+            probs = torch.nn.functional.softmax(logits, dim=-1)
+
+            if return_predictions or return_exact_match or nucleus_sampling:
                 if nucleus_sampling:
-                    # logits are overwritten now
-                    logits = top_k_top_p_filtering(logits, top_k=top_k, top_p=top_p)
+                    predictions = torch.multinomial(probs, num_samples=1)
+                else:
+                    predictions = probs.argmax(-1)
 
-                probs = torch.nn.functional.softmax(logits, dim=-1)
+                if return_exact_match:
+                    exact_match = (labels == predictions.squeeze()).float()
+                    exact_match = exact_match.reshape(batch_size, seq_len)
 
-                if return_predictions or return_exact_match or nucleus_sampling:
-                    if nucleus_sampling:
-                        predictions = torch.multinomial(probs, num_samples=1)
-                    else:
-                        predictions = probs.argmax(-1)
+        # REDUCE CORRECTLY
+        if cross_entropy is not None:
+            cross_entropy = cross_entropy * label_mask
+            cross_entropy_per_word = (cross_entropy.sum(dim=-1) / label_mask.sum(dim=-1)).mean()
+            cross_entropy = self.reduce_correct(cross_entropy, reduce_seq_dim_ce, -1, label_mask)  # seq dim
+            cross_entropy = self.reduce_correct(cross_entropy, reduce_batch_dim_ce, 0,
+                                                label_mask)  # batch dim <- always mean
 
-                    if return_exact_match:
-                        exact_match = (labels == predictions.squeeze()).float()
-                        exact_match = exact_match.reshape(batch_size, seq_len)
+        if exact_match is not None:
+            exact_match = exact_match * label_mask
+            exact_match = self.reduce_correct(exact_match, reduce_seq_dim_exact_match, -1, label_mask)  # seq dim
+            exact_match = self.reduce_correct(exact_match, reduce_batch_dim_exact_match, 0, label_mask)  # batch dim
 
-            # REDUCE CORRECTLY
-            if cross_entropy is not None:
-                cross_entropy = cross_entropy * label_mask
-                cross_entropy_per_word = (cross_entropy.sum(dim=-1) / label_mask.sum(dim=-1)).mean()
-                cross_entropy = self.reduce_correct(cross_entropy, reduce_seq_dim_ce, -1, label_mask)  # seq dim
-                cross_entropy = self.reduce_correct(cross_entropy, reduce_batch_dim_ce, 0,
-                                                    label_mask)  # batch dim <- always mean
+        if return_hidden_states:
+            hidden_states = torch.stack(outputs.hidden_states, dim=0)
+        else:
+            hidden_states = None
 
-            if exact_match is not None:
-                exact_match = exact_match * label_mask
-                exact_match = self.reduce_correct(exact_match, reduce_seq_dim_exact_match, -1, label_mask)  # seq dim
-                exact_match = self.reduce_correct(exact_match, reduce_batch_dim_exact_match, 0, label_mask)  # batch dim
+        if return_probabilities:
+            probs = probs.reshape((batch_size, seq_len, -1))
 
-            if return_hidden_states:
-                hidden_states = torch.stack(outputs.hidden_states, dim=0)
-            else:
-                hidden_states = None
+        if return_predictions:
+            predictions = predictions.reshape((batch_size, seq_len))
 
-            if return_probabilities:
-                probs = probs.reshape((batch_size, seq_len, -1))
-
-            if return_predictions:
-                predictions = predictions.reshape((batch_size, seq_len))
-
-            if logits is not None:
-                logits = logits.reshape((batch_size, seq_len, vocab_size))
+        if logits is not None:
+            logits = logits.reshape((batch_size, seq_len, vocab_size))
 
         # print("use cache in decoder_roberta_new", use_cache)
         # print("len(outputs.past_key_values)", len(outputs.past_key_values))

@@ -143,5 +143,9 @@ NewsVAE/Data/
 /NewsVAE/NewsData/
 /NewsVAE/Runs/
 /Plotting/
-/NewsVAE/evaluation/
+/NewsVAE/evaluation/result-files/
 /job_scripts/
+/NewsVAE/evaluation/14JAN/
+/NewsVAE/evaluation/23NOV-evaluate-beta-vs-mmd/
+/NewsVAE/evaluation/29DEC/
+/NewsVAE/evaluation/30NOV-autoencoder-vs-MMD-VAE/
