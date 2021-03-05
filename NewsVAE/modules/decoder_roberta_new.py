@@ -131,12 +131,14 @@ class RobertaEmbeddings(nn.Module):
         if inputs_embeds is None:
             inputs_embeds = self.word_embeddings(input_ids)
 
-        # TODO: implement dropout here, mind the scaling <-- do I want that?
-        # if self.drop_inputs_decoder:
-        #     print(self.training)
-        #     mask = torch.nn.functional.dropout(torch.ones(input_ids.shape), p=self.drop_inputs_decoder_prob,
-        #                                        training=self.training, inplace=False)
-        #     mask_rep =
+        # Claartje: Input embedding drop-out
+        # This function drops full embeddings according to drop-out probability < drop_inputs_decoder_prob >
+        # it scales the rest of the embeddings by:  * ( 1 / (1 - dropout_prob) )
+        # so if the drop-out probability is 0.2, then the other weights are scaled by 1 / 0.8 = 1.25
+        # this is to keep the expected magnitude of the embeddings the same.
+        if self.drop_inputs_decoder and self.training:
+            inputs_embeds = torch.nn.functional.dropout2d(inputs_embeds, p=self.drop_inputs_decoder_prob,
+                                                          training=self.training, inplace=False)
 
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
 

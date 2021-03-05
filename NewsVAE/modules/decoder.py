@@ -31,6 +31,9 @@ class DecoderNewsVAE(torch.nn.Module):
         self.model.roberta.embeddings.drop_inputs_decoder = drop_inputs_decoder
         self.model.roberta.embeddings.drop_inputs_decoder_prob = drop_inputs_decoder_prob
 
+        print("self.model.roberta.embeddings.drop_inputs_decoder ", self.model.roberta.embeddings.drop_inputs_decoder)
+        print("self.model.roberta.embeddings.drop_inputs_decoder_prob",  self.model.roberta.embeddings.drop_inputs_decoder_prob)
+
         # Replace the output embedding layer with one without bias if in config
         if add_decoder_output_embedding_bias is False:
             print("Replacing linear output layer with one without bias!")

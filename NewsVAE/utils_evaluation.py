@@ -115,5 +115,15 @@ def sample_text_autoregressive(vae_model, tokenizer, add_latent_via_embeddings=T
         return generated_text
 
 
-def tokenizer_batch_decode(batch_of_samples, tokenizer):
-    return [tokenizer.decode(a.tolist()) for a in batch_of_samples]
+def tokenizer_batch_decode(batch_of_samples, tokenizer, strip_start_end=False):
+    ts = []
+    for a in batch_of_samples:
+        t = tokenizer.decode(a.tolist())
+        if strip_start_end:
+            if "<s>" in t:
+                t = t[3:]
+            if "</s>" in t:
+                end_i = t.find("</s>")
+                t = t[:end_i]
+        ts.append(t)
+    return ts

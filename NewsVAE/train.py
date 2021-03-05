@@ -187,9 +187,7 @@ def get_model_on_device(device_name="cuda:0", latent_size=768, gradient_checkpoi
     encoder = EncoderNewsVAE(gradient_checkpointing=gradient_checkpointing, latent_size=latent_size)
 
     vae_model = NewsVAE(encoder, decoder, do_tie_weights=do_tie_weights,
-                        do_tie_embedding_spaces=do_tie_embedding_spaces,
-                        drop_inputs_decoder=drop_inputs_decoder,
-                        drop_inputs_decoder_prob=drop_inputs_decoder_prob)
+                        do_tie_embedding_spaces=do_tie_embedding_spaces)
 
     vae_model = vae_model.to(device_name)
 
@@ -409,7 +407,9 @@ def train(device_rank, config, run_name):
                                     add_latent_via_embeddings=config.add_latent_via_embeddings,
                                     do_tie_embedding_spaces=config.do_tie_embedding_spaces,
                                     add_decoder_output_embedding_bias=config.add_decoder_output_embedding_bias,
-                                    do_tie_weights=config.do_tie_weights, world_master=world_master)
+                                    do_tie_weights=config.do_tie_weights, world_master=world_master,
+                                    drop_inputs_decoder=config.drop_inputs_decoder,
+                                    drop_inputs_decoder_prob=config.drop_inputs_decoder_prob)
 
     # Initalise logging
     if config.logging and world_master: utils_train.init_logging(vae_model, run_name, config.code_dir_path,

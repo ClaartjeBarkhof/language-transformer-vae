@@ -9,8 +9,7 @@ import copy
 
 class NewsVAE(torch.nn.Module):
     def __init__(self, encoder, decoder,
-                 do_tie_weights=True, do_tie_embedding_spaces=True,
-                 drop_inputs_decoder=False, drop_inputs_decoder_prob=0.2):
+                 do_tie_weights=True, do_tie_embedding_spaces=True):
         super(NewsVAE, self).__init__()
         """
         This class implements a VAE by wrapping an EncoderNewsVAE and DecoderNewsVAE.
@@ -19,9 +18,6 @@ class NewsVAE(torch.nn.Module):
         # Main parts
         self.encoder = encoder
         self.decoder = decoder
-
-        self.decoder.drop_inputs_decoder = drop_inputs_decoder
-        self.decoder.drop_inputs_decoder_prob = drop_inputs_decoder_prob
 
         # Weight tying / sharing between encoder and decoder RoBERTa part
         if do_tie_weights:
@@ -167,7 +163,6 @@ class NewsVAE(torch.nn.Module):
                 return_predictions=return_predictions,
                 return_probabilities=return_probabilities,
                 return_logits=return_logits,
-                tokenizer=tokenizer,
                 nucleus_sampling=nucleus_sampling,
                 reduce_seq_dim_ce=reduce_seq_dim_ce,
                 reduce_seq_dim_exact_match=reduce_seq_dim_exact_match,
