@@ -151,3 +151,4 @@ NewsVAE/Data/
 /NewsVAE/evaluation/30NOV-autoencoder-vs-MMD-VAE/
 /NewsVAE/evaluation/train_latents.pickle
 /NewsVAE/evaluation/proposal-and-before/
+/NewsVAE/pytorch-constrained-opt/
