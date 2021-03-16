@@ -45,6 +45,7 @@ def get_PTB_runs(run_dir="/home/cbarkhof/code-thesis/NewsVAE/Runs", with_drop=Fa
 
 
 def get_clean_name(run_name):
+
     if "latent32" in run_name:
         nz = 32
     elif "latent64" in run_name:
@@ -55,6 +56,7 @@ def get_clean_name(run_name):
     if "autoencoder" in run_name:
         fb = "autoencoder"
     else:
+
         fb = run_name[run_name.index("FB-")+3:].split("-")[0]
         if len(fb) == 3:
             fb += "0"
@@ -95,6 +97,7 @@ def counted_validation_iterator(validation_loader):
 
 
 def load_model_for_eval(run_name, path, device="cuda:0"):
+
     with HiddenPrints():
 
         if "checkpoint" not in path:

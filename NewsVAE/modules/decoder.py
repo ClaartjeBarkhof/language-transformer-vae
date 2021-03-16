@@ -67,6 +67,7 @@ class DecoderNewsVAE(torch.nn.Module):
                 return_output_embeddings=False,
                 return_logits=False,
                 return_cross_entropy=True,
+                return_log_probs=False,
                 reduce_seq_dim_exact_match="mean",
                 reduce_batch_dim_exact_match="mean",
                 reduce_seq_dim_ce="sum",
@@ -134,6 +135,7 @@ class DecoderNewsVAE(torch.nn.Module):
                                   return_output_embeddings=return_output_embeddings,
                                   return_logits=return_logits,
                                   return_cross_entropy=return_cross_entropy,
+                                  return_log_probs=return_log_probs,
                                   reduce_seq_dim_ce=reduce_seq_dim_ce,
                                   reduce_seq_dim_exact_match=reduce_seq_dim_exact_match,
                                   reduce_batch_dim_exact_match=reduce_batch_dim_exact_match,
@@ -167,6 +169,8 @@ class DecoderNewsVAE(torch.nn.Module):
 
                               return_probabilities=False,
                               return_logits=False,
+
+                              return_log_probs=False,
 
                               nucleus_sampling=False, top_k=0, top_p=0.0,
                               device_name="cuda:0"):
@@ -211,6 +215,7 @@ class DecoderNewsVAE(torch.nn.Module):
         logits, probabilities = [], []
         exact_match, cross_entropy = [], []
         out_w_embs = []
+        log_probs = []
 
         # Init with nothing
         past_key_values = None
@@ -257,6 +262,7 @@ class DecoderNewsVAE(torch.nn.Module):
                                       return_output_embeddings=return_output_embeddings,
                                       return_logits=return_logits,
                                       nucleus_sampling=nucleus_sampling,
+                                      return_log_probs=return_log_probs,
                                       top_k=top_k,
                                       top_p=top_p)
 
@@ -278,6 +284,10 @@ class DecoderNewsVAE(torch.nn.Module):
             if return_exact_match:
                 # eos has already been cut off, so take the last element
                 exact_match.append(decoder_outs["exact_match"][:, -1])
+
+            if return_log_probs:
+                # eos has already been cut off, so take the last element
+                log_probs.append(decoder_outs["log_probs"][:, -1])
 
             if return_output_embeddings:
                 out_w_embs.append(decoder_outs["output_embeddings"][:, -2, :])
@@ -319,6 +329,9 @@ class DecoderNewsVAE(torch.nn.Module):
 
         if return_logits:
             outputs["logits"] = torch.stack(logits, dim=1)
+
+        if return_log_probs:
+            outputs["log_probs"] = torch.stack(log_probs, dim=1)
 
         if return_probabilities:
             outputs["probabilities"] = torch.stack(probabilities, dim=1)

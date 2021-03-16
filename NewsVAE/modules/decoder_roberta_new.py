@@ -943,6 +943,8 @@ class VaeDecoderRobertaForCausalLM(RobertaPreTrainedModel):
             return_last_hidden_state=False,
             return_output_embeddings=False,
 
+            return_log_probs=False,
+
             nucleus_sampling=False,
             top_k=0,
             top_p=0.9,
@@ -986,8 +988,8 @@ class VaeDecoderRobertaForCausalLM(RobertaPreTrainedModel):
         logits = logits[:, :-1, :].contiguous()
 
         cross_entropy, predictions, exact_match, cross_entropy_per_word, \
-        cross_entropy, probs, attention_probs, attention_to_latent, hidden_states = None, None, \
-        None, None, None, None, None, None, None
+        cross_entropy, probs, attention_probs, attention_to_latent, hidden_states, log_probs = None, None, \
+        None, None, None, None, None, None, None, None
 
         # Reformat labels and create a mask (based on pad token id = 1)
         if labels is not None:
@@ -1022,13 +1024,13 @@ class VaeDecoderRobertaForCausalLM(RobertaPreTrainedModel):
 
         # ONLY CROSS ENTROPY (at train time)
         if return_cross_entropy and not (
-                return_predictions or return_probabilities or return_exact_match or nucleus_sampling):
+                return_predictions or return_probabilities or return_exact_match or nucleus_sampling or return_log_probs):
             # cross entropy = log_softmax + nll_loss, but use cross_entropy function for stability
             cross_entropy = torch.nn.functional.cross_entropy(logits, labels, reduction='none')
             cross_entropy = cross_entropy.reshape(batch_size, seq_len)  # bring back the sequence dimension
 
         # ALSO PREDICT (at inference or validation time)
-        elif return_predictions or return_probabilities or return_exact_match or nucleus_sampling:
+        elif return_predictions or return_probabilities or return_exact_match or nucleus_sampling or return_log_probs:
             if return_cross_entropy:
                 # use this as it is numerically stable, not efficient together with softmax
                 # do cross entropy with normal logits, not filtered logits
@@ -1041,11 +1043,15 @@ class VaeDecoderRobertaForCausalLM(RobertaPreTrainedModel):
 
             probs = torch.nn.functional.softmax(logits, dim=-1)
 
-            if return_predictions or return_exact_match or nucleus_sampling:
+            if return_predictions or return_exact_match or nucleus_sampling or return_log_probs:
                 if nucleus_sampling:
                     predictions = torch.multinomial(probs, num_samples=1)
                 else:
                     predictions = probs.argmax(-1)
+
+                if return_log_probs:
+                    log_probs = torch.distributions.Categorical(probs=probs).log_prob(predictions.squeeze(1))
+                    log_probs = log_probs.reshape(batch_size, seq_len)
 
                 if return_exact_match:
                     exact_match = (labels == predictions.squeeze()).float()
@@ -1083,6 +1089,14 @@ class VaeDecoderRobertaForCausalLM(RobertaPreTrainedModel):
         # print("len(outputs.past_key_values[0])", len(outputs.past_key_values[0]))
         # print("outputs.past_key_values[0][0].shape", outputs.past_key_values[0][0].shape)
 
+        # -----------------------------------------------------
+        # cross_entropy VS log_probs
+        #
+        # Cross entropy has the negative log likelihood of the inputs (so reconstruction neg. log likelihood)
+        # Log_probs has the log likelihood of the predictions (so the log prob assigned to the prediction)
+        #   where the prediction might be sampled or taken to be argmax, depending on nucleus_sampling arg.
+        # -----------------------------------------------------
+
         return_dict = {
             "cross_entropy": cross_entropy,  # CE reduced following the input settings
             "cross_entropy_per_word": cross_entropy_per_word,  # CE per word (mean over seq and batch)
@@ -1096,7 +1110,8 @@ class VaeDecoderRobertaForCausalLM(RobertaPreTrainedModel):
             "logits": logits if return_logits else None,
             "output_embeddings": output_embeddings if return_output_embeddings else None,
             "past_key_values": outputs.past_key_values if use_cache else None,
-            "cross_attentions": outputs.cross_attentions
+            "cross_attentions": outputs.cross_attentions,
+            "log_probs": log_probs if return_log_probs else None
         }
         return return_dict
         # <<<< Claartje code

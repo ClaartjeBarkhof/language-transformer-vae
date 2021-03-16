@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 import multiprocessing
 import numpy as np
+from constraintoptim.constraint import *
 from torch.optim.lr_scheduler import LambdaLR
 
 import utils_train
@@ -158,7 +159,9 @@ def get_model_on_device(device_name="cuda:0", latent_size=768, gradient_checkpoi
                         add_latent_via_memory=True, add_latent_via_embeddings=True,
                         add_decoder_output_embedding_bias=True,
                         do_tie_weights=True, world_master=True, do_tie_embedding_spaces=True,
-                        drop_inputs_decoder=False, drop_inputs_decoder_prob=0.2):
+                        drop_inputs_decoder=False, drop_inputs_decoder_prob=0.2,
+                        mdr_alpha=0.5, mdr_target_rate_per_dim=0.5, objective="mdr-vae",
+                        mdr_optimiser_lr=2e-3):
     """
     Get a VAE model on correct device.
 
@@ -187,7 +190,9 @@ def get_model_on_device(device_name="cuda:0", latent_size=768, gradient_checkpoi
     encoder = EncoderNewsVAE(gradient_checkpointing=gradient_checkpointing, latent_size=latent_size)
 
     vae_model = NewsVAE(encoder, decoder, do_tie_weights=do_tie_weights,
-                        do_tie_embedding_spaces=do_tie_embedding_spaces)
+                        do_tie_embedding_spaces=do_tie_embedding_spaces,
+                        mdr_alpha=mdr_alpha, mdr_target_rate_per_dim=mdr_target_rate_per_dim,
+                        objective=objective, mdr_optimiser_lr=mdr_optimiser_lr)
 
     vae_model = vae_model.to(device_name)
 
@@ -302,7 +307,7 @@ def do_valid_step(vae_model, batch, beta, hinge_kl_loss_lambda, device_name="cud
 def do_train_step(vae_model, batch, optimizer, scheduler, scaler, global_step, beta, hinge_kl_loss_lambda,
                   use_amp=False, accumulate_n_batches_grad=1, device_name="cuda:0", gradient_clipping=True,
                   return_embedding_loss=True, reduce_batch_dim_embedding_loss="mean",
-                  reduce_seq_dim_embedding_loss="sum",  objective="beta-vae"):
+                  reduce_seq_dim_embedding_loss="sum",  objective="beta-vae", ddp=False):
     """
     Perform a train step with autocast, gradients enabled and gradient accumulated backward.
 
@@ -353,9 +358,6 @@ def do_train_step(vae_model, batch, optimizer, scheduler, scaler, global_step, b
 
     # If gradient accumulated long enough: set a step
     if (global_step + 1) % accumulate_n_batches_grad == 0:
-        # Advance the learning rate scheduler by 1 (needs to be done before optimizer.step())
-        scheduler.step()
-
         # GRADIENT CLIPPING
         if gradient_clipping:
             # Unscales the gradients of optimizer's assigned params in-place
@@ -366,10 +368,28 @@ def do_train_step(vae_model, batch, optimizer, scheduler, scaler, global_step, b
 
         # SCALER
         scaler.step(optimizer)  # instead of optimizer.step()
+        # MDR
+        if ddp:
+            if vae_model.module.kl_constraint_optim is not None:
+                scaler.step(vae_model.module.kl_constraint_optim)
+        else:
+            if vae_model.kl_constraint_optim is not None:
+                scaler.step(vae_model.kl_constraint_optim)
         scaler.update()
 
         # Zero the gradients only here
         optimizer.zero_grad()
+
+        # MDR
+        if ddp:
+            if vae_model.module.kl_constraint_optim is not None:
+                vae_model.module.kl_constraint_optim.zero_grad()
+        else:
+            if vae_model.kl_constraint_optim is not None:
+                vae_model.kl_constraint_optim.zero_grad()
+
+        # Advance the learning rate scheduler by 1 (needs to be done before optimizer.step())
+        scheduler.step()
 
     # Detach now (this is not divided by args.accumulate_n_batches_grad)
     # but since we are not summing I think that's fine
@@ -409,7 +429,10 @@ def train(device_rank, config, run_name):
                                     add_decoder_output_embedding_bias=config.add_decoder_output_embedding_bias,
                                     do_tie_weights=config.do_tie_weights, world_master=world_master,
                                     drop_inputs_decoder=config.drop_inputs_decoder,
-                                    drop_inputs_decoder_prob=config.drop_inputs_decoder_prob)
+                                    drop_inputs_decoder_prob=config.drop_inputs_decoder_prob,
+                                    mdr_alpha=config.mdr_alpha, mdr_target_rate_per_dim=config.mdr_target_rate_per_dim,
+                                    objective=config.objective,
+                                    mdr_optimiser_lr=config.mdr_optimiser_lr)
 
     # Initalise logging
     if config.logging and world_master: utils_train.init_logging(vae_model, run_name, config.code_dir_path,
@@ -508,7 +531,8 @@ def train(device_rank, config, run_name):
                                                                             reduce_batch_dim_embedding_loss=config.reduce_batch_dim_embedding_loss,
                                                                             reduce_seq_dim_embedding_loss=config.reduce_seq_dim_embedding_loss,
                                                                             gradient_clipping=config.gradient_clipping,
-                                                                            objective=config.objective)
+                                                                            objective=config.objective,
+                                                                            ddp=config.ddp)
                 else:
                     losses = do_valid_step(vae_model, batch, beta, config.hinge_loss_lambda, device_name=device_name,
                                            return_embedding_loss=config.return_embedding_loss,

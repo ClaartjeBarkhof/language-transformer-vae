@@ -54,11 +54,11 @@ def preprare_parser(jupyter=False, print_settings=True):
                         help="Whether or not to use automatic mixed precision (default: True).")
 
     # DISTRIBUTED TRAINING
-    parser.add_argument("--n_gpus", default=1, type=int,
+    parser.add_argument("--n_gpus", default=4, type=int,
                         help="Number GPUs to use (default: None).")
     parser.add_argument("--n_nodes", default=1, type=int,
                         help="Number nodes to use (default: 1).")
-    parser.add_argument("--ddp", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
+    parser.add_argument("--ddp", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to use Distributed Data Parallel (DDP) "
                              "(default: True if n_gpus > 1, else: False).")
 
@@ -107,9 +107,9 @@ def preprare_parser(jupyter=False, print_settings=True):
                         help="Whether or not to set seed and run everything deterministically.")
 
     # LOSS
-    parser.add_argument("--hinge_loss_lambda", default=0.25, type=float,
+    parser.add_argument("--hinge_loss_lambda", default=0.0, type=float,
                         help="The KL loss below this value is not taken into account.")
-    parser.add_argument("--beta", default=0.5, type=float,
+    parser.add_argument("--beta", default=0.0, type=float,
                         help="The balancing beta term between the reconstruction loss"
                              " and KL-divergence term.")
     # EMBEDDING SPACE LOSS
@@ -121,7 +121,7 @@ def preprare_parser(jupyter=False, print_settings=True):
                         help="How to reduce the embedding space loss along the batch dimension (default: mean).")
 
     # LINEAR KL ANNEALING
-    parser.add_argument("--kl_linear_annealing", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
+    parser.add_argument("--kl_linear_annealing", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to perform (linear) KL annealing from 0 to 1 in "
                              "KL_annealing_grad_steps_linear.")
     parser.add_argument("--kl_annealing_grad_steps_linear", default=1000, type=int,
@@ -134,18 +134,19 @@ def preprare_parser(jupyter=False, print_settings=True):
     parser.add_argument("--kl_annealing_grad_steps_per_cycle", default=9000, type=int,
                         help="How many gradient steps to perform per cycle (default: 9000).")
 
-    parser.add_argument("--objective", default='mmd-vae', type=str,
+    parser.add_argument("--objective", default='beta-vae', type=str,
                         help="Which objective to use, options:"
                              "  - beta-vae"
                              "  - mmd-vae"
+                             "  - mdr-vae"
                              "  - autoencoder")
     parser.add_argument("--mmd_lambda", default=10000, type=float,
                         help="How much to weight the mmd loss.")
 
     # MODEL
-    parser.add_argument("--latent_size", default=768, type=int,
+    parser.add_argument("--latent_size", default=32, type=int,
                         help="The size of the latent space. The output from the "
-                             "encoder is now 768 x 2 (first and last token). The last projection should be 2 x the "
+                             "encoder is now 32 x 2 (first and last token). The last projection should be 2 x the "
                              "size of the latent space, because it contains mean and logvar with"
                              "both the dimensionality of the latent space.")
     parser.add_argument("--add_latent_via_memory", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
@@ -172,6 +173,15 @@ def preprare_parser(jupyter=False, print_settings=True):
                         help="The probability with which dropping input embeddings at the decoder should happen"
                              "(default: 0.2).")
 
+    # MDR constraint optim. (parameters for constaintoptim.constraint module)
+    parser.add_argument("--mdr_alpha", default=0.5, type=float,
+                        help="alpha of moving average, as in https://arxiv.org/abs/1810.00597. "
+                             "If alpha=0, no moving average is used. (default: 0.5)")
+    parser.add_argument("--mdr_target_rate_per_dim", default=0.5, type=float,
+                        help="Per dimension target rate for the MDR constrained optimisation. (default: 0.5)")
+    parser.add_argument("--mdr_optimiser_lr", default=0.002, type=float,
+                        help="Learning rate for the MDR constraint optimiser. (default: 2e-3)")
+
 
     code_dir_path = utils_train.get_code_dir()
     parser.add_argument("--code_dir_path", default=code_dir_path, type=str,
@@ -184,9 +194,9 @@ def preprare_parser(jupyter=False, print_settings=True):
         args = parser.parse_args()
 
     # Turn off annealing if MMD vae
-    if args.objective == "mmd-vae":
+    if args.objective == "mmd-vae" or args.objective == "mdr-vae":
         if print_settings:
-            print("--> Note to self: Objective is mmd-vae, setting KL-annealing to False and Beta to 1.0.")
+            print("--> Note to self: Objective is mmd-vae or mdr-vae, setting KL-annealing to False and Beta to 1.0.")
         args.KL_annealing = False
         args.beta = 1.0
 

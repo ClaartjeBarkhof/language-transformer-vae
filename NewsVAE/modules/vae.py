@@ -5,11 +5,13 @@ import torch
 from modules.decoder import DecoderNewsVAE
 from modules.encoder import EncoderNewsVAE
 import copy
+from constraintoptim.constraint import Constraint, ConstraintOptimizer
 
 
 class NewsVAE(torch.nn.Module):
     def __init__(self, encoder, decoder,
-                 do_tie_weights=True, do_tie_embedding_spaces=True):
+                 do_tie_weights=True, do_tie_embedding_spaces=True, mdr_alpha=0.5,
+                 mdr_target_rate_per_dim=0.5, objective="mdr-vae", mdr_optimiser_lr=2e-3):
         super(NewsVAE, self).__init__()
         """
         This class implements a VAE by wrapping an EncoderNewsVAE and DecoderNewsVAE.
@@ -18,6 +20,20 @@ class NewsVAE(torch.nn.Module):
         # Main parts
         self.encoder = encoder
         self.decoder = decoder
+
+        # MDR constraint optimisation of the rate
+        self.kl_constraint = None
+        self.kl_constraint_optim = None
+
+        objective = "beta-vae"
+
+        if objective == "mdr-vae":
+            total_target_rate = mdr_target_rate_per_dim * self.decoder.latent_size
+            print(f"Initialising MDR constraint with alpha: {mdr_alpha} | target rate: {mdr_target_rate_per_dim}"
+                  f" | target rate total {total_target_rate}")
+            self.kl_constraint = Constraint(total_target_rate, "ge", alpha=mdr_alpha)
+            self.kl_constraint_optim = ConstraintOptimizer(
+                    torch.optim.RMSprop, self.kl_constraint.parameters(), mdr_optimiser_lr)
 
         # Weight tying / sharing between encoder and decoder RoBERTa part
         if do_tie_weights:
@@ -98,7 +114,7 @@ class NewsVAE(torch.nn.Module):
 
                 nucleus_sampling=False,
                 top_k=0,
-                top_p=0.9,
+                top_p=1.0,
 
                 decode_sample_from_prior=False,
 
@@ -225,8 +241,10 @@ class NewsVAE(torch.nn.Module):
         # Construct the total loss
         total_loss = None
 
-        if objective == 'beta-vae':
+        if objective == 'beta-vae' and self.kl_constraint is None:
             total_loss = recon_loss + beta_hinge_kl
+        elif objective == 'mdr-vae' and self.kl_constraint is not None:
+            total_loss = recon_loss + self.kl_constraint(enc_out["kl_loss"])
         elif objective == 'mmd-vae':
             total_loss = recon_loss + enc_out["mmd_loss"]
         elif objective == "autoencoder":
@@ -274,26 +292,6 @@ class NewsVAE(torch.nn.Module):
 
         return vae_outputs
 
-    @staticmethod
-    def sample_from_prior(latent_size=768, n_samples=8, device_name="cuda:0"):
-        """
-        Sampels from prior distribution (factorised standard normal).
-
-        Args:
-            latent_size: int
-            n_samples: int
-            device_name: str
-
-        Returns:
-            samples: Tensor [batch, latent_size]
-        """
-        loc = torch.zeros(latent_size, device=device_name)
-        scale = torch.ones(latent_size, device=device_name)
-        prior_dist = torch.distributions.normal.Normal(loc, scale)
-        samples = prior_dist.sample((n_samples,))
-
-        return samples
-
     def calculate_embedding_space_loss(self, input_ids, in_w_emb, out_w_emb,
                                        reduce_seq_dim_embedding_loss,
                                        reduce_batch_dim_embedding_loss):
@@ -324,6 +322,29 @@ class NewsVAE(torch.nn.Module):
 
         return embedding_loss
 
+    ########################################################
+    # For convenience, echo some methods from the encoder  #
+    ########################################################
+
+    @staticmethod
+    def sample_log_likelihood(latent_z, mu=None, logvar=None, reduce_latent_dim=True, reduce_batch_dim=False):
+        return EncoderNewsVAE.sample_log_likelihood(latent_z, mu=mu, logvar=logvar,
+                                                    reduce_latent_dim=reduce_latent_dim,
+                                                    reduce_batch_dim=reduce_batch_dim)
+
+    @staticmethod
+    def approximate_log_q_z(mu, logvar, latent_z, method="chen", dataset_size=None, prod_marginals=False):
+        return EncoderNewsVAE.approximate_log_q_z(mu, logvar, latent_z, method=method,
+                                                  dataset_size=dataset_size, prod_marginals=prod_marginals)
+
+    @staticmethod
+    def kl_divergence(mu, logvar, hinge_kl_loss_lambda=0.5, average_batch=True):
+        return EncoderNewsVAE.kl_divergence(mu, logvar, hinge_kl_loss_lambda=hinge_kl_loss_lambda,
+                                            average_batch=average_batch)
+
+    @staticmethod
+    def sample_from_prior(latent_size=768, n_samples=8, device_name="cuda:0"):
+        return EncoderNewsVAE.sample_from_prior(latent_size=latent_size, n_samples=n_samples, device_name=device_name)
 
 
 if __name__ == "__main__":
