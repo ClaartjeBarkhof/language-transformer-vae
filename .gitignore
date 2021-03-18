@@ -152,3 +152,4 @@ NewsVAE/Data/
 /NewsVAE/evaluation/train_latents.pickle
 /NewsVAE/evaluation/proposal-and-before/
 /NewsVAE/pytorch-constrained-opt/
+/NewsVAE/Old/

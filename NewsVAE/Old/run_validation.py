@@ -9,23 +9,39 @@ from utils_evaluation import valid_dataset_loader_tokenizer
 import pickle
 from pathlib import Path
 import time
+from arguments import preprare_parser
+import torch
 
-
-def load_model_for_eval(path, device_name="cuda:0", latent_size=32, add_latent_via_memory=True,
+def load_model_for_eval(path, device_name="cuda:0", add_latent_via_memory=True,
                         add_latent_via_embeddings=False, do_tie_weights=True, do_tie_embedding_spaces=True,
                         add_decoder_output_embedding_bias=False):
-    vae_model = train.get_model_on_device(device_name=device_name,
-                                          latent_size=latent_size,
-                                          gradient_checkpointing=False,
-                                          add_latent_via_memory=add_latent_via_memory,
-                                          add_latent_via_embeddings=add_latent_via_embeddings,
-                                          do_tie_weights=do_tie_weights,
-                                          do_tie_embedding_spaces=do_tie_embedding_spaces,
-                                          world_master=True,
-                                          add_decoder_output_embedding_bias=add_decoder_output_embedding_bias)
 
-    _, _, vae_model, _, _, _, _ = utils_train.load_from_checkpoint(vae_model, path)
+    config = preprare_parser(jupyter=False, print_settings=False)
+    config.add_latent_via_embeddings = do_tie_embedding_spaces
+    config.do_tie_weights = do_tie_weights
+    config.add_latent_via_memory = add_latent_via_memory
+    config.do_tie_embedding_spaces = add_latent_via_embeddings
+    config.add_decoder_output_embedding_bias = add_decoder_output_embedding_bias
+
+    if "latent32" in path:
+        config.latent_size = 32
+    elif "latent64" in path:
+        config.latent_size = 64
+    else:
+        config.latent_size = 768
+
+    checkpoint = torch.load(path)
+    print(checkpoint.keys())
+
+    vae_model = train.get_model_on_device(config, dataset_size=1000, device_name=device_name, world_master=True)
+
+    # _, _, vae_model, _, _, _, _ = utils_train.load_from_checkpoint(vae_model, path)
+
+
+
+
     vae_model.eval()
+
     return vae_model
 
 
@@ -110,4 +126,4 @@ def run_validation(max_batches=-1, batch_size_mi_calc=128, n_batches_mi_calc=20)
 
 
 if __name__ == "__main__":
-    run_validation()
+    load_model_for_eval(path="/home/cbarkhof/code-thesis/NewsVAE/Runs/2021-02-03-PTB-latent64-autoencoder-run-18:25:57/checkpoint-best.pth")
