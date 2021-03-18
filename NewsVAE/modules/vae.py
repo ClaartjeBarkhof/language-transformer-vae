@@ -1,17 +1,13 @@
-import torch.nn as nn
 from utils_external import tie_weights
 from utils_evaluation import tokenizer_batch_decode
 import torch
+from loss_and_optimisation import LossTermManager
 from modules.decoder import DecoderNewsVAE
 from modules.encoder import EncoderNewsVAE
 import copy
-from constraintoptim.constraint import Constraint, ConstraintOptimizer
-
 
 class NewsVAE(torch.nn.Module):
-    def __init__(self, encoder, decoder,
-                 do_tie_weights=True, do_tie_embedding_spaces=True, mdr_alpha=0.5,
-                 mdr_target_rate_per_dim=0.5, objective="mdr-vae", mdr_optimiser_lr=2e-3):
+    def __init__(self, encoder, decoder, dataset_size, config):
         super(NewsVAE, self).__init__()
         """
         This class implements a VAE by wrapping an EncoderNewsVAE and DecoderNewsVAE.
@@ -21,30 +17,24 @@ class NewsVAE(torch.nn.Module):
         self.encoder = encoder
         self.decoder = decoder
 
-        # MDR constraint optimisation of the rate
-        self.kl_constraint = None
-        self.kl_constraint_optim = None
+        self.dataset_size = dataset_size
 
-        objective = "beta-vae"
-
-        if objective == "mdr-vae":
-            total_target_rate = mdr_target_rate_per_dim * self.decoder.latent_size
-            print(f"Initialising MDR constraint with alpha: {mdr_alpha} | target rate: {mdr_target_rate_per_dim}"
-                  f" | target rate total {total_target_rate}")
-            self.kl_constraint = Constraint(total_target_rate, "ge", alpha=mdr_alpha)
-            self.kl_constraint_optim = ConstraintOptimizer(
-                    torch.optim.RMSprop, self.kl_constraint.parameters(), mdr_optimiser_lr)
+        self.config = config
+        self.objective = config.objective
 
         # Weight tying / sharing between encoder and decoder RoBERTa part
-        if do_tie_weights:
+        if config.do_tie_weights:
             print("Tying encoder decoder RoBERTa checkpoint weights!")
             base_model_prefix = self.decoder.model.base_model_prefix
             tie_weights(self.encoder.model, self.decoder.model._modules[base_model_prefix], base_model_prefix)
 
         # Make all embedding spaces the same (encoder input, decoder input, decoder output)
-        if do_tie_embedding_spaces:
+        if config.do_tie_embedding_spaces:
             print("Tying embedding spaces!")
             self.tie_all_embeddings()
+
+        if self.objective != "evaluation":
+            self.loss_term_manager = LossTermManager(parameters=self.parameters(), config=config)
 
     def tie_all_embeddings(self):
         """
@@ -76,23 +66,16 @@ class NewsVAE(torch.nn.Module):
                 input_ids,
                 attention_mask=None,
 
-                beta=1.0,
                 auto_regressive=False,
 
-                objective="beta-vae",
-                hinge_kl_loss_lambda=0.5,
-
                 return_latents=False,
-                return_log_q_z_x=False,
-                return_log_p_z=False,
                 return_mu_logvar=False,
 
                 return_exact_match=False,
-                return_cross_entropy=True,
+                return_cross_entropy=False,
+                return_reconstruction_loss=True,
 
                 return_embedding_distance=False,
-                reduce_seq_dim_embedding_loss="mean",
-                reduce_batch_dim_embedding_loss="mean",
 
                 return_predictions=False,
                 return_probabilities=False,
@@ -125,13 +108,14 @@ class NewsVAE(torch.nn.Module):
         """
 
         # Forward through encoder and sample (reparameterisation)
-        enc_out = self.encoder.encode(input_ids=input_ids, attention_mask=attention_mask,
-                                      n_samples=1, hinge_kl_loss_lambda=hinge_kl_loss_lambda,
-                                      return_log_q_z_x=return_log_q_z_x, return_log_p_z=return_log_p_z,
-                                      return_embeddings=return_embedding_distance)
-
-        # Hinge KL has already capped the KL at the "Free bits" level
-        beta_hinge_kl = beta * enc_out["hinge_kl_loss"]
+        enc_out = self.encoder.encode(input_ids=input_ids,
+                                      attention_mask=attention_mask,
+                                      n_samples=1,
+                                      dataset_size=self.dataset_size,
+                                      return_log_q_z_x=True,
+                                      return_log_p_z=True,
+                                      return_log_q_z=True,
+                                      return_embeddings=False)
 
         # If instead use a sample from the prior, go ahead and sample it
         if decode_sample_from_prior:
@@ -143,34 +127,36 @@ class NewsVAE(torch.nn.Module):
 
         # Parallel predictions with teacher forcing (during training)
         if auto_regressive is False:
-            decoder_outs = self.decoder(latent_z, input_ids, attention_mask,
-                                        return_attention_probs=return_attention_probs,
-                                        return_attention_to_latent=return_attention_to_latent,
-                                        return_hidden_states=return_hidden_states,
-                                        return_exact_match=return_exact_match,
-                                        return_predictions=return_predictions,
-                                        return_probabilities=return_probabilities,
-                                        return_last_hidden_state=return_last_hidden_state,
-                                        return_output_embeddings=return_embedding_distance,
-                                        return_logits=return_logits,
-                                        return_cross_entropy=return_cross_entropy,
-                                        reduce_seq_dim_ce=reduce_seq_dim_ce,
-                                        reduce_seq_dim_exact_match=reduce_seq_dim_exact_match,
-                                        reduce_batch_dim_exact_match=reduce_batch_dim_exact_match,
-                                        reduce_batch_dim_ce=reduce_batch_dim_ce,
-                                        nucleus_sampling=nucleus_sampling,
-                                        top_k=top_k,
-                                        top_p=top_p,
-                                        labels=copy.copy(input_ids))
+            dec_out = self.decoder(latent_z, input_ids, attention_mask,
+                                   return_attention_probs=return_attention_probs,
+                                   return_attention_to_latent=return_attention_to_latent,
+                                   return_hidden_states=return_hidden_states,
+                                   return_exact_match=return_exact_match,
+                                   return_predictions=return_predictions,
+                                   return_probabilities=return_probabilities,
+                                   return_last_hidden_state=return_last_hidden_state,
+                                   return_output_embeddings=return_embedding_distance,
+                                   return_logits=return_logits,
+                                   return_cross_entropy=return_cross_entropy,
+                                   return_reconstruction_loss=return_reconstruction_loss,
+                                   reduce_seq_dim_ce=reduce_seq_dim_ce,
+                                   reduce_seq_dim_exact_match=reduce_seq_dim_exact_match,
+                                   reduce_batch_dim_exact_match=reduce_batch_dim_exact_match,
+                                   reduce_batch_dim_ce=reduce_batch_dim_ce,
+                                   nucleus_sampling=nucleus_sampling,
+                                   top_k=top_k,
+                                   top_p=top_p,
+                                   labels=copy.copy(input_ids))
 
         # Recurrent, auto-regressive predictions during inference
         else:
-            decoder_outs = self.decoder.autoregressive_decode(
+            dec_out = self.decoder.autoregressive_decode(
                 latent_z,
                 labels=copy.copy(input_ids),
                 max_seq_len=input_ids.shape[1],
                 return_exact_match=return_exact_match,
                 return_cross_entropy=return_cross_entropy,
+                return_reconstruction_loss=return_reconstruction_loss,
                 return_attention_probs=return_attention_probs,
                 return_attention_to_latent=return_attention_to_latent,
                 return_hidden_states=return_hidden_states,
@@ -189,95 +175,40 @@ class NewsVAE(torch.nn.Module):
                 device_name=device_name
             )
 
-        ########################
-        # EMBEDDING SPACE LOSS #
-        ########################
-
-        embedding_loss = None
-        if return_embedding_distance:
-            if auto_regressive is False:
-                # cut off last token prediction (already done with auto-regressive)
-                decoder_outs["output_embeddings"] = decoder_outs["output_embeddings"][:, :-1, :]
-            embedding_loss = self.calculate_embedding_space_loss(copy.deepcopy(input_ids), enc_out["word_embeddings"],
-                                                                 decoder_outs["output_embeddings"],
-                                                                 reduce_seq_dim_embedding_loss,
-                                                                 reduce_batch_dim_embedding_loss)
-
-        if return_text_predictions:
-            if tokenizer is None:
-                print("You have to provide a tokenizer in order to get text predictions.")
-            else:
-                decoder_outs["text_predictions"] = tokenizer_batch_decode(decoder_outs["predictions"], tokenizer)
-
-        # Make sure the reconstruction loss that is part of the
-        # total loss is always reduce with a sum over sequence dimension
-        # and mean over batch dimension. This is called "recon_loss"
-        # cross entropy may be reduced differently or not reduced
-        if torch.is_tensor(decoder_outs["cross_entropy"]):
-            recon_loss = decoder_outs["cross_entropy"]
-        # If cross_entropy is None, just set it to zero (at inference time this may be the case)
-        else:
-            recon_loss = torch.tensor(0.0)
-
-        batch_size, seq_len = input_ids.shape
-
-        if recon_loss.dim() != 0:
-            if recon_loss.shape == (batch_size, seq_len - 1):
-                recon_loss = recon_loss.sum(dim=1).mean(dim=0)
-            elif len(recon_loss) == (seq_len - 1):
-                recon_loss = recon_loss.sum()
-            elif len(recon_loss) == batch_size:
-                recon_loss = recon_loss.mean()
-
-        if return_cross_entropy and auto_regressive is False:
-            ce_per_word = decoder_outs["cross_entropy_per_word"].item()
-        else:
-            ce_per_word = None
+        # Return text predictions
+        if return_text_predictions and tokenizer is not None:
+            dec_out["text_predictions"] = tokenizer_batch_decode(dec_out["predictions"], tokenizer)
 
         ########################
         # TOTAL TRAIN LOSS     #
         ########################
 
-        # Construct the total loss
-        total_loss = None
-
-        if objective == 'beta-vae' and self.kl_constraint is None:
-            total_loss = recon_loss + beta_hinge_kl
-        elif objective == 'mdr-vae' and self.kl_constraint is not None:
-            total_loss = recon_loss + self.kl_constraint(enc_out["kl_loss"])
-        elif objective == 'mmd-vae':
-            total_loss = recon_loss + enc_out["mmd_loss"]
-        elif objective == "autoencoder":
-            total_loss = recon_loss
-        else:
-            print("Not supported objective. Set valid option: beta-vae or mmd-vae.")
-
-        # reconloss = negative log likelihood
-        # elbo = likelihood - KL -> -elbo = negative likelihood + KL
-        minus_elbo = recon_loss + enc_out["kl_loss"]
+        loss_dict = self.loss_term_manager.assemble_loss(reconstruction_loss=dec_out["reconstruction_loss"],
+                                                         mu=enc_out["mu"],
+                                                         logvar=enc_out["logvar"],
+                                                         log_p_z=enc_out["log_p_z"],
+                                                         log_q_z_x=enc_out["log_q_z_x"],
+                                                         # mmd=enc_out["mmd"],
+                                                         mmd=None,
+                                                         log_q_z_prod_marg=enc_out["log_q_z_prod_marg"],
+                                                         log_q_z=enc_out["log_q_z"])
 
         # Detach all except the total loss on which we need to base our backward pass
-        vae_outputs = {'kl_loss': enc_out["kl_loss"].item(),
-                       'hinge_kl_loss': enc_out["hinge_kl_loss"].item(),
-                       'beta_hinge_kl_loss': beta_hinge_kl.item(),
-                       'recon_loss': recon_loss.item(),
-                       'total_loss': total_loss,
-                       'mmd_loss': enc_out["mmd_loss"].item(),
-                       'log_q_z_x': enc_out["log_q_z_x"],
-                       "log_p_z": enc_out["log_p_z"],
-                       "-ELBO": minus_elbo.item(),
-                       "embedding_loss": embedding_loss,
-                       "ce_per_word": ce_per_word}
+        loss_dict["log_q_z"] = enc_out["log_q_z"].item()
+        loss_dict["loq_p_z"] = enc_out["log_p_z"].item()
+        loss_dict["log_q_z_x"] = enc_out["log_q_z_x"].item()
+        loss_dict["log_q_z_prod_marg"] = enc_out["log_q_z_prod_marg"].item()
+        loss_dict["ce_per_word"] = dec_out["cross_entropy_per_word"].item() if return_cross_entropy and auto_regressive is False else None
 
         if return_latents:
-            vae_outputs["latents"] = enc_out["latent_z"]
+            loss_dict["latents"] = enc_out["latent_z"].detach()
 
         if return_mu_logvar:
-            vae_outputs["mu"] = enc_out["mu"].detach()
-            vae_outputs["logvar"] = enc_out["logvar"].detach()
+            loss_dict["mu"] = enc_out["mu"].detach()
+            loss_dict["logvar"] = enc_out["logvar"].detach()
 
         # Merge all the outputs together
-        vae_outputs = {**vae_outputs, **decoder_outs}
+        vae_outputs = {**loss_dict, **dec_out}
 
         # Detach everything except for non-tensors and total loss
         for k, v in vae_outputs.items():

@@ -933,6 +933,7 @@ class VaeDecoderRobertaForCausalLM(RobertaPreTrainedModel):
 
             return_exact_match=False,
             return_cross_entropy=True,
+            return_reconstruction_loss=True,
 
             reduce_seq_dim_exact_match="mean",
             reduce_batch_dim_exact_match="mean",
@@ -987,9 +988,9 @@ class VaeDecoderRobertaForCausalLM(RobertaPreTrainedModel):
         # we don't care about the last prediction, because that is the prediction at </s>
         logits = logits[:, :-1, :].contiguous()
 
-        cross_entropy, predictions, exact_match, cross_entropy_per_word, \
+        cross_entropy, predictions, exact_match, cross_entropy_per_word, reconstruction_loss, \
         cross_entropy, probs, attention_probs, attention_to_latent, hidden_states, log_probs = None, None, \
-        None, None, None, None, None, None, None, None
+        None, None, None, None, None, None, None, None, None
 
         # Reformat labels and create a mask (based on pad token id = 1)
         if labels is not None:
@@ -1023,19 +1024,22 @@ class VaeDecoderRobertaForCausalLM(RobertaPreTrainedModel):
         logits = logits.reshape(-1, vocab_size)
 
         # ONLY CROSS ENTROPY (at train time)
-        if return_cross_entropy and not (
+        if (return_cross_entropy or return_reconstruction_loss) and not (
                 return_predictions or return_probabilities or return_exact_match or nucleus_sampling or return_log_probs):
             # cross entropy = log_softmax + nll_loss, but use cross_entropy function for stability
             cross_entropy = torch.nn.functional.cross_entropy(logits, labels, reduction='none')
             cross_entropy = cross_entropy.reshape(batch_size, seq_len)  # bring back the sequence dimension
+            cross_entropy = cross_entropy * label_mask
+            reconstruction_loss = cross_entropy.sum(dim=-1).mean()
 
         # ALSO PREDICT (at inference or validation time)
         elif return_predictions or return_probabilities or return_exact_match or nucleus_sampling or return_log_probs:
-            if return_cross_entropy:
+            if return_cross_entropy or return_reconstruction_loss:
                 # use this as it is numerically stable, not efficient together with softmax
                 # do cross entropy with normal logits, not filtered logits
                 cross_entropy = torch.nn.functional.cross_entropy(logits, labels, reduction='none')
                 cross_entropy = cross_entropy.reshape(batch_size, seq_len)  # bring back the sequence dimension
+                reconstruction_loss = (cross_entropy * label_mask).sum(dim=-1).mean()
 
             if nucleus_sampling:
                 # logits are overwritten now
@@ -1111,7 +1115,8 @@ class VaeDecoderRobertaForCausalLM(RobertaPreTrainedModel):
             "output_embeddings": output_embeddings if return_output_embeddings else None,
             "past_key_values": outputs.past_key_values if use_cache else None,
             "cross_attentions": outputs.cross_attentions,
-            "log_probs": log_probs if return_log_probs else None
+            "log_probs": log_probs if return_log_probs else None,
+            "reconstruction_loss": reconstruction_loss if return_reconstruction_loss else None
         }
         return return_dict
         # <<<< Claartje code

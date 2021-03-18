@@ -112,12 +112,6 @@ class RobertaEmbeddings(nn.Module):
         if token_type_ids is None:
             token_type_ids = torch.zeros(input_shape, dtype=torch.long, device=self.position_ids.device)
 
-
-        print("XX input_ids.device", input_ids.device)
-        print("XX position_ids.device", position_ids.device)
-        print("XX token_type_ids.device", token_type_ids.device)
-        #print("self.device", self.device)
-
         if inputs_embeds is None:
             inputs_embeds = self.word_embeddings(input_ids)
 

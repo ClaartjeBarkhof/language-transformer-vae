@@ -7,7 +7,7 @@ import numpy as np
 from torch.distributions import MultivariateNormal, Normal
 from torch.distributions.categorical import Categorical
 import pickle
-from modules.encoder import gaussian_kernel
+from modules.encoder import EncoderNewsVAE
 import math
 from scipy.stats import gaussian_kde
 
@@ -79,7 +79,7 @@ def calc_mi_estimate(log_q_z_x, latents, mu, logvar, log_p_z, avg_KL, log_q_z_me
         # [num] with p(samples) under kernels
         print("first 10 vals of scikit gauss kde", kde.logpdf(samples_cpu)[:10])
 
-        log_q_z = torch.log(gaussian_kernel(latents, latents).mean(dim=1) + 1e-80)
+        log_q_z = torch.log(EncoderNewsVAE.gaussian_kernel(latents, latents).mean(dim=1) + 1e-80)
         print("first 10 vals of pytorch gauss kde", log_q_z[:10])
     elif log_q_z_method is "aggregate_posterior":
         log_q_z = torch.logsumexp(log_q_z_x, dim=0) - math.log(len(log_q_z_x))

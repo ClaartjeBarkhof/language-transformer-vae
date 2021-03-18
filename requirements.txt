@@ -1,0 +1,182 @@
+absl-py==0.7.1
+aiohttp @ file:///home/conda/feedstock_root/build_artifacts/aiohttp_1603792536361/work
+AMP==1.1.4
+antlr4-python3-runtime==4.8
+argon2-cffi==20.1.0
+asgiref==3.2.10
+async-timeout==3.0.1
+attrs @ file:///home/conda/feedstock_root/build_artifacts/attrs_1599308529326/work
+backcall==0.2.0
+bleach==3.2.1
+blinker==1.4
+blis==0.7.4
+boto3==1.9.66
+botocore==1.12.67
+brotlipy==0.7.0
+cachetools @ file:///home/conda/feedstock_root/build_artifacts/cachetools_1593420445823/work
+caldav==0.1.4
+catalogue==1.0.0
+certifi==2020.6.20
+cffi==1.14.3
+chardet @ file:///home/conda/feedstock_root/build_artifacts/chardet_1602255305250/work
+click==7.1.2
+configparser==5.0.1
+coverage==5.3
+cryptography==3.1.1
+cycler==0.10.0
+cymem==2.0.5
+Cython==0.29.21
+dataclasses==0.7
+datasets==1.1.2
+decorator==4.4.2
+defusedxml==0.6.0
+dill==0.3.2
+Django==3.1.2
+docker-pycreds==0.4.0
+docutils==0.16
+editdistance==0.5.3
+eli5==0.8.2
+en-core-web-md @ https://github.com/explosion/spacy-models/releases/download/en_core_web_md-2.3.1/en_core_web_md-2.3.1.tar.gz
+en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-2.3.1/en_core_web_sm-2.3.1.tar.gz
+entrypoints==0.3
+filelock==3.0.12
+fsspec @ file:///home/conda/feedstock_root/build_artifacts/fsspec_1602700749102/work
+future==0.18.2
+gitdb==4.0.5
+GitPython==3.1.11
+google-auth @ file:///home/conda/feedstock_root/build_artifacts/google-auth_1601485373217/work
+google-auth-oauthlib==0.4.1
+google-pasta==0.1.7
+graphviz==0.14.2
+grpcio @ file:///home/conda/feedstock_root/build_artifacts/grpcio_1596715630577/work
+h5py==2.10.0
+hydra-core==1.0.3
+idna @ file:///home/conda/feedstock_root/build_artifacts/idna_1593328102638/work
+idna-ssl @ file:///home/conda/feedstock_root/build_artifacts/idna_ssl_1602585794775/work
+imageio==2.9.0
+importlib-metadata @ file:///home/conda/feedstock_root/build_artifacts/importlib-metadata_1602263269022/work
+importlib-resources==3.3.0
+ipykernel==5.3.4
+ipython==7.16.1
+ipython-genutils==0.2.0
+ipywidgets==7.5.1
+jedi==0.17.2
+Jinja2==2.11.2
+jmespath==0.10.0
+joblib==0.17.0
+jsonschema==3.2.0
+jupyter==1.0.0
+jupyter-client==6.1.7
+jupyter-console==6.2.0
+jupyter-core==4.6.3
+Keras==2.2.4
+Keras-Applications==1.0.8
+Keras-Preprocessing==1.1.0
+kiwisolver==1.2.0
+lime==0.1.1.34
+lxml==4.6.1
+Markdown @ file:///home/conda/feedstock_root/build_artifacts/markdown_1603668500820/work
+MarkupSafe==1.1.1
+matplotlib==3.3.2
+mistune==0.8.4
+mkl-fft==1.2.0
+mkl-random==1.1.1
+mkl-service==2.3.0
+multidict @ file:///home/conda/feedstock_root/build_artifacts/multidict_1602413127978/work
+multiprocess==0.70.10
+murmurhash==1.0.5
+nbconvert==5.5.0
+nbformat==5.0.8
+networkx==2.5
+nose==1.3.7
+notebook==6.1.4
+numpy @ file:///tmp/build/80754af9/numpy_and_numpy_base_1596233737064/work
+oauthlib==3.0.1
+olefile==0.46
+omegaconf==2.0.4
+packaging==20.4
+pandas==1.1.3
+pandocfilters==1.4.2
+parso==0.7.1
+pathtools==0.1.2
+pexpect==4.8.0
+pickleshare==0.7.5
+Pillow==8.0.0
+pipreqs==0.4.10
+plac==1.1.3
+portalocker==2.0.0
+preshed==3.0.5
+prometheus-client==0.8.0
+promise==2.3
+prompt-toolkit==3.0.8
+protobuf==3.13.0
+psutil==5.7.3
+ptyprocess==0.6.0
+pyarrow==2.0.0
+pyasn1==0.4.8
+pyasn1-modules==0.2.7
+pycparser @ file:///home/conda/feedstock_root/build_artifacts/pycparser_1593275161868/work
+Pygments==2.7.1
+PyJWT==1.7.1
+pyOpenSSL==19.1.0
+pyparsing==2.4.7
+pyrsistent==0.17.3
+PySocks @ file:///home/conda/feedstock_root/build_artifacts/pysocks_1602326920180/work
+python-dateutil==2.8.1
+pytorch-lightning==1.0.2
+pytz==2020.1
+PyWavelets==1.1.1
+PyYAML==5.3.1
+pyzmq==19.0.2
+qtconsole==4.7.7
+QtPy==1.9.0
+regex==2020.10.11
+requests @ file:///home/conda/feedstock_root/build_artifacts/requests_1592425495151/work
+requests-oauthlib @ file:///home/conda/feedstock_root/build_artifacts/requests-oauthlib_1595492159598/work
+rsa @ file:///home/conda/feedstock_root/build_artifacts/rsa_1591996208734/work
+s3transfer==0.1.13
+sacrebleu==1.4.14
+sacremoses==0.0.43
+scikit-image==0.15.0
+scikit-learn==0.23.2
+scipy==1.5.2
+seaborn==0.11.0
+Send2Trash==1.5.0
+sentencepiece==0.1.91
+sentry-sdk==0.19.1
+shortuuid==1.0.1
+six==1.15.0
+smmap==3.0.4
+spacy==2.3.5
+sqlparse==0.4.1
+srsly==1.0.5
+subprocess32==3.5.4
+tabulate==0.8.7
+tensorboard @ file:///home/conda/feedstock_root/build_artifacts/tensorboard_1595378845776/work/tensorboard-2.3.0-py3-none-any.whl
+tensorboard-plugin-wit @ file:///home/conda/feedstock_root/build_artifacts/tensorboard-plugin-wit_1603349307347/work/tensorboard_plugin_wit-1.7.0-py3-none-any.whl
+terminado==0.9.1
+testpath==0.4.4
+thinc==7.4.5
+threadpoolctl==2.1.0
+tokenizers==0.9.4
+torch==1.7.1
+torchvision==0.8.1
+tornado==6.0.4
+tqdm==4.50.2
+traitlets==4.3.3
+transformers==4.2.2
+typing==3.7.4
+typing-extensions @ file:///home/conda/feedstock_root/build_artifacts/typing_extensions_1602702424206/work
+urllib3==1.24.3
+vobject==0.9.6.1
+wandb==0.10.15
+wasabi==0.8.0
+watchdog==0.10.3
+wcwidth==0.2.5
+webencodings==0.5.1
+Werkzeug==1.0.1
+widgetsnbextension==3.5.1
+xxhash==2.0.0
+yarg==0.1.9
+yarl @ file:///home/conda/feedstock_root/build_artifacts/yarl_1602669949374/work
+zipp @ file:///home/conda/feedstock_root/build_artifacts/zipp_1603668650351/work

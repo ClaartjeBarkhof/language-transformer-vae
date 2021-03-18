@@ -66,7 +66,8 @@ class DecoderNewsVAE(torch.nn.Module):
                 return_last_hidden_state=False,
                 return_output_embeddings=False,
                 return_logits=False,
-                return_cross_entropy=True,
+                return_cross_entropy=False,
+                return_reconstruction_loss=True,  # <-- standard for train
                 return_log_probs=False,
                 reduce_seq_dim_exact_match="mean",
                 reduce_batch_dim_exact_match="mean",
@@ -135,6 +136,7 @@ class DecoderNewsVAE(torch.nn.Module):
                                   return_output_embeddings=return_output_embeddings,
                                   return_logits=return_logits,
                                   return_cross_entropy=return_cross_entropy,
+                                  return_reconstruction_loss=return_reconstruction_loss,
                                   return_log_probs=return_log_probs,
                                   reduce_seq_dim_ce=reduce_seq_dim_ce,
                                   reduce_seq_dim_exact_match=reduce_seq_dim_exact_match,
@@ -152,6 +154,7 @@ class DecoderNewsVAE(torch.nn.Module):
 
                               return_exact_match=False,
                               return_cross_entropy=False,
+                              return_reconstruction_loss=False,
 
                               reduce_seq_dim_ce="sum",
                               reduce_batch_dim_ce="mean",
@@ -247,6 +250,7 @@ class DecoderNewsVAE(torch.nn.Module):
 
                                       return_cross_entropy=return_cross_entropy,
                                       return_exact_match=return_exact_match,
+                                      return_reconstruction_loss=False, # need to reduce on your own in the end
 
                                       reduce_seq_dim_ce="none",
                                       reduce_batch_dim_ce="none",
@@ -369,6 +373,8 @@ class DecoderNewsVAE(torch.nn.Module):
         if return_cross_entropy:
             outputs["cross_entropy"] = torch.stack(cross_entropy, dim=-1)
             outputs["cross_entropy"] = outputs["cross_entropy"] * label_mask
+            if return_reconstruction_loss:
+                outputs["reconstruction_loss"] = outputs["cross_entropy"].sum(dim=-1).mean(dim=0)
             outputs["cross_entropy"] = self.model.reduce_correct(outputs["cross_entropy"], reduce_seq_dim_ce, -1,
                                                                  label_mask)  # seq dim
             outputs["cross_entropy"] = self.model.reduce_correct(outputs["cross_entropy"], reduce_batch_dim_ce, 0,

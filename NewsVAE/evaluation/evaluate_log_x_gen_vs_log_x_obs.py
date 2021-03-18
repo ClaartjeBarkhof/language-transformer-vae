@@ -100,6 +100,62 @@ def get_sampled_log_probs_sequence(vae_model, z, max_seq_len, device_name):
     return preds_log_probs_seq
 
 
+def batch_log_x_gen_vs_log_x_obs(vae_model, batch, n_samples, latent_size, batch_size, device_name, n_chunks,
+                                 max_seq_len):
+    # Encode these input ids and sample <n_samples> for each x
+    enc_out = vae_model.encoder.encode(batch["input_ids"], batch["attention_mask"],
+                                       n_samples=n_samples,
+                                       return_log_q_z_x=True,
+                                       return_log_p_z=True,
+                                       return_embeddings=False)
+
+    # Unpack the tensors we need
+    # [batch, n_samples, latent_dim], [batch, n_samples], [batch, n_samples]
+    post_samples, post_log_p_z, post_log_q_z_x = enc_out["latent_z"], \
+                                                 enc_out["log_p_z"], enc_out["log_q_z_x"]
+
+    # [n_samples, latent_dim]
+    prior_samples = vae_model.sample_from_prior(latent_size=latent_size, n_samples=n_samples * batch_size,
+                                                device_name=device_name)
+    prior_samples = prior_samples.reshape(batch_size, n_samples, -1)
+    prior_log_p_z = vae_model.encoder.sample_log_likelihood(prior_samples, reduce_batch_dim=False,
+                                                            reduce_latent_dim=True)
+
+    # Now we need to loop again because our batch size was multiplied by n_samples
+    post_log_p_x_z = []
+    prior_log_p_x_z = []
+
+    # For all samples x in batch
+    for sample_i in range(batch_size):
+        print(f"sample i: {sample_i:3d}")
+
+        post_samples_i = post_samples[sample_i, :, :]
+        prior_samples_i = prior_samples[sample_i, :, :]
+
+        post_samples_i_chunked = list(torch.chunk(post_samples_i, n_chunks, dim=0))
+        prior_samples_i_chunked = list(torch.chunk(prior_samples_i, n_chunks, dim=0))
+
+        for (post_z, prior_z) in zip(post_samples_i_chunked, prior_samples_i_chunked):
+            prior_preds_log_probs = get_sampled_log_probs_sequence(vae_model, prior_z, max_seq_len,
+                                                                   device_name=device_name)
+            prior_log_p_x_z.append(prior_preds_log_probs)
+
+            post_preds_log_probs = get_sampled_log_probs_sequence(vae_model, post_z, max_seq_len,
+                                                                  device_name=device_name)
+            post_log_p_x_z.append(post_preds_log_probs)
+
+    post_log_p_x_z = torch.cat(post_log_p_x_z).reshape(batch_size, n_samples)
+    prior_log_p_x_z = torch.cat(prior_log_p_x_z).reshape(batch_size, n_samples)
+
+    post_frac = post_log_p_x_z.cpu() + post_log_p_z.cpu() - post_log_q_z_x.cpu()
+    prior_frac = prior_log_p_z.cpu() + prior_log_p_x_z.cpu()
+
+    post_likelihood = torch.logsumexp(post_frac, dim=-1) - np.log(n_samples)
+    prior_likelihood = torch.logsumexp(prior_frac, dim=-1) - np.log(n_samples)
+
+    return post_likelihood, prior_likelihood
+
+
 def evaluation_function(device_rank, run_name, model_path, max_batches, max_seq_len, with_grad,
                         result_dir_path, batch_size, dataset_name, n_samples, n_chunks,
                         world_size, num_workers):
@@ -130,7 +186,7 @@ def evaluation_function(device_rank, run_name, model_path, max_batches, max_seq_
         print("-" * 30)
 
         # Get model
-        vae_model = load_model_for_eval(run_name=run_name, path=model_path, device=device_name)
+        vae_model = load_model_for_eval(path=model_path, device_name=device_name)
         vae_model = vae_model.to(device_name)
 
         # Get distributed validation data loader of PTB data set
@@ -139,7 +195,7 @@ def evaluation_function(device_rank, run_name, model_path, max_batches, max_seq_
                                             device_name=device_name, gpu_rank=device_rank)
 
         dist.init_process_group(backend='nccl', init_method='env://',
-                                world_size=4, rank=device_rank)
+                                world_size=world_size, rank=device_rank)
 
         # Seed everything
         seed_everything(0)
@@ -161,60 +217,10 @@ def evaluation_function(device_rank, run_name, model_path, max_batches, max_seq_
                 batch = transfer_batch_to_device(batch, device_name)
                 batch_size = batch["input_ids"].shape[0]
 
-                print("**** BEFORE ENCODE")
-
-                # Encode these input ids and sample <n_samples> for each x
-                enc_out = vae_model.encoder.encode(batch["input_ids"], batch["attention_mask"],
-                                                   n_samples=n_samples,
-                                                   return_log_q_z_x=True,
-                                                   return_log_p_z=True,
-                                                   return_embeddings=False)
-
-                # Unpack the tensors we need
-                # [batch, n_samples, latent_dim], [batch, n_samples], [batch, n_samples]
-                post_samples, post_log_p_z, post_log_q_z_x = enc_out["latent_z"], \
-                                                             enc_out["log_p_z"], enc_out["log_q_z_x"]
-
-                print("#### AFTER ENCODE")
-
-                # [n_samples, latent_dim]
-                prior_samples = vae_model.sample_from_prior(latent_size=latent_size, n_samples=n_samples * batch_size,
-                                                            device_name=device_name)
-                prior_samples = prior_samples.reshape(batch_size, n_samples, -1)
-                prior_log_p_z = vae_model.encoder.sample_log_likelihood(prior_samples, reduce_batch_dim=False,
-                                                                        reduce_latent_dim=True)
-
-                # Now we need to loop again because our batch size was multiplied by n_samples
-                post_log_p_x_z = []
-                prior_log_p_x_z = []
-
-                # For all samples x in batch
-                for sample_i in range(batch_size):
-                    print(f"sample i: {sample_i:3d}")
-
-                    post_samples_i = post_samples[sample_i, :, :]
-                    prior_samples_i = prior_samples[sample_i, :, :]
-
-                    post_samples_i_chunked = list(torch.chunk(post_samples_i, n_chunks, dim=0))
-                    prior_samples_i_chunked = list(torch.chunk(prior_samples_i, n_chunks, dim=0))
-
-                    for (post_z, prior_z) in zip(post_samples_i_chunked, prior_samples_i_chunked):
-                        prior_preds_log_probs = get_sampled_log_probs_sequence(vae_model, prior_z, max_seq_len,
-                                                                               device_name=device_name)
-                        prior_log_p_x_z.append(prior_preds_log_probs)
-
-                        post_preds_log_probs = get_sampled_log_probs_sequence(vae_model, post_z, max_seq_len,
-                                                                              device_name=device_name)
-                        post_log_p_x_z.append(post_preds_log_probs)
-
-                post_log_p_x_z = torch.cat(post_log_p_x_z).reshape(batch_size, n_samples)
-                prior_log_p_x_z = torch.cat(prior_log_p_x_z).reshape(batch_size, n_samples)
-
-                post_frac = post_log_p_x_z.cpu() + post_log_p_z.cpu() - post_log_q_z_x.cpu()
-                prior_frac = prior_log_p_z.cpu() + prior_log_p_x_z.cpu()
-
-                post_likelihood = torch.logsumexp(post_frac, dim=-1) - np.log(n_samples)
-                prior_likelihood = torch.logsumexp(prior_frac, dim=-1) - np.log(n_samples)
+                # Execute the actual function on a batch
+                post_likelihood, prior_likelihood = batch_log_x_gen_vs_log_x_obs(vae_model, batch, n_samples,
+                                                                                 latent_size, batch_size,
+                                                                                 device_name, n_chunks, max_seq_len)
 
                 log_likelihood_res["log_like_posterior_generation"].append(post_likelihood)
                 log_likelihood_res["log_like_prior_generation"].append(prior_likelihood)
@@ -241,7 +247,7 @@ def get_config():
     parser.add_argument("--dataset_name", required=False, type=str,
                         default="ptb_text_only",
                         help="The name of the dataset (default: ptb_text_only).")
-    parser.add_argument("--batch_size", required=False, type=int, default=6,
+    parser.add_argument("--batch_size", required=False, type=int, default=3,
                         help="Batch size (default: 64).")
     parser.add_argument("--max_batches", required=False, type=int, default=1,
                         help="Maximum validation batches to process (per GPU!) (default: -1, means all).")
@@ -249,17 +255,14 @@ def get_config():
                         help="Whether or not to enable gradients (default: False)")
     parser.add_argument("--num_workers", required=False, type=int, default=2,
                         help="Num workers for data loading (default: 8).")
-    parser.add_argument("--world_size", required=False, type=int, default=4,
+    parser.add_argument("--world_size", required=False, type=int, default=2,
                         help="Number of GPUs to use (default: 4).")
-
     parser.add_argument("--max_seq_len", required=False, type=int, default=32,
                         help="Maximum sequence length for auto-regressive decoding (default: 32).")
     parser.add_argument("--n_samples", required=False, type=int, default=500,
                         help="How many z samples to take for every q(z|x) eval (default: 500).")
     parser.add_argument("--n_chunks", required=False, type=int, default=2,
                         help="In how many chunks to divide the latent samples (default: 2).")
-
-    # TODO: Add other options here
 
     config = parser.parse_args()
 

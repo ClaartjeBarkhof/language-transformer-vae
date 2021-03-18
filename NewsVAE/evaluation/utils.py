@@ -7,8 +7,10 @@ import re
 import pickle
 from utils_train import transfer_batch_to_device
 import sys
-
+from arguments import preprare_parser
 # Turn off ugly logging when working in notebooks
+import train
+import torch
 import logging
 logging.disable(logging.WARNING)
 
@@ -96,37 +98,77 @@ def counted_validation_iterator(validation_loader):
         yield batch_i, batch
 
 
-def load_model_for_eval(run_name, path, device="cuda:0"):
+# TODO: fix this function
+# def load_model_for_eval(run_name, path, device="cuda:0"):
+#
+#     """
+#     :param run_name:
+#     :param path:
+#     :param device:
+#     :return:
+#     """
+#
+#     with HiddenPrints():
+#
+#         if "checkpoint" not in path:
+#             path += "/checkpoint-best.pth"
+#
+#         nz, _, mech, _ = extract_info_from_clean_name(get_clean_name(run_name))
+#
+#         if "emb" in mech:
+#             add_latent_via_embeddings = True
+#         else:
+#             add_latent_via_embeddings = False
+#
+#         if "mem" in mech:
+#             add_latent_via_memory = True
+#         else:
+#             add_latent_via_memory = False
+#
+#         vae_model = get_model_on_device(device_name=device,
+#                                         latent_size=nz,
+#                                         gradient_checkpointing=False,
+#                                         add_latent_via_memory=add_latent_via_memory,
+#                                         add_latent_via_embeddings=add_latent_via_embeddings,
+#                                         do_tie_weights=True,
+#                                         do_tie_embedding_spaces=True,
+#                                         world_master=True,
+#                                         add_decoder_output_embedding_bias=False, objective="beta-vae")
+#
+#         _, _, vae_model, _, _, _, _ = load_from_checkpoint(vae_model, path)
+#
+#         vae_model = vae_model.eval()
+#
+#     return vae_model
+def load_model_for_eval(path, device_name="cuda:0", add_latent_via_memory=True,
+                        add_latent_via_embeddings=False, do_tie_weights=True, do_tie_embedding_spaces=True,
+                        add_decoder_output_embedding_bias=False):
 
-    with HiddenPrints():
+    config = preprare_parser(jupyter=True, print_settings=False)
+    config.add_latent_via_embeddings = add_latent_via_embeddings
+    config.do_tie_weights = do_tie_weights
+    config.add_latent_via_memory = add_latent_via_memory
+    config.do_tie_embedding_spaces = add_latent_via_embeddings
+    config.add_decoder_output_embedding_bias = add_decoder_output_embedding_bias
 
-        if "checkpoint" not in path:
-            path += "/checkpoint-best.pth"
+    if "latent32" in path:
+        config.latent_size = 32
+    elif "latent64" in path:
+        config.latent_size = 64
+    else:
+        config.latent_size = 768
 
-        nz, _, mech, _ = extract_info_from_clean_name(get_clean_name(run_name))
+    # LOAD CHECKPOINT
+    checkpoint = torch.load(path, map_location='cpu')
 
-        if "emb" in mech:
-            add_latent_via_embeddings = True
-        else:
-            add_latent_via_embeddings = False
+    vae_model = train.get_model_on_device(config, dataset_size=1000, device_name=device_name, world_master=True)
 
-        if "mem" in mech:
-            add_latent_via_memory = True
-        else:
-            add_latent_via_memory = False
+    # _, _, vae_model, _, _, _, _ = utils_train.load_from_checkpoint(vae_model, path)
 
-        vae_model = get_model_on_device(device_name=device,
-                                        latent_size=nz,
-                                        gradient_checkpointing=False,
-                                        add_latent_via_memory=add_latent_via_memory,
-                                        add_latent_via_embeddings=add_latent_via_embeddings,
-                                        do_tie_weights=True,
-                                        do_tie_embedding_spaces=True,
-                                        world_master=True,
-                                        add_decoder_output_embedding_bias=False)
+    # in place procedure
+    vae_model.load_state_dict(checkpoint["VAE_model_state_dict"])
+    vae_model = vae_model.to(device_name)
 
-        _, _, vae_model, _, _, _, _ = load_from_checkpoint(vae_model, path)
-
-        vae_model = vae_model.eval()
+    vae_model.eval()
 
     return vae_model

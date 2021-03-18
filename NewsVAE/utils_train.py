@@ -1,13 +1,24 @@
 import platform
 import socket
-import torch
 import collections
 import datetime
 import os
-import torch.backends.cudnn as cudnn
-import numpy as np
 import wandb
+import arguments
+import numpy as np
+
+import torch
+import torch.backends.cudnn as cudnn
+from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
+
 from utils_external import tie_weights
+
+from modules.vae import NewsVAE
+from modules.encoder import EncoderNewsVAE
+from modules.decoder import DecoderNewsVAE
+
+from dataset_wrappper import NewsData
 
 # ----------------------------------------------------------------------------------------------------
 # INITIALISATION STUFF
@@ -30,6 +41,7 @@ def set_device(device_rank):
         torch.cuda.set_device(device_rank)
         cudnn.benchmark = True  # optimise backend algo
         device_name = f"cuda:{device_rank}"
+
     # CPU
     else:
         device_name = "cpu"
@@ -174,30 +186,144 @@ def determine_max_epoch_steps_per_rank(max_train_steps_epoch_per_rank, max_valid
 # CHECKPOINTING
 # ----------------------------------------------------------------------------------------------------
 
-def load_from_checkpoint(vae_model, path, optimizer=None, scheduler=None, scaler=None,
-                         world_master=True, ddp=False, use_amp=True, device_name="cuda:0",
-                         do_tie_embeddings=True, do_tie_weights=True):
+def get_model_on_device(config, dataset_size, device_name="cuda:0", world_master=True):
+    """
+    Get a VAE model on correct device.
 
-    vae_model = vae_model.cpu()
+    Args:
+        device_name: str
+        latent_size: int
+        gradient_checkpointing: bool
+        add_latent_via_embeddings: bool
+        add_latent_via_memory: bool
+        do_tie_weights: bool
+        world_master: bool:
+    Returns:
+        vae_model: NewsVAE object
+    """
 
+    if world_master: print("Loading model...")
+
+    decoder = DecoderNewsVAE(gradient_checkpointing=config.gradient_checkpointing,
+                             add_latent_via_memory=config.add_latent_via_memory,
+                             add_latent_via_embeddings=config.add_latent_via_embeddings,
+                             latent_size=config.latent_size,
+                             add_decoder_output_embedding_bias=config.add_decoder_output_embedding_bias,
+                             drop_inputs_decoder=config.drop_inputs_decoder,
+                             drop_inputs_decoder_prob=config.drop_inputs_decoder_prob)
+
+    encoder = EncoderNewsVAE(gradient_checkpointing=config.gradient_checkpointing,
+                             latent_size=config.latent_size)
+
+    vae_model = NewsVAE(encoder, decoder, dataset_size, config)
+
+    vae_model = vae_model.to(device_name)
+
+    if world_master: print("Done loading model...")
+
+    return vae_model
+
+
+
+def get_dataloader(phases, ddp=False, batch_size=12, num_workers=8, max_seq_len=64, world_size=4,
+                   dataset_name="cnn_dailymail", tokenizer_name="roberta",
+                   device_name="cuda:0", world_master=True, gpu_rank=0):
+    """
+    Get data loaders for distributed sampling for different phases (eg. train and validation).
+
+    Args:
+        phases: list:
+            List of phases to make dataloaders for (train, validation, test)
+        ddp: bool:
+            Whether or not to use Distributed Data Parallel
+        batch_size: int
+        num_workers: int
+        max_seq_len: int
+        world_size: int
+            Number of nodes x number of GPUs
+        dataset_name: str:
+            The name of the dataset ("cnn_dailymail")
+        tokenizer_name: str:
+            The name of the tokenizer ("roberta")
+        device_name: str:
+            Which device is active.
+        world_master: bool:
+            Whether or not to print.
+        gpu_rank: int:
+            If cuda, what the rank of the GPU is.
+
+    Returns:
+        loaders: dict[str, torch.utils.data.DataLoader]
+            A dict with dataloaders for every named phase.
+        data:
+            NewsData object with the data # TODO: change this
+        samplers: dict[str. torch.utils.data.distributed.DistributedSampler]
+            A dict with samplers for the GPU (if ddp).
+    """
+
+    if world_master: print("Get dataloaders...")
+
+    pin_memory = True if "cuda" in device_name else False
+
+    loaders = {}
+    samplers = {}
+
+    # Get data
+    data = NewsData(dataset_name, tokenizer_name,
+                    batch_size=batch_size, num_workers=num_workers,
+                    pin_memory=True, max_seq_len=max_seq_len,
+                    device=device_name)
+
+    for phase in phases:
+        # DDP
+        if ddp:
+            sampler = DistributedSampler(data.datasets[phase], num_replicas=world_size,
+                                         shuffle=True, rank=gpu_rank)
+            samplers[phase] = sampler
+
+            # With distributed sampling, shuffle must be false, the sampler takes care of that
+            loaders[phase] = DataLoader(data.datasets[phase], batch_size=batch_size,
+                                        sampler=sampler, pin_memory=True, shuffle=False,
+                                        num_workers=num_workers, collate_fn=data.collate_fn)
+        # Single GPU and CPU
+        else:
+            # Without distributed sampling
+            loaders[phase] = DataLoader(data.datasets[phase], batch_size=batch_size,
+                                        shuffle=True, pin_memory=pin_memory,
+                                        num_workers=num_workers, collate_fn=data.collate_fn)
+
+    if world_master: print("Done getting dataloaders...")
+
+    return loaders, data, samplers
+
+
+def load_from_checkpoint(path, world_master=True, ddp=False, device_name="cuda:0",
+                         do_tie_embeddings=True, do_tie_weights=True, add_latent_via_memory=True,
+                         add_latent_via_embeddings=True, do_tie_embedding_spaces=True,
+                         add_decoder_output_embedding_bias=True):
     # DETERMINE / CHECK PATH
     assert os.path.isfile(path), f"-> checkpoint file path ({path}) must exist for it to be loaded!"
-
-    if world_master: print("Loading VAE_model, optimizer and scheduler from {}".format(path))
+    if world_master: print("Loading model from checkpoint: {}".format(path))
 
     # LOAD CHECKPOINT
     checkpoint = torch.load(path, map_location='cpu')
 
-    # OPTIMIZER
-    if optimizer is not None:
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    if "config" in checkpoint:
+        config = checkpoint["config"]
+    else:
+        config = arguments.preprare_parser(jupyter=False)
+        config.do_tie_weights = do_tie_weights
+        config.add_latent_via_memory = add_latent_via_memory
+        config.add_latent_via_embeddings = add_latent_via_embeddings
+        config.do_tie_embedding_spaces = do_tie_embedding_spaces
+        config.add_decoder_output_embedding_bias = add_decoder_output_embedding_bias
 
-    # SCHEDULER
-    if scheduler is not None:
-        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+    vae_model = get_model_on_device(config, dataset_size=1000, device_name=device_name, world_master=True)
+    # Bring to CPU, as state_dict loading needs to happen in CPU (strange memory errors occur otherwise)
+    vae_model = vae_model.cpu()
 
+    # DDP vs no DDP
     parameter_state_dict = checkpoint["VAE_model_state_dict"]
-
     # MODEL
     if "module." in list(checkpoint["VAE_model_state_dict"].keys())[0] and not ddp:
         print("Removing module string from state dict from checkpoint")
@@ -207,32 +333,9 @@ def load_from_checkpoint(vae_model, path, optimizer=None, scheduler=None, scaler
         print("Adding module string to state dict from checkpoint")
         parameter_state_dict = add_remove_module_from_state_dict(remove=False)
 
-    # Adapt if checkpoint i from before refactor 1
-    from_before_refactor = False
-    for k in parameter_state_dict.keys():
-        if "encoder.encoder" in k:
-            from_before_refactor = True
-            break
-
-    if from_before_refactor:
-        print("Changing checkpoint to match after refactor.")
-        parameter_state_dict = change_checkpoint_to_after_refactor(parameter_state_dict)
-
-    # refactor 2
-    parameter_state_dict = change_checkpoint_to_after_refactor_2(parameter_state_dict)
-
     # in place procedure
     vae_model.load_state_dict(parameter_state_dict)
     vae_model = vae_model.to(device_name)
-
-    # AMP SCALER
-    # only load if using amp and a scaler is provided (when continue training from some point on).
-    if scaler is not None and use_amp:
-        if len(checkpoint["scaler_state_dict"]) == 0:
-            print("--> Warning! You are trying to load weights into a scaler that comes from a "
-                  "run with AMP disabled. Not loading any weights.")
-        else:
-            scaler.load_state_dict(checkpoint["scaler_state_dict"])
 
     # GLOBAL STEP, EPOCH, BEST VALIDATION LOSS
     global_step = checkpoint["global_step"]
@@ -243,6 +346,7 @@ def load_from_checkpoint(vae_model, path, optimizer=None, scheduler=None, scaler
                                                                               epoch,
                                                                               best_valid_loss))
 
+    # Do this again after loading checkpoint, because I am not sure if that is saved correctly
     # Weight tying / sharing between encoder and decoder RoBERTa part
     if do_tie_weights:
         print("Tying encoder decoder RoBERTa checkpoint weights!")
@@ -254,7 +358,7 @@ def load_from_checkpoint(vae_model, path, optimizer=None, scheduler=None, scaler
         print("Tying embedding spaces!")
         vae_model.tie_all_embeddings()
 
-    return optimizer, scheduler, vae_model, scaler, global_step, epoch, best_valid_loss
+    return vae_model
 
 
 def change_checkpoint_to_after_refactor(state_dict):
@@ -290,23 +394,9 @@ def change_checkpoint_to_after_refactor_2(state_dict):
     return new_state_dict
 
 
-def save_checkpoint_model(vae_model, optimizer, scheduler, scaler, run_name, code_dir_path,
-                          global_step, best_valid_loss, epoch, best=False):
+def save_checkpoint_model(vae_model, run_name, code_dir_path, global_step, best_valid_loss, epoch, config, best=False):
     """
     Save checkpoint for later use.
-
-    Args:
-        vae_model: nn.Module
-        optimizer: torch.optim
-        scheduler
-        scaler
-        run_name: str
-        code_dir_path: str
-        global_step: int
-        best_valid_loss: float
-        epoch: int
-        best: bool
-            Whether or not to save as a 'best' checkpoint or a regular checkpoint.
     """
 
     # Put in the name that it is a 'best' model
@@ -323,12 +413,14 @@ def save_checkpoint_model(vae_model, optimizer, scheduler, scaler, run_name, cod
     print(
         "Saving checkpoint at '{}/Runs/{}/checkpoint-{}.pth'...".format(code_dir_path, run_name, global_step))
 
+    # TODO: save scaler, scheduler, optimisers for continue training
     checkpoint = {
         'VAE_model_state_dict': vae_model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
+        "config": config,
+        # 'optimizer_state_dict': optimizer.state_dict(),
         'global_step': global_step,
-        'scheduler_state_dict': scheduler.state_dict(),
-        'scaler_state_dict': scaler.state_dict(),
+        # 'scheduler_state_dict': scheduler.state_dict(),
+        # 'scaler_state_dict': scaler.state_dict(),
         'best_valid_loss': best_valid_loss,
         'epoch': epoch,
     }
@@ -404,7 +496,6 @@ def log_stats_epoch(stats, epoch, global_step, global_grad_step):
     for phase, phase_stats in stats[epoch].items():
         for stat_name, stat in phase_stats.items():
             log_name = "Epoch mean ({}) {}".format(phase, stat_name)
-            print(log_name)
             logs[log_name] = np.mean(stat)
 
     logs['epoch'] = epoch
@@ -413,7 +504,7 @@ def log_stats_epoch(stats, epoch, global_step, global_grad_step):
     wandb.log(logs)
 
 
-def log_losses_step(losses, phase, epoch, log_every_n_steps, global_step, global_grad_step, lr, beta):
+def log_losses_step(losses, phase, epoch, log_every_n_steps, global_step, global_grad_step):
     """
     Log losses of step to W&B.
 
@@ -435,10 +526,8 @@ def log_losses_step(losses, phase, epoch, log_every_n_steps, global_step, global
     logs = {"Step log ({}) {}".format(phase, stat_name, log_every_n_steps): v for stat_name, v in
             losses.items()}
     logs["epoch"] = epoch
-    logs["beta"] = beta
     logs["global step"] = global_step
     logs["global gradient step"] = global_grad_step
-    logs["Step log ({}) learning rate".format(phase)] = lr
     wandb.log(logs)
 
 
@@ -507,7 +596,7 @@ def get_lr(scheduler):
 
 def print_stats(stats, epoch, phase, global_step, max_global_train_steps,
                 global_grad_step, max_global_grad_train_steps,
-                batch_i, phase_max_steps, beta, lr):
+                batch_i, phase_max_steps):
     """
     Print statistics to track process.
 
@@ -525,15 +614,24 @@ def print_stats(stats, epoch, phase, global_step, max_global_train_steps,
         beta: float
         lr: float
     """
-    print_string = "EPOCH {:4} | STEP {:5}/{:5} | GRAD STEP {:5}/{:5} | {:5} {:6}/{:6}".format(
+    print_string = "EPOCH {:4} | STEP {:5}/{:5} | GRAD STEP {:5}/{:5} | {:5} {:4}/{:4}".format(
         epoch, global_step + 1, max_global_train_steps, global_grad_step + 1,
         max_global_grad_train_steps, phase, batch_i + 1, phase_max_steps)
 
-    for s, v in stats[epoch][phase].items():
-        print_string += " | {:8}: {:8.4f}".format(s, v[-1])
-
-    print_string += " | Beta: {:.4f}".format(beta)
-    print_string += " | LR: {:.6f}".format(lr)
+    print_string += "\n** GENERAL STATS"
+    stat_dict = stats[epoch][phase]
+    for s, v in stat_dict.items():
+        if s not in ["alpha_MI", "beta_TC", "gamma_dim_KL", "alpha", "beta",
+                     "gamma", "beta_KL", "KL", "TC", "MI", "dim_KL"]:
+            print_string += " | {}: {:8.2f}".format(s, v[-1])
+    # Beta-VAE
+    if "beta_KL" in stat_dict:
+        print_string += f"\n--> BETA-VAE | beta {stat_dict['beta'][-1]:.2f} x KL {stat_dict['KL'][-1]:.2f} = {stat_dict['beta_KL'][-1]:.2f}"
+    # Beta-TC-VAE
+    elif "alpha_MI" in stat_dict:
+        print_string += f"\n--> BETA-TC-VAE | alpha {stat_dict['alpha'][-1]:.2f} x MI {stat_dict['MI'][-1]:.2f} = {stat_dict['alpha_MI'][-1]:.2f}"
+        print_string += f" | beta {stat_dict['beta'][-1]:.2f} x TC {stat_dict['TC'][-1]:.2f} = {stat_dict['beta_TC'][-1]:.2f}"
+        print_string += f" | gamma {stat_dict['gamma'][-1]:.2f} x Dim. KL {stat_dict['dim_KL'][-1]:.2f} = {stat_dict['gamma_dim_KL'][-1]:.2f}"
 
     print(print_string)
 
