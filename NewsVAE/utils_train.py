@@ -183,7 +183,7 @@ def determine_max_epoch_steps_per_rank(max_train_steps_epoch_per_rank, max_valid
 
 
 # ----------------------------------------------------------------------------------------------------
-# CHECKPOINTING
+# LOAD + SAVE MODEL & CHECKPOINTING
 # ----------------------------------------------------------------------------------------------------
 
 def get_model_on_device(config, dataset_size, device_name="cuda:0", world_master=True):

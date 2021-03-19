@@ -2,13 +2,9 @@ import torch.distributed as dist
 from torch.cuda.amp import autocast
 import torch.multiprocessing as mp
 from pytorch_lightning import seed_everything
-
 import multiprocessing
 from constraintoptim.constraint import *
-
 import utils_train
-
-
 
 
 def do_valid_step(vae_model, batch, device_name="cuda:0"):
@@ -18,7 +14,6 @@ def do_valid_step(vae_model, batch, device_name="cuda:0"):
     vae_model.eval()
 
     with torch.set_grad_enabled(False):
-
         vae_outputs = vae_model(input_ids=batch['input_ids'],
                                 attention_mask=batch['attention_mask'],
 
@@ -53,7 +48,6 @@ def do_train_step(vae_model, batch, global_step, use_amp=False, accumulate_n_bat
 
     with torch.set_grad_enabled(True):
         with autocast(enabled=use_amp):
-
             losses = vae_model(input_ids=batch['input_ids'],
                                attention_mask=batch['attention_mask'],
                                return_exact_match=False,
@@ -140,23 +134,23 @@ def train(device_rank, config, run_name):
     seed_everything(config.seed)
 
     # Data loaders / data set / samplers (if ddp)
-    data_loaders, data, samplers = get_dataloader(["train", "validation"], ddp=config.ddp, batch_size=config.batch_size,
-                                                  num_workers=config.num_workers, max_seq_len=config.max_seq_len,
-                                                  world_size=world_size, dataset_name=config.dataset_name,
-                                                  tokenizer_name=config.tokenizer_name,
-                                                  device_name=device_name, world_master=world_master,
-                                                  gpu_rank=device_rank)
+    data_loaders, data, samplers = utils_train.get_dataloader(["train", "validation"], ddp=config.ddp,
+                                                              batch_size=config.batch_size,
+                                                              num_workers=config.num_workers,
+                                                              max_seq_len=config.max_seq_len,
+                                                              world_size=world_size, dataset_name=config.dataset_name,
+                                                              tokenizer_name=config.tokenizer_name,
+                                                              device_name=device_name, world_master=world_master,
+                                                              gpu_rank=device_rank)
 
     # Get model
     dataset_size = data.datasets['train'].shape[0]
     vae_model = utils_train.get_model_on_device(config=config, dataset_size=dataset_size, device_name=device_name,
-                                    world_master=world_master)
+                                                world_master=world_master)
 
     # Initialise logging
     if config.logging and world_master:
         utils_train.init_logging(vae_model, run_name, config.code_dir_path, config.wandb_project, config)
-
-
 
     # Set-up DDP
     if config.ddp:
@@ -206,11 +200,11 @@ def train(device_rank, config, run_name):
                 # PERFORM TRAIN / VALIDATION STEP
                 if phase == 'train':
                     vae_model, losses = do_train_step(
-                                    vae_model, batch, global_step,
-                                    use_amp=config.use_amp,
-                                    accumulate_n_batches_grad=config.accumulate_n_batches_grad,
-                                    device_name=device_name,
-                                    gradient_clipping=config.gradient_clipping)
+                        vae_model, batch, global_step,
+                        use_amp=config.use_amp,
+                        accumulate_n_batches_grad=config.accumulate_n_batches_grad,
+                        device_name=device_name,
+                        gradient_clipping=config.gradient_clipping)
                 else:
                     losses = do_valid_step(vae_model, batch, device_name=device_name)
 
@@ -228,7 +222,8 @@ def train(device_rank, config, run_name):
 
                 # LOG STEP (only if world master)
                 if batch_i % config.log_every_n_steps == 0 and config.logging and world_master:
-                    utils_train.log_losses_step(losses, phase, epoch, config.log_every_n_steps, global_step, global_grad_step)
+                    utils_train.log_losses_step(losses, phase, epoch, config.log_every_n_steps, global_step,
+                                                global_grad_step)
 
                 # CHECKPOINT
                 if (global_step % config.checkpoint_every_n_steps == 0) and phase == 'train' \

@@ -2,7 +2,6 @@ from constraintoptim.constraint import Constraint, ConstraintOptimizer
 from torch.optim.lr_scheduler import LambdaLR
 from torch.cuda.amp import GradScaler
 import torch
-# from modules.encoder import EncoderNewsVAE
 import numpy as np
 import math
 
