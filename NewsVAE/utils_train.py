@@ -593,6 +593,7 @@ def print_stats(stats, epoch, phase, global_step, max_global_train_steps,
             print_string += " | {}: {:8.2f}".format(s, v[-1])
     # Beta-VAE
     if "beta_KL" in stat_dict:
+        print(stat_dict['beta'][-1], stat_dict['KL'][-1], stat_dict['beta_KL'][-1])
         print_string += f"\n--> BETA-VAE | beta {stat_dict['beta'][-1]:.2f} x KL {stat_dict['KL'][-1]:.2f} = {stat_dict['beta_KL'][-1]:.2f}"
     # Beta-TC-VAE
     elif "alpha_MI" in stat_dict:

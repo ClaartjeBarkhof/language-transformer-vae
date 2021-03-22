@@ -235,6 +235,7 @@ class LossTermManager:
     def __init__(self, parameters, config):
 
         self.objective = config.objective
+        self.ddp = config.ddp
 
         # TOTAL LOSS
         self.total_loss_optimiser = torch.optim.AdamW(parameters, lr=config.lr)
@@ -382,13 +383,19 @@ class LossTermManager:
 
             # Parameter schedule
             if isinstance(self.manager["beta_KL"], ParameterScheduler):
-                beta_kl = self.manager["beta_KL"].current_val * kl_loss
+                beta = self.manager["beta_KL"].current_val
+                beta_kl = beta * kl_loss
             # Lagrangian
             else:
+                if self.ddp:
+                    beta = self.manager["beta_KL"]["constraint"].module.multiplier
+                else:
+                    beta = self.manager["beta_KL"]["constraint"].multiplier
                 beta_kl = self.manager["beta_KL"]["constraint"](kl_loss)
 
             total_loss = reconstruction_loss + beta_kl
-            loss_dict["beta_KL"] = beta_kl
+            loss_dict["beta"] = beta.item() if torch.is_tensor(beta) else beta
+            loss_dict["beta_KL"] = beta_kl.item() if torch.is_tensor(beta_kl) else beta_kl
             loss_dict["KL"] = kl_loss.item()
 
         # Beta-TC-VAE
@@ -400,7 +407,10 @@ class LossTermManager:
                 alpha_mi = alpha * mi
             # Lagrangian
             else:
-                alpha = self.manager["alpha_MI"]["constraint"].multiplier
+                if self.ddp:
+                    alpha = self.manager["alpha_MI"]["constraint"].module.multiplier
+                else:
+                    alpha = self.manager["alpha_MI"]["constraint"].multiplier
 
                 print(alpha.device)
                 print(mi.device)
@@ -419,7 +429,10 @@ class LossTermManager:
                 gamma_dim_kl = gamma * dim_kl
             # Lagrangian
             else:
-                gamma = self.manager["gamma_DimKL"]["constraint"].multiplier
+                if self.ddp:
+                    gamma = self.manager["gamma_DimKL"]["constraint"].module.multiplier
+                else:
+                    gamma = self.manager["gamma_DimKL"]["constraint"].multiplier
                 gamma_dim_kl = self.manager["gamma_DimKL"]["constraint"](dim_kl)
 
             marginal_kl = log_q_z - log_p_z

@@ -75,7 +75,7 @@ def preprare_parser(jupyter=False, print_settings=True):
                         help="The name of the tokenizer, 'roberta' by default.")
     parser.add_argument("--dataset_name", default='ptb_text_only', type=str,
                         help="The name of the dataset, 'cnn_dailymail' by default, else: ptb_text_only.")
-    parser.add_argument("--num_workers", default=4, type=int,
+    parser.add_argument("--num_workers", default=8, type=int,
                         help="Num workers for data loading.")
     parser.add_argument("--max_seq_len", default=64, type=int,
                         help="What the maximum sequence length the model accepts is (default: 128).")

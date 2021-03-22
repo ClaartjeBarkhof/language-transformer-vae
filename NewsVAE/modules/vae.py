@@ -297,6 +297,17 @@ def get_model_on_device(config, dataset_size=42068, device_name="cuda:0", world_
 
     vae_model = vae_model.to(device_name)
 
+    if config.objective == "beta-vae":
+        if config.b_vae_beta_constant_linear_lagrangian == "lagrangian":
+            vae_model.loss_term_manager.manager["beta_KL"]["constraint"] = vae_model.loss_term_manager.manager["beta_KL"]["constraint"].to(device_name)
+
+    if config.objective == "beta-tc-vae":
+        if config.b_tc_vae_alpha_constant_linear_lagrangian == "lagrangian":
+            vae_model.loss_term_manager.manager["alpha_MI"]["constraint"] = vae_model.loss_term_manager.manager["alpha_MI"]["constraint"].to(device_name)
+
+        if config.b_tc_vae_gamma_constant_linear_lagrangian == "lagrangian":
+            vae_model.loss_term_manager.manager["gamma_DimKL"]["constraint"] = vae_model.loss_term_manager.manager["gamma_DimKL"]["constraint"].to(device_name)
+
     if world_master: print("Done loading model...")
 
     return vae_model

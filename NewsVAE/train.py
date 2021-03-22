@@ -173,8 +173,34 @@ def train(device_rank, config, run_name):
 
     # Set-up DDP
     if config.ddp:
+        pg1 = torch.distributed.new_group(list(range(world_size)))
         vae_model = torch.nn.parallel.DistributedDataParallel(vae_model, device_ids=[device_rank],
-                                                              find_unused_parameters=True)
+                                                              find_unused_parameters=True, process_group=pg1)
+
+        for n, _ in vae_model.named_parameters():
+            print(n)
+
+        if config.objective == "beta-vae":
+            print("HEY HEY")
+            pg2 = torch.distributed.new_group(list(range(world_size)))
+            if config.b_vae_beta_constant_linear_lagrangian == "lagrangian":
+                vae_model.module.loss_term_manager.manager["beta_KL"]["constraint"] = torch.nn.parallel.DistributedDataParallel(
+                    vae_model.module.loss_term_manager.manager["beta_KL"]["constraint"], device_ids=[device_rank],
+                    find_unused_parameters=True, process_group=pg2)
+
+        if config.objective == "beta-tc-vae":
+            if config.b_tc_vae_alpha_constant_linear_lagrangian == "lagrangian":
+                vae_model.module.loss_term_manager.manager["alpha_MI"][
+                    "constraint"] = torch.nn.parallel.DistributedDataParallel(
+                    vae_model.module.loss_term_manager.manager["alpha_MI"]["constraint"], device_ids=[device_rank],
+                    find_unused_parameters=True)
+
+            if config.b_tc_vae_gamma_constant_linear_lagrangian == "lagrangian":
+                vae_model.module.loss_term_manager.manager["gamma_DimKL"][
+                    "constraint"] = torch.nn.parallel.DistributedDataParallel(
+                    vae_model.module.loss_term_manager.manager["gamma_DimKL"]["constraint"], device_ids=[device_rank],
+                    find_unused_parameters=True)
+
         print(f"-> Turned on DDP for device rank {device_rank}")
 
     # Zero grads
@@ -202,19 +228,25 @@ def train(device_rank, config, run_name):
 
             if finished_training: break
 
+            print("test before set_epoch")
             if config.ddp:
                 print(f"-> Setting epoch explicitly to {epoch} on device {device_name}")
                 samplers[phase].set_epoch(epoch)  # needed to explicitly shuffle
 
+            print("test before set_epoch")
+
             max_steps = max_train_steps_epoch_per_rank if phase == 'train' else max_valid_steps_epoch_per_rank
 
             for batch_i, batch in enumerate(data_loaders[phase]):
+                print("test batch i", batch_i)
                 # ----------------------------------------------------------------------------------------------------
                 # TRAIN / VALIDATION STEPS
                 # ----------------------------------------------------------------------------------------------------
 
                 # SET DEVICE
                 batch = utils_train.transfer_batch_to_device(batch, device_name)
+
+                print("shapes input", batch["input_ids"].shape, batch["attention_mask"].shape)
 
                 # PERFORM TRAIN / VALIDATION STEP
                 if phase == 'train':
