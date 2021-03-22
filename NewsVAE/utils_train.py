@@ -13,10 +13,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
 from utils_external import tie_weights
-
-from modules.vae import NewsVAE
-from modules.encoder import EncoderNewsVAE
-from modules.decoder import DecoderNewsVAE
+import modules.vae as vae
 
 from dataset_wrappper import NewsData
 
@@ -181,49 +178,9 @@ def determine_max_epoch_steps_per_rank(max_train_steps_epoch_per_rank, max_valid
 
     return max_train_steps_epoch_per_rank, max_valid_steps_epoch_per_rank
 
-
 # ----------------------------------------------------------------------------------------------------
-# LOAD + SAVE MODEL & CHECKPOINTING
+# DATA LOADERS
 # ----------------------------------------------------------------------------------------------------
-
-def get_model_on_device(config, dataset_size, device_name="cuda:0", world_master=True):
-    """
-    Get a VAE model on correct device.
-
-    Args:
-        device_name: str
-        latent_size: int
-        gradient_checkpointing: bool
-        add_latent_via_embeddings: bool
-        add_latent_via_memory: bool
-        do_tie_weights: bool
-        world_master: bool:
-    Returns:
-        vae_model: NewsVAE object
-    """
-
-    if world_master: print("Loading model...")
-
-    decoder = DecoderNewsVAE(gradient_checkpointing=config.gradient_checkpointing,
-                             add_latent_via_memory=config.add_latent_via_memory,
-                             add_latent_via_embeddings=config.add_latent_via_embeddings,
-                             latent_size=config.latent_size,
-                             add_decoder_output_embedding_bias=config.add_decoder_output_embedding_bias,
-                             drop_inputs_decoder=config.drop_inputs_decoder,
-                             drop_inputs_decoder_prob=config.drop_inputs_decoder_prob)
-
-    encoder = EncoderNewsVAE(gradient_checkpointing=config.gradient_checkpointing,
-                             latent_size=config.latent_size)
-
-    vae_model = NewsVAE(encoder, decoder, dataset_size, config)
-
-    vae_model = vae_model.to(device_name)
-
-    if world_master: print("Done loading model...")
-
-    return vae_model
-
-
 
 def get_dataloader(phases, ddp=False, batch_size=12, num_workers=8, max_seq_len=64, world_size=4,
                    dataset_name="cnn_dailymail", tokenizer_name="roberta",
@@ -297,10 +254,14 @@ def get_dataloader(phases, ddp=False, batch_size=12, num_workers=8, max_seq_len=
     return loaders, data, samplers
 
 
-def load_from_checkpoint(path, world_master=True, ddp=False, device_name="cuda:0",
+# ----------------------------------------------------------------------------------------------------
+# LOAD + SAVE MODEL & CHECKPOINTING
+# ----------------------------------------------------------------------------------------------------
+
+def load_from_checkpoint(path, world_master=True, ddp=False, device_name="cuda:0", latent_size=64,
                          do_tie_embeddings=True, do_tie_weights=True, add_latent_via_memory=True,
-                         add_latent_via_embeddings=True, do_tie_embedding_spaces=True,
-                         add_decoder_output_embedding_bias=True):
+                         add_latent_via_embeddings=True, do_tie_embedding_spaces=True, dataset_size=3370,
+                         add_decoder_output_embedding_bias=False, objective="evaluation", evaluation=True):
     # DETERMINE / CHECK PATH
     assert os.path.isfile(path), f"-> checkpoint file path ({path}) must exist for it to be loaded!"
     if world_master: print("Loading model from checkpoint: {}".format(path))
@@ -311,14 +272,16 @@ def load_from_checkpoint(path, world_master=True, ddp=False, device_name="cuda:0
     if "config" in checkpoint:
         config = checkpoint["config"]
     else:
-        config = arguments.preprare_parser(jupyter=False)
+        config = arguments.preprare_parser(jupyter=True, print_settings=False)
         config.do_tie_weights = do_tie_weights
+        config.objective = objective
+        config.latent_size = latent_size
         config.add_latent_via_memory = add_latent_via_memory
         config.add_latent_via_embeddings = add_latent_via_embeddings
         config.do_tie_embedding_spaces = do_tie_embedding_spaces
         config.add_decoder_output_embedding_bias = add_decoder_output_embedding_bias
 
-    vae_model = get_model_on_device(config, dataset_size=1000, device_name=device_name, world_master=True)
+    vae_model = vae.get_model_on_device(config, dataset_size=dataset_size, device_name=device_name, world_master=True)
     # Bring to CPU, as state_dict loading needs to happen in CPU (strange memory errors occur otherwise)
     vae_model = vae_model.cpu()
 
@@ -357,6 +320,10 @@ def load_from_checkpoint(path, world_master=True, ddp=False, device_name="cuda:0
     if do_tie_embeddings:
         print("Tying embedding spaces!")
         vae_model.tie_all_embeddings()
+
+    if evaluation is True:
+        print("Setting to eval mode.")
+        vae_model.eval()
 
     return vae_model
 

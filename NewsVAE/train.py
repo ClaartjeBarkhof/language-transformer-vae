@@ -5,6 +5,9 @@ from pytorch_lightning import seed_everything
 import multiprocessing
 from constraintoptim.constraint import *
 import utils_train
+import modules.vae as vae
+from loss_and_optimisation import ParameterScheduler
+import numpy as np
 
 
 def do_valid_step(vae_model, batch, device_name="cuda:0"):
@@ -29,6 +32,7 @@ def do_valid_step(vae_model, batch, device_name="cuda:0"):
 
                                 device_name=device_name)
 
+        # Detach as no update being done
         vae_outputs['total_loss'] = vae_outputs['total_loss'].item()
 
     return vae_outputs
@@ -44,10 +48,15 @@ def do_train_step(vae_model, batch, global_step, use_amp=False, accumulate_n_bat
     # TOTAL LOSS, VAE NETWORK PARAMETERS
     # ---------------------------------------------------------------
 
+    scaler = vae_model.loss_term_manager.scaler
+    total_loss_optim = vae_model.loss_term_manager.total_loss_optimiser
+    lr_scheduler = vae_model.loss_term_manager.total_loss_scheduler
+
     vae_model.train()
 
+    # FORWARD
     with torch.set_grad_enabled(True):
-        with autocast(enabled=use_amp):
+        with autocast(enabled=use_amp):  # TODO: not sure whether this works with constraint optimisation
             losses = vae_model(input_ids=batch['input_ids'],
                                attention_mask=batch['attention_mask'],
                                return_exact_match=False,
@@ -59,8 +68,8 @@ def do_train_step(vae_model, batch, global_step, use_amp=False, accumulate_n_bat
     # All steps below follow what is described on this page:
     # https://pytorch.org/docs/stable/notes/amp_examples.html#gradient-clipping
 
-    # Gradient accumulate in here
-    vae_model.loss_term_manager.scaler.scale(loss).backward()
+    # Gradient accumulate in here (scaled by
+    scaler.scale(loss).backward()
 
     # If gradient accumulated long enough: set a step
     if (global_step + 1) % accumulate_n_batches_grad == 0:
@@ -68,34 +77,35 @@ def do_train_step(vae_model, batch, global_step, use_amp=False, accumulate_n_bat
         # GRADIENT CLIPPING
         if gradient_clipping:
             # Unscales the gradients of optimizer's assigned params in-place
-            vae_model.loss_term_manager.scaler.unscale_(vae_model.loss_term_manager.total_loss_optimiser)
+            scaler.unscale_(total_loss_optim)
 
             # Since the gradients of optimizer's assigned params are unscaled, clips as usual:
             torch.nn.utils.clip_grad_norm_(vae_model.parameters(), 1.0)
 
-        # OPTIMISER STEP
-        vae_model.loss_term_manager.scaler.step(vae_model.loss_term_manager.total_loss_optimiser)
+        # OPTIMISER STEP (first unscaled)
+        scaler.step(total_loss_optim)
 
         # AMP SCALER UPDATE
-        vae_model.loss_term_manager.scaler.update()
+        scaler.update()
 
         # Zero the gradients only here
-        vae_model.loss_term_manager.total_loss_optimiser.zero_grad()
+        total_loss_optim.zero_grad()
 
         # LR Scheduler
         # Advance the learning rate scheduler by 1
-        vae_model.loss_term_manager.total_loss_scheduler.step()
+        lr_scheduler.step()
 
     # ---------------------------------------------------------------
     # CONSTRAINT OPTIMISATION / LOSS TERM PARAMETER UPDATES
     # ---------------------------------------------------------------
+
     # Update all the parameters (alpha, beta, gamma, lambda, etc.)
     # and perform update step for constraint optimisers
     # No gradient accumulation do this update every train step
     for loss_term, manager in vae_model.loss_term_manager.manager.items():
 
         # If parameter scheduler, perform step (to update the parameter value)
-        if isinstance(manager, utils_train.ParameterScheduler):
+        if isinstance(manager, ParameterScheduler):
             manager.step()
 
         # If a constraint optimiser
@@ -106,7 +116,7 @@ def do_train_step(vae_model, batch, global_step, use_amp=False, accumulate_n_bat
     # Detach now (this is not divided by args.accumulate_n_batches_grad)
     # but since we are not summing I think that's fine
     losses['total_loss'] = losses['total_loss'].item()
-    losses["LR"] = utils_train.get_lr(vae_model.loss_term_manager.total_loss_scheduler)
+    losses["LR"] = utils_train.get_lr(lr_scheduler)
 
     return vae_model, losses
 
@@ -145,8 +155,8 @@ def train(device_rank, config, run_name):
 
     # Get model
     dataset_size = data.datasets['train'].shape[0]
-    vae_model = utils_train.get_model_on_device(config=config, dataset_size=dataset_size, device_name=device_name,
-                                                world_master=world_master)
+    vae_model = vae.get_model_on_device(config=config, dataset_size=dataset_size, device_name=device_name,
+                                        world_master=world_master)
 
     # Initialise logging
     if config.logging and world_master:
@@ -250,16 +260,14 @@ def train(device_rank, config, run_name):
             # ----------------------------------------------------------------------------------------------------
 
             # BEST MODEL CHECKPOINT
-            # TODO: fix this
-            # if phase == 'validation' and world_master:
-            #     mean_valid_loss = np.mean(stats[epoch]['validation']['recon_loss'])
-            #     if config.checkpoint and mean_valid_loss < best_valid_loss:
-            #         print(f"Found better (mean) validation loss (at this device): "
-            #               f"{mean_valid_loss:.4f}. Saving checkpoint!")
-            #         utils_train.save_checkpoint_model(vae_model, optimizer, scheduler, scaler, run_name,
-            #                                           config.code_dir_path, global_step,
-            #                                           best_valid_loss, epoch, best=True)
-            #         best_valid_loss = mean_valid_loss
+            if phase == 'validation' and world_master:
+                mean_valid_loss = np.mean(stats[epoch]['validation']['reconstruction_loss'])
+                if config.checkpoint and mean_valid_loss < best_valid_loss:
+                    print(f"Found better (mean) validation loss (at this device): "
+                          f"{mean_valid_loss:.4f}. Saving checkpoint!")
+                    utils_train.save_checkpoint_model(vae_model, run_name, config.code_dir_path, global_step,
+                                                      best_valid_loss, epoch, config, best=True)
+                    best_valid_loss = mean_valid_loss
             # TODO: evaluation loop
 
         # ----------------------------------------------------------------------------------------------------

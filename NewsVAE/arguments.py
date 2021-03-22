@@ -287,7 +287,7 @@ def preprare_parser(jupyter=False, print_settings=True):
     # ----------------------------------------------------
     # gamma * Dimension wise KL
     # How is the Dim KL term managed
-    parser.add_argument("--b_tc_vae_gamma_constant_linear_lagrangian", default="lagrangian", type=str,
+    parser.add_argument("--b_tc_vae_gamma_constant_linear_lagrangian", default="constant", type=str,
                         help="What kind of 'annealing' is used for gamma in beta-tc-vae objective mode, options:"
                              "  - constant"
                              "  - linear"

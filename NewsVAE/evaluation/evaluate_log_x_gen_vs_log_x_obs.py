@@ -15,9 +15,10 @@ import copy
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 import torch.distributed as dist
-from utils_train import set_ddp_environment_vars
-from utils import load_model_for_eval, load_pickle, dump_pickle
+from utils_train import set_ddp_environment_vars, load_from_checkpoint
+from utils import load_pickle, dump_pickle
 import distutils
+from loss_and_optimisation import sample_log_likelihood
 
 
 def combine_result_files(result_dir_path, run_name, max_batches, batch_size, n_samples):
@@ -118,8 +119,7 @@ def batch_log_x_gen_vs_log_x_obs(vae_model, batch, n_samples, latent_size, batch
     prior_samples = vae_model.sample_from_prior(latent_size=latent_size, n_samples=n_samples * batch_size,
                                                 device_name=device_name)
     prior_samples = prior_samples.reshape(batch_size, n_samples, -1)
-    prior_log_p_z = vae_model.encoder.sample_log_likelihood(prior_samples, reduce_batch_dim=False,
-                                                            reduce_latent_dim=True)
+    prior_log_p_z = sample_log_likelihood(prior_samples, reduce_batch_dim=False, reduce_latent_dim=True)
 
     # Now we need to loop again because our batch size was multiplied by n_samples
     post_log_p_x_z = []
@@ -186,7 +186,10 @@ def evaluation_function(device_rank, run_name, model_path, max_batches, max_seq_
         print("-" * 30)
 
         # Get model
-        vae_model = load_model_for_eval(path=model_path, device_name=device_name)
+        #vae_model = #(path=model_path, device_name=device_name)
+        vae_model = load_from_checkpoint(path=model_path, device_name=device_name, latent_size=latent_size, do_tie_embedding_spaces=True,
+                                         add_decoder_output_embedding_bias=False, do_tie_weights=True, add_latent_via_embeddings=False,
+                                         add_latent_via_memory=True, objective="vae", evaluation=True)
         vae_model = vae_model.to(device_name)
 
         # Get distributed validation data loader of PTB data set

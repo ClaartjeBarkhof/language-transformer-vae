@@ -94,6 +94,11 @@ def sample_log_likelihood(latent_z, mu=None, logvar=None, reduce_latent_dim=True
     Distribution, either parameterised by mu, logvar (posterior), else under the standard Normal (prior).
     """
 
+    print("latent_z.shape", latent_z.shape)
+    if mu is not None:
+        print("mu.shape", mu.shape)
+        print("logvar.shape", logvar.shape)
+
     # Under a posterior z under q(z|x)
     if logvar is not None and mu is not None:
         # N(z| mu, sigma) = [-1 / 2(log var + log 2pi + (x - mu) ^ 2 / var)]
@@ -142,7 +147,7 @@ def approximate_total_correlation(mu, logvar, latent_z, method="chen", dataset_s
     return total_correlation
 
 
-def approximate_log_q_z(mu, logvar, latent_z, method="chen", dataset_size=None, prod_marginals=False):
+def approximate_log_q_z(mu, logvar, latent_z, method="chen", dataset_size=42068, prod_marginals=False):
     """
     Approximate E_q(z) [ log q (z) ]. This evaluates all samples x->z under q(z), which on itself
     relies on all data points. The "ideal" estimator would be:
@@ -167,11 +172,19 @@ def approximate_log_q_z(mu, logvar, latent_z, method="chen", dataset_size=None, 
     if method == "chen":
         assert dataset_size is not None, "if using method 'chen', you need to provide a dataset size"
 
+    print("dataset size", dataset_size)
+
     # Get shapes
     x_batch, n_dim = mu.shape
 
+    """
+    # from: https://github.com/rtqichen/beta-tcvae/blob/1a3577dbb14642b9ac27010928d12132d0c0fb91/vae_quant.py#L225
+    # minibatch weighted sampling
+    logqz_prodmarginals = (logsumexp(_logqz, dim=1, keepdim=False) - math.log(batch_size * dataset_size)).sum(1)
+    logqz = (logsumexp(_logqz.sum(2), dim=1, keepdim=False) - math.log(batch_size * dataset_size))
+    """
+
     # Orient it as a row [1, x_batch, latent_dim]
-    # mu_1, mu_2, ..., mu_n
     mu_exp, logvar_exp = mu.unsqueeze(0), logvar.unsqueeze(0)
 
     # Orient it as a column [z_batch, 1, latent_dim]
@@ -181,6 +194,8 @@ def approximate_log_q_z(mu, logvar, latent_z, method="chen", dataset_size=None, 
     # [z_batch, x_batch, latent_dim]
     log_dens = sample_log_likelihood(latent_z_exp, mu_exp, logvar_exp,
                                      reduce_latent_dim=False, reduce_batch_dim=False)
+    # print(log_dens.sum(dim=-1) / 32)
+    # print(log_dens.min(), log_dens.max())
 
     log_q_z_prod_marg = None
 
@@ -190,7 +205,7 @@ def approximate_log_q_z(mu, logvar, latent_z, method="chen", dataset_size=None, 
         log_q_z_prod_marg = torch.logsumexp(log_dens, dim=1, keepdim=False)
 
     # Reduce latent and then x_batch dim
-    log_q_z = torch.logsumexp(log_dens.sum(2), dim=1, keepdim=False)
+    log_q_z = torch.logsumexp(log_dens.sum(dim=2), dim=1, keepdim=False)
 
     # We assume to have been given an batch, and use a weighted version as proposed in
     # Isolating Sources of Disentanglement (Chen et al., 2019)
@@ -414,16 +429,21 @@ class LossTermManager:
                 gamma = self.manager["gamma_DimKL"]["constraint"].multiplier
                 gamma_dim_kl = self.manager["gamma_DimKL"]["constraint"](dim_kl)
 
+            marginal_kl = log_q_z - log_p_z
+            approx_kl = log_q_z_x - log_p_z
+
             total_loss = reconstruction_loss + alpha_mi + beta_tc + gamma_dim_kl
             loss_dict["MI"] = mi.item()
             loss_dict["alpha_MI"] = alpha_mi.item()
-            loss_dict["alpha"] = alpha
+            loss_dict["alpha"] = alpha.item() if torch.is_tensor(alpha) else alpha
             loss_dict["TC"] = tc.item()
             loss_dict["beta_TC"] = beta_tc.item()
-            loss_dict["beta"] = beta
+            loss_dict["beta"] = beta.item() if torch.is_tensor(beta) else beta
             loss_dict["dim_KL"] = dim_kl.item()
             loss_dict["gamma_dim_KL"] = gamma_dim_kl.item()
-            loss_dict["gamma"] = gamma
+            loss_dict["gamma"] = gamma.item() if torch.is_tensor(gamma) else gamma
+            loss_dict["marginal_KL"] = marginal_kl.item()
+            loss_dict["approx_KL"] = approx_kl.item()
 
         # MMD-VAE
         elif self.objective == "mmd-vae":

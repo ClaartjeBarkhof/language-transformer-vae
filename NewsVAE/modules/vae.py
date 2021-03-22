@@ -1,10 +1,11 @@
 from utils_external import tie_weights
-from utils_evaluation import tokenizer_batch_decode
+# from utils_evaluation import tokenizer_batch_decode
 import torch
 from loss_and_optimisation import LossTermManager
 from modules.decoder import DecoderNewsVAE
 from modules.encoder import EncoderNewsVAE
 import copy
+
 
 class NewsVAE(torch.nn.Module):
     def __init__(self, encoder, decoder, dataset_size, config):
@@ -90,7 +91,7 @@ class NewsVAE(torch.nn.Module):
                 return_text_predictions=False,
                 tokenizer=None,
 
-                reduce_seq_dim_ce="sum",
+                reduce_seq_dim_ce="mean",
                 reduce_seq_dim_exact_match="mean",
                 reduce_batch_dim_exact_match="mean",
                 reduce_batch_dim_ce="mean",
@@ -176,8 +177,8 @@ class NewsVAE(torch.nn.Module):
             )
 
         # Return text predictions
-        if return_text_predictions and tokenizer is not None:
-            dec_out["text_predictions"] = tokenizer_batch_decode(dec_out["predictions"], tokenizer)
+        # if return_text_predictions and tokenizer is not None:
+        #     dec_out["text_predictions"] = tokenizer_batch_decode(dec_out["predictions"], tokenizer)
 
         ########################
         # TOTAL TRAIN LOSS     #
@@ -223,7 +224,8 @@ class NewsVAE(torch.nn.Module):
 
         return vae_outputs
 
-    def calculate_embedding_space_loss(self, input_ids, in_w_emb, out_w_emb,
+    @staticmethod
+    def calculate_embedding_space_loss(input_ids, in_w_emb, out_w_emb,
                                        reduce_seq_dim_embedding_loss,
                                        reduce_batch_dim_embedding_loss):
 
@@ -253,44 +255,33 @@ class NewsVAE(torch.nn.Module):
 
         return embedding_loss
 
-    ########################################################
-    # For convenience, echo some methods from the encoder  #
-    ########################################################
-
-    @staticmethod
-    def sample_log_likelihood(latent_z, mu=None, logvar=None, reduce_latent_dim=True, reduce_batch_dim=False):
-        return EncoderNewsVAE.sample_log_likelihood(latent_z, mu=mu, logvar=logvar,
-                                                    reduce_latent_dim=reduce_latent_dim,
-                                                    reduce_batch_dim=reduce_batch_dim)
-
-    @staticmethod
-    def approximate_log_q_z(mu, logvar, latent_z, method="chen", dataset_size=None, prod_marginals=False):
-        return EncoderNewsVAE.approximate_log_q_z(mu, logvar, latent_z, method=method,
-                                                  dataset_size=dataset_size, prod_marginals=prod_marginals)
-
-    @staticmethod
-    def kl_divergence(mu, logvar, hinge_kl_loss_lambda=0.5, average_batch=True):
-        return EncoderNewsVAE.kl_divergence(mu, logvar, hinge_kl_loss_lambda=hinge_kl_loss_lambda,
-                                            average_batch=average_batch)
-
     @staticmethod
     def sample_from_prior(latent_size=768, n_samples=8, device_name="cuda:0"):
         return EncoderNewsVAE.sample_from_prior(latent_size=latent_size, n_samples=n_samples, device_name=device_name)
 
 
-if __name__ == "__main__":
-    latent_dim = 768
-    embedding_mechanism = True
-    memory_mechanism = True
-    tied_weights = True
+def get_model_on_device(config, dataset_size=42068, device_name="cuda:0", world_master=True):
+    """
+    Load a fresh VAE model on correct device.
+    """
 
-    dec_model = DecoderNewsVAE(gradient_checkpointing=False,
-                               add_latent_via_memory=memory_mechanism,
-                               add_latent_via_embeddings=embedding_mechanism,
-                               latent_size=latent_dim)
-    enc_model = EncoderNewsVAE(gradient_checkpointing=False, latent_size=latent_dim)
+    if world_master: print("Loading model...")
 
-    vae_model = NewsVAE(enc_model, dec_model,
-                        do_tie_weights=tied_weights)
+    decoder = DecoderNewsVAE(gradient_checkpointing=config.gradient_checkpointing,
+                             add_latent_via_memory=config.add_latent_via_memory,
+                             add_latent_via_embeddings=config.add_latent_via_embeddings,
+                             latent_size=config.latent_size,
+                             add_decoder_output_embedding_bias=config.add_decoder_output_embedding_bias,
+                             drop_inputs_decoder=config.drop_inputs_decoder,
+                             drop_inputs_decoder_prob=config.drop_inputs_decoder_prob)
 
-    print("done loading VAE!")
+    encoder = EncoderNewsVAE(gradient_checkpointing=config.gradient_checkpointing,
+                             latent_size=config.latent_size)
+
+    vae_model = NewsVAE(encoder, decoder, dataset_size, config)
+
+    vae_model = vae_model.to(device_name)
+
+    if world_master: print("Done loading model...")
+
+    return vae_model
