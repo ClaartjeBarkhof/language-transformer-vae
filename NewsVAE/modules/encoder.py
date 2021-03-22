@@ -80,8 +80,6 @@ class EncoderNewsVAE(torch.nn.Module):
         # Sample latents from posterior
         latent_z = self.reparameterize(encoder_out["mu"], encoder_out["logvar"], n_samples=n_samples)
 
-        print("n_samples", n_samples)
-
         if n_samples == 1:
             latent_z = latent_z.squeeze(1)
             logvar_, mu_ = logvar, mu
@@ -89,14 +87,12 @@ class EncoderNewsVAE(torch.nn.Module):
             # repeat along the sample dimension (1)
             logvar_, mu_ = logvar.unsqueeze(1).repeat(1, n_samples, 1), mu.unsqueeze(1).repeat(1, n_samples, 1)
 
-        print("in encode before return_log_q_z_x latent_z.shape", latent_z.shape)
         if return_log_q_z_x:
             log_q_z_x = sample_log_likelihood(latent_z, mu=mu_, logvar=logvar_,
                                               reduce_latent_dim=True, reduce_batch_dim=True)
         else:
             log_q_z_x = None
 
-        print("in encode before return_log_p_z latent_z.shape", latent_z.shape)
         if return_log_p_z:
             log_p_z = sample_log_likelihood(latent_z, mu=None, logvar=None,
                                             reduce_latent_dim=True, reduce_batch_dim=True)

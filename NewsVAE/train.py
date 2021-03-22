@@ -26,6 +26,8 @@ def do_valid_step(vae_model, batch, device_name="cuda:0"):
                                 reduce_seq_dim_ce="mean",
                                 reduce_batch_dim_ce="mean",
 
+                                return_posterior_stats=True,
+
                                 return_exact_match=True,  # interpretable to track with validation
                                 reduce_seq_dim_exact_match="mean",
                                 reduce_batch_dim_exact_match="mean",
@@ -39,7 +41,7 @@ def do_valid_step(vae_model, batch, device_name="cuda:0"):
 
 
 def do_train_step(vae_model, batch, global_step, use_amp=False, accumulate_n_batches_grad=1,
-                  device_name="cuda:0", gradient_clipping=True):
+                  device_name="cuda:0", gradient_clipping=True, ddp=False):
     """
     Perform a train step with mixed precision auto cast, gradients enabled and gradient accumulated backward.
     """
@@ -47,10 +49,16 @@ def do_train_step(vae_model, batch, global_step, use_amp=False, accumulate_n_bat
     # ---------------------------------------------------------------
     # TOTAL LOSS, VAE NETWORK PARAMETERS
     # ---------------------------------------------------------------
-
-    scaler = vae_model.loss_term_manager.scaler
-    total_loss_optim = vae_model.loss_term_manager.total_loss_optimiser
-    lr_scheduler = vae_model.loss_term_manager.total_loss_scheduler
+    if ddp is False:
+        scaler = vae_model.loss_term_manager.scaler
+        total_loss_optim = vae_model.loss_term_manager.total_loss_optimiser
+        lr_scheduler = vae_model.loss_term_manager.total_loss_scheduler
+        loss_term_manager = vae_model.loss_term_manager
+    else:
+        scaler = vae_model.module.loss_term_manager.scaler
+        total_loss_optim = vae_model.module.loss_term_manager.total_loss_optimiser
+        lr_scheduler = vae_model.module.loss_term_manager.total_loss_scheduler
+        loss_term_manager = vae_model.module.loss_term_manager
 
     vae_model.train()
 
@@ -61,6 +69,7 @@ def do_train_step(vae_model, batch, global_step, use_amp=False, accumulate_n_bat
                                attention_mask=batch['attention_mask'],
                                return_exact_match=False,
                                return_reconstruction_loss=True,
+                               return_posterior_stats=True,
                                device_name=device_name)
 
             loss = losses['total_loss'] / accumulate_n_batches_grad
@@ -102,7 +111,7 @@ def do_train_step(vae_model, batch, global_step, use_amp=False, accumulate_n_bat
     # Update all the parameters (alpha, beta, gamma, lambda, etc.)
     # and perform update step for constraint optimisers
     # No gradient accumulation do this update every train step
-    for loss_term, manager in vae_model.loss_term_manager.manager.items():
+    for loss_term, manager in loss_term_manager.manager.items():
 
         # If parameter scheduler, perform step (to update the parameter value)
         if isinstance(manager, ParameterScheduler):
@@ -214,7 +223,8 @@ def train(device_rank, config, run_name):
                         use_amp=config.use_amp,
                         accumulate_n_batches_grad=config.accumulate_n_batches_grad,
                         device_name=device_name,
-                        gradient_clipping=config.gradient_clipping)
+                        gradient_clipping=config.gradient_clipping,
+                        ddp=config.ddp)
                 else:
                     losses = do_valid_step(vae_model, batch, device_name=device_name)
 

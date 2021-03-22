@@ -54,11 +54,11 @@ def preprare_parser(jupyter=False, print_settings=True):
                         help="Whether or not to use automatic mixed precision (default: True).")
 
     # DISTRIBUTED TRAINING
-    parser.add_argument("--n_gpus", default=1, type=int,
+    parser.add_argument("--n_gpus", default=2, type=int,
                         help="Number GPUs to use (default: None).")
     parser.add_argument("--n_nodes", default=1, type=int,
                         help="Number nodes to use (default: 1).")
-    parser.add_argument("--ddp", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
+    parser.add_argument("--ddp", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to use Distributed Data Parallel (DDP) "
                              "(default: True if n_gpus > 1, else: False).")
 
@@ -324,6 +324,43 @@ def preprare_parser(jupyter=False, print_settings=True):
         args = parser.parse_args([])
     else:
         args = parser.parse_args()
+
+    # Objective overview:
+    #
+    #   1. evaluation: no objective
+    #
+    #   2. autoencoder
+    #
+    #   3. vae
+    #
+    #   4. beta-vae:
+    #       - beta * KL
+    #          - beta constant
+    #          - beta linear sched.
+    #          - beta lagrangian (minimum desired rate)
+    #
+    #   5. free-bits-beta-vae:
+    #       = beta-vae + free bits (can't be combined with MDR)
+    #
+    #   6. beta-tc-vae:
+    #       - alpha * MI:
+    #           - alpha constant
+    #           - alpha linear sched.
+    #           - alpha lagrangian (minimum or maximum desired MI)
+    #       - beta * TC:
+    #           - beta constant
+    #           - beta linear sched.
+    #       - gamma * Dim. KL
+    #           - gamma constant
+    #           - gamma linear sched.
+    #           - gamma lagrangian (minimum desired Dim. KL)
+    #
+    #   7. mmd-vae:
+    #        - lambda * mmd
+    #           - lambda constant
+
+    assert args.objective in ["evaluation", "autoencoder", "vae", "beta-vae",
+                              "free-bits-beta-vae", "beta-tc-vae", "mmd-vae"], "Invalid objective, see options. Quit!"
 
     # PRINT SOME SETTINGS
     if print_settings:

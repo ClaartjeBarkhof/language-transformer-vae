@@ -107,6 +107,7 @@ def batch_log_x_gen_vs_log_x_obs(vae_model, batch, n_samples, latent_size, batch
     enc_out = vae_model.encoder.encode(batch["input_ids"], batch["attention_mask"],
                                        n_samples=n_samples,
                                        return_log_q_z_x=True,
+                                       return_log_q_z=False,
                                        return_log_p_z=True,
                                        return_embeddings=False)
 
@@ -139,7 +140,6 @@ def batch_log_x_gen_vs_log_x_obs(vae_model, batch, n_samples, latent_size, batch
             prior_preds_log_probs = get_sampled_log_probs_sequence(vae_model, prior_z, max_seq_len,
                                                                    device_name=device_name)
             prior_log_p_x_z.append(prior_preds_log_probs)
-
             post_preds_log_probs = get_sampled_log_probs_sequence(vae_model, post_z, max_seq_len,
                                                                   device_name=device_name)
             post_log_p_x_z.append(post_preds_log_probs)
@@ -262,7 +262,7 @@ def get_config():
                         help="Number of GPUs to use (default: 4).")
     parser.add_argument("--max_seq_len", required=False, type=int, default=32,
                         help="Maximum sequence length for auto-regressive decoding (default: 32).")
-    parser.add_argument("--n_samples", required=False, type=int, default=500,
+    parser.add_argument("--n_samples", required=False, type=int, default=100,
                         help="How many z samples to take for every q(z|x) eval (default: 500).")
     parser.add_argument("--n_chunks", required=False, type=int, default=2,
                         help="In how many chunks to divide the latent samples (default: 2).")

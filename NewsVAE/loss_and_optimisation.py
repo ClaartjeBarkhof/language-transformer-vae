@@ -94,11 +94,6 @@ def sample_log_likelihood(latent_z, mu=None, logvar=None, reduce_latent_dim=True
     Distribution, either parameterised by mu, logvar (posterior), else under the standard Normal (prior).
     """
 
-    print("latent_z.shape", latent_z.shape)
-    if mu is not None:
-        print("mu.shape", mu.shape)
-        print("logvar.shape", logvar.shape)
-
     # Under a posterior z under q(z|x)
     if logvar is not None and mu is not None:
         # N(z| mu, sigma) = [-1 / 2(log var + log 2pi + (x - mu) ^ 2 / var)]
@@ -135,12 +130,10 @@ def approximate_total_correlation(mu, logvar, latent_z, method="chen", dataset_s
     # From Chen et al. (2019), Isolating Sources of Disentanglement
     # KL(q(z) || prod q(z_i)) <- mutual information, or dependence, between the latent dimensions
 
-    # log q(z)
-    log_q_z = approximate_log_q_z(mu, logvar, latent_z, method=method,
-                                  dataset_size=dataset_size, prod_marginals=False)
-    # log prod q(z_i)
-    log_q_z_prod_marginals = approximate_log_q_z(mu, logvar, latent_z, method=method,
-                                                 dataset_size=dataset_size, prod_marginals=True)
+    # log q(z), log prod q(z_i)
+    log_q_z, log_q_z_prod_marginals = approximate_log_q_z(mu, logvar, latent_z, method=method,
+                                                          dataset_size=dataset_size,
+                                                          prod_marginals=True)
 
     total_correlation = (log_q_z - log_q_z_prod_marginals).mean()
 
@@ -172,7 +165,7 @@ def approximate_log_q_z(mu, logvar, latent_z, method="chen", dataset_size=42068,
     if method == "chen":
         assert dataset_size is not None, "if using method 'chen', you need to provide a dataset size"
 
-    print("dataset size", dataset_size)
+    #print("dataset size", dataset_size)
 
     # Get shapes
     x_batch, n_dim = mu.shape

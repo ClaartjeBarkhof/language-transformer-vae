@@ -91,6 +91,8 @@ class NewsVAE(torch.nn.Module):
                 return_text_predictions=False,
                 tokenizer=None,
 
+                return_posterior_stats=True,
+
                 reduce_seq_dim_ce="mean",
                 reduce_seq_dim_exact_match="mean",
                 reduce_batch_dim_exact_match="mean",
@@ -207,6 +209,19 @@ class NewsVAE(torch.nn.Module):
         if return_mu_logvar:
             loss_dict["mu"] = enc_out["mu"].detach()
             loss_dict["logvar"] = enc_out["logvar"].detach()
+
+        if return_posterior_stats and enc_out["mu"] is not None:
+            mu, var = enc_out["mu"], enc_out["logvar"].exp()
+            mean_mu = mu.mean(dim=1).mean(dim=0)
+            var_mu = torch.var(mu, dim=1).mean(dim=0)
+
+            mean_var = var.mean(dim=1).mean(dim=0)
+            var_var = torch.var(var, dim=1).mean(dim=0)
+
+            loss_dict["mean_mu"] = mean_mu.item()
+            loss_dict["var_mu"] = var_mu.item()
+            loss_dict["mean_var"] = mean_var.item()
+            loss_dict["var_var"] = var_var.item()
 
         # Merge all the outputs together
         vae_outputs = {**loss_dict, **dec_out}
