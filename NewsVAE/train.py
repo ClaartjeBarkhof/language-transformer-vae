@@ -6,33 +6,33 @@ import multiprocessing
 from constraintoptim.constraint import *
 import utils_train
 import modules.vae as vae
-from loss_and_optimisation import ParameterScheduler
+from loss_and_optimisation import ParameterScheduler, LossTermManager
 import numpy as np
 
 
-def do_valid_step(vae_model, batch, device_name="cuda:0"):
+def do_valid_step(loss_term_manager, batch, device_name="cuda:0"):
     """
     Perform a validation step.
     """
-    vae_model.eval()
+    loss_term_manager.vae_model.eval()
 
     with torch.set_grad_enabled(False):
-        vae_outputs = vae_model(input_ids=batch['input_ids'],
-                                attention_mask=batch['attention_mask'],
+        vae_outputs = loss_term_manager(input_ids=batch['input_ids'],
+                                        attention_mask=batch['attention_mask'],
 
-                                return_reconstruction_loss=True,  # ce summed, averaged
+                                        return_reconstruction_loss=True,  # ce summed, averaged
 
-                                return_cross_entropy=True,  # ce per word
-                                reduce_seq_dim_ce="mean",
-                                reduce_batch_dim_ce="mean",
+                                        return_cross_entropy=True,  # ce per word
+                                        reduce_seq_dim_ce="mean",
+                                        reduce_batch_dim_ce="mean",
 
-                                return_posterior_stats=True,
+                                        return_posterior_stats=True,
 
-                                return_exact_match=True,  # interpretable to track with validation
-                                reduce_seq_dim_exact_match="mean",
-                                reduce_batch_dim_exact_match="mean",
+                                        return_exact_match=True,  # interpretable to track with validation
+                                        reduce_seq_dim_exact_match="mean",
+                                        reduce_batch_dim_exact_match="mean",
 
-                                device_name=device_name)
+                                        device_name=device_name)
 
         # Detach as no update being done
         vae_outputs['total_loss'] = vae_outputs['total_loss'].item()
@@ -40,7 +40,7 @@ def do_valid_step(vae_model, batch, device_name="cuda:0"):
     return vae_outputs
 
 
-def do_train_step(vae_model, batch, global_step, use_amp=False, accumulate_n_batches_grad=1,
+def do_train_step(loss_term_manager, batch, global_step, use_amp=False, accumulate_n_batches_grad=1,
                   device_name="cuda:0", gradient_clipping=True, ddp=False):
     """
     Perform a train step with mixed precision auto cast, gradients enabled and gradient accumulated backward.
@@ -49,28 +49,31 @@ def do_train_step(vae_model, batch, global_step, use_amp=False, accumulate_n_bat
     # ---------------------------------------------------------------
     # TOTAL LOSS, VAE NETWORK PARAMETERS
     # ---------------------------------------------------------------
-    if ddp is False:
-        scaler = vae_model.loss_term_manager.scaler
-        total_loss_optim = vae_model.loss_term_manager.total_loss_optimiser
-        lr_scheduler = vae_model.loss_term_manager.total_loss_scheduler
-        loss_term_manager = vae_model.loss_term_manager
+    if ddp:
+        scaler = loss_term_manager.module.scaler
+        total_loss_optim = loss_term_manager.module.total_loss_optimiser
+        lr_scheduler = loss_term_manager.module.total_loss_scheduler
+        loss_term_manager.module.vae_model.train()
+        vae_model = loss_term_manager.module.vae_model
+        manager = loss_term_manager.module.manager
     else:
-        scaler = vae_model.module.loss_term_manager.scaler
-        total_loss_optim = vae_model.module.loss_term_manager.total_loss_optimiser
-        lr_scheduler = vae_model.module.loss_term_manager.total_loss_scheduler
-        loss_term_manager = vae_model.module.loss_term_manager
-
-    vae_model.train()
+        scaler = loss_term_manager.scaler
+        total_loss_optim = loss_term_manager.total_loss_optimiser
+        lr_scheduler = loss_term_manager.total_loss_scheduler
+        loss_term_manager.vae_model.train()
+        vae_model = loss_term_manager.vae_model
+        manager = loss_term_manager.manager
 
     # FORWARD
     with torch.set_grad_enabled(True):
         with autocast(enabled=use_amp):  # TODO: not sure whether this works with constraint optimisation
-            losses = vae_model(input_ids=batch['input_ids'],
-                               attention_mask=batch['attention_mask'],
-                               return_exact_match=False,
-                               return_reconstruction_loss=True,
-                               return_posterior_stats=True,
-                               device_name=device_name)
+            # Forward through model happens within loss_term_manager
+            losses = loss_term_manager(input_ids=batch['input_ids'],
+                                       attention_mask=batch['attention_mask'],
+                                       return_exact_match=False,
+                                       return_reconstruction_loss=True,
+                                       return_posterior_stats=True,
+                                       device_name=device_name)
 
             loss = losses['total_loss'] / accumulate_n_batches_grad
 
@@ -111,23 +114,23 @@ def do_train_step(vae_model, batch, global_step, use_amp=False, accumulate_n_bat
     # Update all the parameters (alpha, beta, gamma, lambda, etc.)
     # and perform update step for constraint optimisers
     # No gradient accumulation do this update every train step
-    for loss_term, manager in loss_term_manager.manager.items():
+    for loss_term, m in manager.items():
 
         # If parameter scheduler, perform step (to update the parameter value)
         if isinstance(manager, ParameterScheduler):
-            manager.step()
+            m.step()
 
         # If a constraint optimiser
         elif isinstance(manager, dict):
-            manager["optimiser"].step()
-            manager["optimiser"].zero_grad()
+            m["optimiser"].step()
+            m["optimiser"].zero_grad()
 
     # Detach now (this is not divided by args.accumulate_n_batches_grad)
     # but since we are not summing I think that's fine
     losses['total_loss'] = losses['total_loss'].item()
     losses["LR"] = utils_train.get_lr(lr_scheduler)
 
-    return vae_model, losses
+    return loss_term_manager, losses
 
 
 def train(device_rank, config, run_name):
@@ -162,49 +165,26 @@ def train(device_rank, config, run_name):
                                                               device_name=device_name, world_master=world_master,
                                                               gpu_rank=device_rank)
 
-    # Get model
+    # Get model and loss term manager
     dataset_size = data.datasets['train'].shape[0]
-    vae_model = vae.get_model_on_device(config=config, dataset_size=dataset_size, device_name=device_name,
-                                        world_master=world_master)
+    loss_term_manager = vae.get_loss_term_manager_with_model(config, world_master=world_master,
+                                                             dataset_size=dataset_size, device_name=device_name)
 
     # Initialise logging
     if config.logging and world_master:
-        utils_train.init_logging(vae_model, run_name, config.code_dir_path, config.wandb_project, config)
+        utils_train.init_logging(loss_term_manager.vae_model, run_name, config.code_dir_path,
+                                 config.wandb_project, config)
 
     # Set-up DDP
     if config.ddp:
-        pg1 = torch.distributed.new_group(list(range(world_size)))
-        vae_model = torch.nn.parallel.DistributedDataParallel(vae_model, device_ids=[device_rank],
-                                                              find_unused_parameters=True, process_group=pg1)
-
-        for n, _ in vae_model.named_parameters():
-            print(n)
-
-        if config.objective == "beta-vae":
-            print("HEY HEY")
-            pg2 = torch.distributed.new_group(list(range(world_size)))
-            if config.b_vae_beta_constant_linear_lagrangian == "lagrangian":
-                vae_model.module.loss_term_manager.manager["beta_KL"]["constraint"] = torch.nn.parallel.DistributedDataParallel(
-                    vae_model.module.loss_term_manager.manager["beta_KL"]["constraint"], device_ids=[device_rank],
-                    find_unused_parameters=True, process_group=pg2)
-
-        if config.objective == "beta-tc-vae":
-            if config.b_tc_vae_alpha_constant_linear_lagrangian == "lagrangian":
-                vae_model.module.loss_term_manager.manager["alpha_MI"][
-                    "constraint"] = torch.nn.parallel.DistributedDataParallel(
-                    vae_model.module.loss_term_manager.manager["alpha_MI"]["constraint"], device_ids=[device_rank],
-                    find_unused_parameters=True)
-
-            if config.b_tc_vae_gamma_constant_linear_lagrangian == "lagrangian":
-                vae_model.module.loss_term_manager.manager["gamma_DimKL"][
-                    "constraint"] = torch.nn.parallel.DistributedDataParallel(
-                    vae_model.module.loss_term_manager.manager["gamma_DimKL"]["constraint"], device_ids=[device_rank],
-                    find_unused_parameters=True)
+        loss_term_manager = torch.nn.parallel.DistributedDataParallel(loss_term_manager,
+                                                                      device_ids=[device_rank],
+                                                                      find_unused_parameters=True)
 
         print(f"-> Turned on DDP for device rank {device_rank}")
 
     # Zero grads
-    vae_model.zero_grad()
+    loss_term_manager.zero_grad()
 
     # Initialise the stats to keep track of
     stats = utils_train.make_nested_dict()
@@ -250,15 +230,17 @@ def train(device_rank, config, run_name):
 
                 # PERFORM TRAIN / VALIDATION STEP
                 if phase == 'train':
-                    vae_model, losses = do_train_step(
-                        vae_model, batch, global_step,
+                    loss_term_manager, losses = do_train_step(
+                        loss_term_manager,
+                        batch, global_step,
                         use_amp=config.use_amp,
                         accumulate_n_batches_grad=config.accumulate_n_batches_grad,
                         device_name=device_name,
                         gradient_clipping=config.gradient_clipping,
                         ddp=config.ddp)
                 else:
-                    losses = do_valid_step(vae_model, batch, device_name=device_name)
+                    losses = do_valid_step(loss_term_manager, batch,
+                                           device_name=device_name)
 
                 # ----------------------------------------------------------------------------------------------------
                 # INSERT STATISTICS, PRINT, LOG, CHECKPOINT
@@ -280,7 +262,7 @@ def train(device_rank, config, run_name):
                 # CHECKPOINT
                 if (global_step % config.checkpoint_every_n_steps == 0) and phase == 'train' \
                         and config.checkpoint and device_rank == 0:
-                    utils_train.save_checkpoint_model(vae_model, run_name, config.code_dir_path, global_step,
+                    utils_train.save_checkpoint_model(loss_term_manager.vae_model, run_name, config.code_dir_path, global_step,
                                                       best_valid_loss, epoch, config, best=False)
 
                 # ----------------------------------------------------------------------------------------------------
@@ -307,7 +289,7 @@ def train(device_rank, config, run_name):
                 if config.checkpoint and mean_valid_loss < best_valid_loss:
                     print(f"Found better (mean) validation loss (at this device): "
                           f"{mean_valid_loss:.4f}. Saving checkpoint!")
-                    utils_train.save_checkpoint_model(vae_model, run_name, config.code_dir_path, global_step,
+                    utils_train.save_checkpoint_model(loss_term_manager.vae_model, run_name, config.code_dir_path, global_step,
                                                       best_valid_loss, epoch, config, best=True)
                     best_valid_loss = mean_valid_loss
             # TODO: evaluation loop

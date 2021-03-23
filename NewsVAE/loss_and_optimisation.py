@@ -220,25 +220,26 @@ def approximate_log_q_z(mu, logvar, latent_z, method="chen", dataset_size=42068,
     return log_q_z.mean(), log_q_z_prod_marg.mean()
 
 
-class LossTermManager:
+class LossTermManager(torch.nn.Module):
     """
-    This class manages the loss function by keeping track of:
-        - optimisers
-        - lr schedulers
-        - constraints & constraint optimisers
-        - parameters and their schedules
+        This class manages the loss function by keeping track of:
+            - optimisers
+            - lr schedulers
+            - constraints & constraint optimisers
+            - parameters and their schedules
 
-    and can assemble the total loss (on which the VAE parameters bases its updates) according
-    to the objective that is set.
-    """
+        and can assemble the total loss (on which the VAE parameters bases its updates) according
+        to the objective that is set.
+        """
+    def __init__(self, vae_model, config):
+        super(LossTermManager, self).__init__()
 
-    def __init__(self, parameters, config):
-
+        self.vae_model = vae_model
         self.objective = config.objective
         self.ddp = config.ddp
 
         # TOTAL LOSS
-        self.total_loss_optimiser = torch.optim.AdamW(parameters, lr=config.lr)
+        self.total_loss_optimiser = torch.optim.AdamW(vae_model.parameters(), lr=config.lr)
         self.total_loss_scheduler = get_scheduler(self.total_loss_optimiser,
                                                   warmup_updates=config.lr_warmup_updates,
                                                   lr_scheduler=config.lr_scheduler,
@@ -264,6 +265,7 @@ class LossTermManager:
                     decrease_increase="increase",
                     value=config.b_vae_beta,
                     name="beta")
+
             elif config.b_vae_beta_constant_linear_lagrangian == "lagrangian":
                 target_kl = config.b_vae_kl_lagrangian_target_pd * config.latent_size
                 constraint = Constraint(target_kl, "ge", alpha=config.b_vae_kl_lagrangian_alpha)
@@ -291,10 +293,8 @@ class LossTermManager:
                     warmup_len_grad_steps=0,
                     value=config.b_tc_vae_alpha,
                     name="alpha")
+
             elif config.b_tc_vae_alpha_constant_linear_lagrangian == "lagrangian":
-                print("*" * 100)
-                print("TEST!")
-                print("*" * 100)
                 constraint = Constraint(config.b_tc_vae_MI_lagrangian_target,
                                         config.b_tc_vae_MI_lagrangian_relation,
                                         alpha=config.b_tc_vae_MI_lagrangian_alpha)
@@ -350,6 +350,31 @@ class LossTermManager:
                     f"{config.latent_size} = {target}, with relation 'ge' and alpha = {config.b_tc_vae_Dim_KL_lagrangian_alpha}"
                     f"and lr = {config.b_tc_vae_Dim_KL_lagrangian_lr}")
 
+    def forward(self, input_ids, attention_mask, return_exact_match=False, return_reconstruction_loss=True,
+                return_posterior_stats=True, device_name="cuda:0", return_cross_entropy=False,  reduce_seq_dim_ce="mean",
+                reduce_batch_dim_ce="mean", reduce_seq_dim_exact_match="mean", reduce_batch_dim_exact_match="mean"):
+
+        vae_out = self.vae_model(input_ids=input_ids, attention_mask=attention_mask,
+                                 return_exact_match=return_exact_match,
+                                 reduce_seq_dim_exact_match=reduce_seq_dim_exact_match,
+                                 reduce_batch_dim_exact_match=reduce_batch_dim_exact_match,
+                                 return_mu_logvar=True,
+                                 return_latents=True,
+                                 return_reconstruction_loss=return_reconstruction_loss,
+                                 return_posterior_stats=return_posterior_stats,
+                                 return_cross_entropy=return_cross_entropy,
+                                 reduce_seq_dim_ce=reduce_seq_dim_ce,
+                                 reduce_batch_dim_ce=reduce_batch_dim_ce,
+                                 device_name=device_name)
+
+        loss_dict = self.assemble_loss(vae_out["reconstruction_loss"], vae_out["mu"], vae_out["logvar"],
+                                       log_p_z=vae_out["log_p_z"],
+                                       log_q_z_x=vae_out["log_q_z_x"],
+                                       log_q_z=vae_out["log_q_z"], log_q_z_prod_marg=vae_out["log_q_z_prod_marg"],
+                                       mmd=None)
+
+        return loss_dict
+
     def assemble_loss(self, reconstruction_loss, mu, logvar,
                       log_p_z=None, log_q_z_x=None,
                       log_q_z=None, log_q_z_prod_marg=None, mmd=None):
@@ -387,10 +412,7 @@ class LossTermManager:
                 beta_kl = beta * kl_loss
             # Lagrangian
             else:
-                if self.ddp:
-                    beta = self.manager["beta_KL"]["constraint"].module.multiplier
-                else:
-                    beta = self.manager["beta_KL"]["constraint"].multiplier
+                beta = self.manager["beta_KL"]["constraint"].multiplier
                 beta_kl = self.manager["beta_KL"]["constraint"](kl_loss)
 
             total_loss = reconstruction_loss + beta_kl
@@ -407,13 +429,7 @@ class LossTermManager:
                 alpha_mi = alpha * mi
             # Lagrangian
             else:
-                if self.ddp:
-                    alpha = self.manager["alpha_MI"]["constraint"].module.multiplier
-                else:
-                    alpha = self.manager["alpha_MI"]["constraint"].multiplier
-
-                print(alpha.device)
-                print(mi.device)
+                alpha = self.manager["alpha_MI"]["constraint"].multiplier
 
                 alpha_mi = self.manager["alpha_MI"]["constraint"](mi)
 
@@ -429,10 +445,7 @@ class LossTermManager:
                 gamma_dim_kl = gamma * dim_kl
             # Lagrangian
             else:
-                if self.ddp:
-                    gamma = self.manager["gamma_DimKL"]["constraint"].module.multiplier
-                else:
-                    gamma = self.manager["gamma_DimKL"]["constraint"].multiplier
+                gamma = self.manager["gamma_DimKL"]["constraint"].multiplier
                 gamma_dim_kl = self.manager["gamma_DimKL"]["constraint"](dim_kl)
 
             marginal_kl = log_q_z - log_p_z
@@ -463,7 +476,7 @@ class LossTermManager:
         loss_dict["elbo"] = elbo.item()
         loss_dict["kl_analytical"] = kl_analytical.item()
         loss_dict["fb_kl_analytical"] = fb_kl_analytical.item()
-        loss_dict["reconstruction_loss"] = reconstruction_loss.item(),
+        loss_dict["reconstruction_loss"] = reconstruction_loss.item()
 
         return loss_dict
 

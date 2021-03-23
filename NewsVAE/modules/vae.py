@@ -34,9 +34,6 @@ class NewsVAE(torch.nn.Module):
             print("Tying embedding spaces!")
             self.tie_all_embeddings()
 
-        if self.objective != "evaluation":
-            self.loss_term_manager = LossTermManager(parameters=self.parameters(), config=config)
-
     def tie_all_embeddings(self):
         """
         This function ties all embedding matrices: input encoder, input decoder, output decoder.
@@ -90,6 +87,7 @@ class NewsVAE(torch.nn.Module):
 
                 return_text_predictions=False,
                 tokenizer=None,
+                loss_term_manager=None,
 
                 return_posterior_stats=True,
 
@@ -183,32 +181,24 @@ class NewsVAE(torch.nn.Module):
         #     dec_out["text_predictions"] = tokenizer_batch_decode(dec_out["predictions"], tokenizer)
 
         ########################
-        # TOTAL TRAIN LOSS     #
+        # TOTAL TRAIN LOSS     # <- not anymore
         ########################
 
-        loss_dict = self.loss_term_manager.assemble_loss(reconstruction_loss=dec_out["reconstruction_loss"],
-                                                         mu=enc_out["mu"],
-                                                         logvar=enc_out["logvar"],
-                                                         log_p_z=enc_out["log_p_z"],
-                                                         log_q_z_x=enc_out["log_q_z_x"],
-                                                         # mmd=enc_out["mmd"],
-                                                         mmd=None,
-                                                         log_q_z_prod_marg=enc_out["log_q_z_prod_marg"],
-                                                         log_q_z=enc_out["log_q_z"])
+        loss_dict = dict()
 
         # Detach all except the total loss on which we need to base our backward pass
-        loss_dict["log_q_z"] = enc_out["log_q_z"].item()
-        loss_dict["loq_p_z"] = enc_out["log_p_z"].item()
-        loss_dict["log_q_z_x"] = enc_out["log_q_z_x"].item()
-        loss_dict["log_q_z_prod_marg"] = enc_out["log_q_z_prod_marg"].item()
+        loss_dict["log_q_z"] = enc_out["log_q_z"] #.item()
+        loss_dict["log_p_z"] = enc_out["log_p_z"] #.item()
+        loss_dict["log_q_z_x"] = enc_out["log_q_z_x"] #.item()
+        loss_dict["log_q_z_prod_marg"] = enc_out["log_q_z_prod_marg"] #.item()
         loss_dict["ce_per_word"] = dec_out["cross_entropy_per_word"].item() if return_cross_entropy and auto_regressive is False else None
 
         if return_latents:
-            loss_dict["latents"] = enc_out["latent_z"].detach()
+            loss_dict["latents"] = enc_out["latent_z"] #.detach()
 
         if return_mu_logvar:
-            loss_dict["mu"] = enc_out["mu"].detach()
-            loss_dict["logvar"] = enc_out["logvar"].detach()
+            loss_dict["mu"] = enc_out["mu"] #.detach()
+            loss_dict["logvar"] = enc_out["logvar"] #.detach()
 
         if return_posterior_stats and enc_out["mu"] is not None:
             mu, var = enc_out["mu"], enc_out["logvar"].exp()
@@ -227,9 +217,9 @@ class NewsVAE(torch.nn.Module):
         vae_outputs = {**loss_dict, **dec_out}
 
         # Detach everything except for non-tensors and total loss
-        for k, v in vae_outputs.items():
-            if torch.is_tensor(v) and k != "total_loss":
-                vae_outputs[k] = v.detach()
+        # for k, v in vae_outputs.items():
+        #     if torch.is_tensor(v) and k != "total_loss":
+        #         vae_outputs[k] = v.detach()
 
         # Delete all that is None
         key_list = list(vae_outputs.keys())
@@ -275,6 +265,30 @@ class NewsVAE(torch.nn.Module):
         return EncoderNewsVAE.sample_from_prior(latent_size=latent_size, n_samples=n_samples, device_name=device_name)
 
 
+def get_loss_term_manager_with_model(config, world_master=True,
+                                     dataset_size=42068, device_name="cuda:0"):
+    # Get model
+    vae_model = get_model_on_device(config, dataset_size=dataset_size,
+                                    device_name=device_name, world_master=world_master)
+
+    # Init loss term manager
+    loss_term_manager = LossTermManager(vae_model, config=config)
+    if config.objective == "beta-vae":
+        if config.b_vae_beta_constant_linear_lagrangian == "lagrangian":
+            loss_term_manager.manager["beta_KL"]["constraint"] = \
+                loss_term_manager.manager["beta_KL"]["constraint"].to(device_name)
+
+    if config.objective == "beta-tc-vae":
+        if config.b_tc_vae_alpha_constant_linear_lagrangian == "lagrangian":
+            loss_term_manager.manager["alpha_MI"]["constraint"] = \
+                loss_term_manager.manager["alpha_MI"]["constraint"].to(device_name)
+
+        if config.b_tc_vae_gamma_constant_linear_lagrangian == "lagrangian":
+            loss_term_manager.manager["gamma_DimKL"]["constraint"] = \
+                loss_term_manager.manager["gamma_DimKL"]["constraint"].to(device_name)
+
+    return loss_term_manager
+
 def get_model_on_device(config, dataset_size=42068, device_name="cuda:0", world_master=True):
     """
     Load a fresh VAE model on correct device.
@@ -296,17 +310,6 @@ def get_model_on_device(config, dataset_size=42068, device_name="cuda:0", world_
     vae_model = NewsVAE(encoder, decoder, dataset_size, config)
 
     vae_model = vae_model.to(device_name)
-
-    if config.objective == "beta-vae":
-        if config.b_vae_beta_constant_linear_lagrangian == "lagrangian":
-            vae_model.loss_term_manager.manager["beta_KL"]["constraint"] = vae_model.loss_term_manager.manager["beta_KL"]["constraint"].to(device_name)
-
-    if config.objective == "beta-tc-vae":
-        if config.b_tc_vae_alpha_constant_linear_lagrangian == "lagrangian":
-            vae_model.loss_term_manager.manager["alpha_MI"]["constraint"] = vae_model.loss_term_manager.manager["alpha_MI"]["constraint"].to(device_name)
-
-        if config.b_tc_vae_gamma_constant_linear_lagrangian == "lagrangian":
-            vae_model.loss_term_manager.manager["gamma_DimKL"]["constraint"] = vae_model.loss_term_manager.manager["gamma_DimKL"]["constraint"].to(device_name)
 
     if world_master: print("Done loading model...")
 
