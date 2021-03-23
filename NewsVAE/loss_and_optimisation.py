@@ -9,20 +9,6 @@ import math
 def kl_divergence(mu, logvar, hinge_kl_loss_lambda=0.5, average_batch=True, sum_latent=True):
     """
     Calculates the KL-divergence between the posterior and the prior analytically.
-
-    Arguments:
-        mu: Tensor [batch, latent_size]
-            Mean of the posteriors that resulted from encoding.
-        logvar: Tensor [batch, latent_size]
-            Log variance of the posteriors that resulted from encoding.
-        hing_kl_loss_lambda: float
-            At what value to cap the KL-divergence, ie. KL will not be lower
-            than this value (not reaching 0).
-    Returns:
-        kl_loss: Tensor [batch]
-            The KL-divergence for all samples in the batch.
-        hing_kl_loss: Tensor [batch]
-            The KL-divergence for all samples greater than <hinge_kl_loss_lambda>
     """
     kl_loss = 0.5 * (mu.pow(2) + logvar.exp() - logvar - 1)
 
@@ -72,10 +58,6 @@ def gaussian_kernel(x, y):
     """
     Gaussian kernel
     Taken from: https://github.com/aktersnurra/information-maximizing-variational-autoencoders/blob/master/model/loss_functions/mmd_loss.py
-
-    :param x:
-    :param y:
-    :return:
     """
     x_size = x.size(0)
     y_size = y.size(0)

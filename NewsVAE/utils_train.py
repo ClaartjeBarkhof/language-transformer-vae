@@ -590,15 +590,15 @@ def print_stats(stats, epoch, phase, global_step, max_global_train_steps,
     for s, v in stat_dict.items():
         if s not in ["alpha_MI", "beta_TC", "gamma_dim_KL", "alpha", "beta",
                      "gamma", "beta_KL", "KL", "TC", "MI", "dim_KL"]:
-            print(s)
             print_string += " | {}: {:8.2f}".format(s, v[-1])
+
     # Beta-VAE
     if "beta_KL" in stat_dict:
-        print(stat_dict['beta'][-1], stat_dict['KL'][-1], stat_dict['beta_KL'][-1])
-        print_string += f"\n--> BETA-VAE | beta {stat_dict['beta'][-1]:.2f} x KL {stat_dict['KL'][-1]:.2f} = {stat_dict['beta_KL'][-1]:.2f}"
+        print_string += f"\n** BETA-VAE | beta {stat_dict['beta'][-1]:.2f} x KL {stat_dict['KL'][-1]:.2f} = {stat_dict['beta_KL'][-1]:.2f}"
+
     # Beta-TC-VAE
     elif "alpha_MI" in stat_dict:
-        print_string += f"\n--> BETA-TC-VAE | alpha {stat_dict['alpha'][-1]:.2f} x MI {stat_dict['MI'][-1]:.2f} = {stat_dict['alpha_MI'][-1]:.2f}"
+        print_string += f"\n** BETA-TC-VAE | alpha {stat_dict['alpha'][-1]:.2f} x MI {stat_dict['MI'][-1]:.2f} = {stat_dict['alpha_MI'][-1]:.2f}"
         print_string += f" | beta {stat_dict['beta'][-1]:.2f} x TC {stat_dict['TC'][-1]:.2f} = {stat_dict['beta_TC'][-1]:.2f}"
         print_string += f" | gamma {stat_dict['gamma'][-1]:.2f} x Dim. KL {stat_dict['dim_KL'][-1]:.2f} = {stat_dict['gamma_dim_KL'][-1]:.2f}"
 

@@ -10,11 +10,14 @@ from loss_and_optimisation import ParameterScheduler, LossTermManager
 import numpy as np
 
 
-def do_valid_step(loss_term_manager, batch, device_name="cuda:0"):
+def do_valid_step(loss_term_manager, batch, device_name="cuda:0", ddp=False):
     """
     Perform a validation step.
     """
-    loss_term_manager.vae_model.eval()
+    if ddp:
+        loss_term_manager.module.vae_model.eval()
+    else:
+        loss_term_manager.vae_model.eval()
 
     with torch.set_grad_enabled(False):
         vae_outputs = loss_term_manager(input_ids=batch['input_ids'],
@@ -66,7 +69,7 @@ def do_train_step(loss_term_manager, batch, global_step, use_amp=False, accumula
 
     # FORWARD
     with torch.set_grad_enabled(True):
-        with autocast(enabled=use_amp):  # TODO: not sure whether this works with constraint optimisation
+        with autocast(enabled=False):   # TODO: fix autocast
             # Forward through model happens within loss_term_manager
             losses = loss_term_manager(input_ids=batch['input_ids'],
                                        attention_mask=batch['attention_mask'],
@@ -81,7 +84,8 @@ def do_train_step(loss_term_manager, batch, global_step, use_amp=False, accumula
     # https://pytorch.org/docs/stable/notes/amp_examples.html#gradient-clipping
 
     # Gradient accumulate in here (scaled by
-    scaler.scale(loss).backward()
+    #scaler.scale(loss).backward()
+    loss.backward()
 
     # If gradient accumulated long enough: set a step
     if (global_step + 1) % accumulate_n_batches_grad == 0:
@@ -89,16 +93,17 @@ def do_train_step(loss_term_manager, batch, global_step, use_amp=False, accumula
         # GRADIENT CLIPPING
         if gradient_clipping:
             # Unscales the gradients of optimizer's assigned params in-place
-            scaler.unscale_(total_loss_optim)
+            # scaler.unscale_(total_loss_optim)
 
             # Since the gradients of optimizer's assigned params are unscaled, clips as usual:
             torch.nn.utils.clip_grad_norm_(vae_model.parameters(), 1.0)
 
         # OPTIMISER STEP (first unscaled)
-        scaler.step(total_loss_optim)
+        # scaler.step(total_loss_optim)
+        total_loss_optim.step()
 
         # AMP SCALER UPDATE
-        scaler.update()
+        #scaler.update()
 
         # Zero the gradients only here
         total_loss_optim.zero_grad()
@@ -122,6 +127,7 @@ def do_train_step(loss_term_manager, batch, global_step, use_amp=False, accumula
 
         # If a constraint optimiser
         elif isinstance(manager, dict):
+            #scaler.step(m["optimiser"])
             m["optimiser"].step()
             m["optimiser"].zero_grad()
 
@@ -177,10 +183,11 @@ def train(device_rank, config, run_name):
 
     # Set-up DDP
     if config.ddp:
+        # Wrap both the model and constraints etc in a loss_term_manager nn.Module as suggested here:
+        # https://discuss.pytorch.org/t/multiple-modules-with-distributed-data-parallel/115621
         loss_term_manager = torch.nn.parallel.DistributedDataParallel(loss_term_manager,
                                                                       device_ids=[device_rank],
                                                                       find_unused_parameters=True)
-
         print(f"-> Turned on DDP for device rank {device_rank}")
 
     # Zero grads
@@ -208,25 +215,19 @@ def train(device_rank, config, run_name):
 
             if finished_training: break
 
-            print("test before set_epoch")
             if config.ddp:
                 print(f"-> Setting epoch explicitly to {epoch} on device {device_name}")
                 samplers[phase].set_epoch(epoch)  # needed to explicitly shuffle
 
-            print("test before set_epoch")
-
             max_steps = max_train_steps_epoch_per_rank if phase == 'train' else max_valid_steps_epoch_per_rank
 
             for batch_i, batch in enumerate(data_loaders[phase]):
-                print("test batch i", batch_i)
                 # ----------------------------------------------------------------------------------------------------
                 # TRAIN / VALIDATION STEPS
                 # ----------------------------------------------------------------------------------------------------
 
                 # SET DEVICE
                 batch = utils_train.transfer_batch_to_device(batch, device_name)
-
-                print("shapes input", batch["input_ids"].shape, batch["attention_mask"].shape)
 
                 # PERFORM TRAIN / VALIDATION STEP
                 if phase == 'train':
@@ -240,7 +241,7 @@ def train(device_rank, config, run_name):
                         ddp=config.ddp)
                 else:
                     losses = do_valid_step(loss_term_manager, batch,
-                                           device_name=device_name)
+                                           device_name=device_name, ddp=config.ddp)
 
                 # ----------------------------------------------------------------------------------------------------
                 # INSERT STATISTICS, PRINT, LOG, CHECKPOINT
