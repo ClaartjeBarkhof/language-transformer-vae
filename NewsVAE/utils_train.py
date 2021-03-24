@@ -468,6 +468,7 @@ def log_stats_epoch(stats, epoch, global_step, global_grad_step):
     logs['epoch'] = epoch
     logs['global step'] = global_step
     logs['global grad step'] = global_grad_step
+    logs["custom_step"] = global_grad_step
     wandb.log(logs)
 
 
@@ -590,7 +591,11 @@ def print_stats(stats, epoch, phase, global_step, max_global_train_steps,
     for s, v in stat_dict.items():
         if s not in ["alpha_MI", "beta_TC", "gamma_dim_KL", "alpha", "beta",
                      "gamma", "beta_KL", "KL", "TC", "MI", "dim_KL"]:
-            print_string += " | {}: {:8.2f}".format(s, v[-1])
+            if s != "LR":
+                print_string += " | {}: {:8.2f}".format(s, v[-1])
+            else:
+                print_string += " | {}: {:8.8f}".format(s, v[-1])
+
 
     # Beta-VAE
     if "beta_KL" in stat_dict:

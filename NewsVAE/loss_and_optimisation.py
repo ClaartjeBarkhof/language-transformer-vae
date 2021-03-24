@@ -221,7 +221,8 @@ class LossTermManager(torch.nn.Module):
         self.ddp = config.ddp
 
         # TOTAL LOSS
-        self.total_loss_optimiser = torch.optim.AdamW(vae_model.parameters(), lr=config.lr)
+        # scheduler will take care of the actual LR
+        self.total_loss_optimiser = torch.optim.AdamW(vae_model.parameters(), lr=1.0)
         self.total_loss_scheduler = get_scheduler(self.total_loss_optimiser,
                                                   warmup_updates=config.lr_warmup_updates,
                                                   lr_scheduler=config.lr_scheduler,
@@ -234,7 +235,7 @@ class LossTermManager(torch.nn.Module):
         # Automatic Mixed Precision scaler
         self.scaler = GradScaler(enabled=config.use_amp)
 
-        if self.objective == "beta-vae":
+        if self.objective == "beta-vae" or self.objective == "free-bits-beta-vae":
             # beta * KL term
             if config.b_vae_beta_constant_linear_lagrangian in ["constant", "linear"]:
                 print(f"Setting parameter schedule for beta-vae KL term, schedule: "
@@ -341,7 +342,7 @@ class LossTermManager(torch.nn.Module):
                                  reduce_seq_dim_exact_match=reduce_seq_dim_exact_match,
                                  reduce_batch_dim_exact_match=reduce_batch_dim_exact_match,
                                  return_mu_logvar=True,
-                                 return_latents=True,
+                                 return_latents=False,
                                  return_reconstruction_loss=return_reconstruction_loss,
                                  return_posterior_stats=return_posterior_stats,
                                  return_cross_entropy=return_cross_entropy,
@@ -352,10 +353,16 @@ class LossTermManager(torch.nn.Module):
         loss_dict = self.assemble_loss(vae_out["reconstruction_loss"], vae_out["mu"], vae_out["logvar"],
                                        log_p_z=vae_out["log_p_z"],
                                        log_q_z_x=vae_out["log_q_z_x"],
-                                       log_q_z=vae_out["log_q_z"], log_q_z_prod_marg=vae_out["log_q_z_prod_marg"],
+                                       log_q_z=vae_out["log_q_z"],
+                                       log_q_z_prod_marg=vae_out["log_q_z_prod_marg"],
                                        mmd=None)
 
-        return loss_dict
+        del vae_out["mu"]
+        del vae_out["logvar"]
+
+        return_dict = {**vae_out, **loss_dict}
+
+        return return_dict
 
     def assemble_loss(self, reconstruction_loss, mu, logvar,
                       log_p_z=None, log_q_z_x=None,
@@ -369,6 +376,8 @@ class LossTermManager(torch.nn.Module):
         # Non-analytical KL computation
         # kl_loss = log_q_z_x - log_p_z
         elbo = - (reconstruction_loss + kl_analytical)
+
+
 
         loss_dict = dict()
 
@@ -388,19 +397,46 @@ class LossTermManager(torch.nn.Module):
             else:
                 kl_loss = kl_analytical
 
+            beta_kl, lagrange_loss, multiplier, beta = None, None, None, None
             # Parameter schedule
             if isinstance(self.manager["beta_KL"], ParameterScheduler):
                 beta = self.manager["beta_KL"].current_val
                 beta_kl = beta * kl_loss
+                total_loss = reconstruction_loss + beta_kl
+
             # Lagrangian
             else:
-                beta = self.manager["beta_KL"]["constraint"].multiplier
-                beta_kl = self.manager["beta_KL"]["constraint"](kl_loss)
+                multiplier = self.manager["beta_KL"]["constraint"].multiplier
+                lagrange_loss = self.manager["beta_KL"]["constraint"](kl_loss)
+                total_loss = (reconstruction_loss + kl_loss) + lagrange_loss
 
-            total_loss = reconstruction_loss + beta_kl
-            loss_dict["beta"] = beta.item() if torch.is_tensor(beta) else beta
-            loss_dict["beta_KL"] = beta_kl.item() if torch.is_tensor(beta_kl) else beta_kl
-            loss_dict["KL"] = kl_loss.item()
+            if multiplier is not None and lagrange_loss is not None:
+                loss_dict["multiplier"] = multiplier.item() if torch.is_tensor(multiplier) else multiplier
+                loss_dict["lagrange_loss"] = lagrange_loss.item() if torch.is_tensor(lagrange_loss) else lagrange_loss
+
+            elif beta_kl is not None and beta is not None:
+                loss_dict["KL"] = kl_loss.item() if torch.is_tensor(kl_loss) else kl_loss
+                loss_dict["beta_KL"] = beta_kl.item() if torch.is_tensor(beta_kl) else beta_kl
+                loss_dict["beta"] = beta.item() if torch.is_tensor(beta) else beta
+
+            """
+            from the example notebook:
+            https://github.com/EelcovdW/pytorch-constrained-opt/blob/master/VAE%20Example.ipynb
+            # Loss
+            elbo = ll - kl
+            loss = (-elbo + kl_constraint(kl)).mean()
+            """
+
+            # print("total_loss", total_loss)
+            # print("reconstruction_loss", reconstruction_loss)
+            # print("beta_kl", beta_kl)
+            # print("total_loss requires_grad", total_loss.requires_grad)
+            # print("reconstruction_loss.requires_grad", reconstruction_loss.requires_grad)
+            # print("beta_kl.requires_grad", beta_kl.requires_grad)
+
+            # loss_dict["beta"] = beta.item() if torch.is_tensor(beta) else beta
+            # loss_dict["beta_KL"] = beta_kl.item() if torch.is_tensor(beta_kl) else beta_kl
+            # loss_dict["KL"] = kl_loss.item()
 
         # Beta-TC-VAE
         elif self.objective == "beta-tc-vae":

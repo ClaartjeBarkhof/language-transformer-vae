@@ -73,7 +73,10 @@ def do_train_step(loss_term_manager, batch, global_step, use_amp=False, accumula
             # Forward through model happens within loss_term_manager
             losses = loss_term_manager(input_ids=batch['input_ids'],
                                        attention_mask=batch['attention_mask'],
-                                       return_exact_match=False,
+                                       return_exact_match=True,
+                                       return_cross_entropy=True,  # ce per word
+                                       reduce_seq_dim_ce="mean",
+                                       reduce_batch_dim_ce="mean",
                                        return_reconstruction_loss=True,
                                        return_posterior_stats=True,
                                        device_name=device_name)
@@ -122,12 +125,12 @@ def do_train_step(loss_term_manager, batch, global_step, use_amp=False, accumula
     for loss_term, m in manager.items():
 
         # If parameter scheduler, perform step (to update the parameter value)
-        if isinstance(manager, ParameterScheduler):
+        if isinstance(m, ParameterScheduler):
             m.step()
 
         # If a constraint optimiser
-        elif isinstance(manager, dict):
-            #scaler.step(m["optimiser"])
+        elif isinstance(m, dict):
+            # scaler.step(m["optimiser"])
             m["optimiser"].step()
             m["optimiser"].zero_grad()
 
@@ -190,8 +193,8 @@ def train(device_rank, config, run_name):
                                                                       find_unused_parameters=True)
         print(f"-> Turned on DDP for device rank {device_rank}")
 
-    # Zero grads
-    loss_term_manager.zero_grad()
+    # Zero grads TODO: fix this
+    # loss_term_manager.zero_grad()
 
     # Initialise the stats to keep track of
     stats = utils_train.make_nested_dict()
@@ -263,7 +266,8 @@ def train(device_rank, config, run_name):
                 # CHECKPOINT
                 if (global_step % config.checkpoint_every_n_steps == 0) and phase == 'train' \
                         and config.checkpoint and device_rank == 0:
-                    utils_train.save_checkpoint_model(loss_term_manager.vae_model, run_name, config.code_dir_path, global_step,
+                    vae_model = loss_term_manager.vae_model if config.ddp is False else loss_term_manager.module.vae_model
+                    utils_train.save_checkpoint_model(vae_model, run_name, config.code_dir_path, global_step,
                                                       best_valid_loss, epoch, config, best=False)
 
                 # ----------------------------------------------------------------------------------------------------
@@ -290,7 +294,8 @@ def train(device_rank, config, run_name):
                 if config.checkpoint and mean_valid_loss < best_valid_loss:
                     print(f"Found better (mean) validation loss (at this device): "
                           f"{mean_valid_loss:.4f}. Saving checkpoint!")
-                    utils_train.save_checkpoint_model(loss_term_manager.vae_model, run_name, config.code_dir_path, global_step,
+                    vae_model = loss_term_manager.vae_model if config.ddp is False else loss_term_manager.module.vae_model
+                    utils_train.save_checkpoint_model(vae_model, run_name, config.code_dir_path, global_step,
                                                       best_valid_loss, epoch, config, best=True)
                     best_valid_loss = mean_valid_loss
             # TODO: evaluation loop

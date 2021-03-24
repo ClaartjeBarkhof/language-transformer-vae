@@ -116,9 +116,10 @@ def batch_log_x_gen_vs_log_x_obs(vae_model, batch, n_samples, latent_size, batch
     post_samples, post_log_p_z, post_log_q_z_x = enc_out["latent_z"], \
                                                  enc_out["log_p_z"], enc_out["log_q_z_x"]
 
-    # [n_samples, latent_dim]
+    # [n_samples * batch_size, latent_dim]
     prior_samples = vae_model.sample_from_prior(latent_size=latent_size, n_samples=n_samples * batch_size,
                                                 device_name=device_name)
+    # [batch_size, n_samples, latent_dim]
     prior_samples = prior_samples.reshape(batch_size, n_samples, -1)
     prior_log_p_z = sample_log_likelihood(prior_samples, reduce_batch_dim=False, reduce_latent_dim=True)
 
@@ -130,9 +131,11 @@ def batch_log_x_gen_vs_log_x_obs(vae_model, batch, n_samples, latent_size, batch
     for sample_i in range(batch_size):
         print(f"sample i: {sample_i:3d}")
 
+        # [n_samples, latent_dim]
         post_samples_i = post_samples[sample_i, :, :]
         prior_samples_i = prior_samples[sample_i, :, :]
 
+        # list of [samples_per_chunk, latent_dim]
         post_samples_i_chunked = list(torch.chunk(post_samples_i, n_chunks, dim=0))
         prior_samples_i_chunked = list(torch.chunk(prior_samples_i, n_chunks, dim=0))
 
@@ -144,12 +147,14 @@ def batch_log_x_gen_vs_log_x_obs(vae_model, batch, n_samples, latent_size, batch
                                                                   device_name=device_name)
             post_log_p_x_z.append(post_preds_log_probs)
 
+    # From one big tensor of shape [n_samples * batch_size] to [batch_size, n_samples]
     post_log_p_x_z = torch.cat(post_log_p_x_z).reshape(batch_size, n_samples)
     prior_log_p_x_z = torch.cat(prior_log_p_x_z).reshape(batch_size, n_samples)
 
     post_frac = post_log_p_x_z.cpu() + post_log_p_z.cpu() - post_log_q_z_x.cpu()
     prior_frac = prior_log_p_z.cpu() + prior_log_p_x_z.cpu()
 
+    # Reduce the sample dimension with logsumexp, leaves shape [batch_size]
     post_likelihood = torch.logsumexp(post_frac, dim=-1) - np.log(n_samples)
     prior_likelihood = torch.logsumexp(prior_frac, dim=-1) - np.log(n_samples)
 
@@ -159,6 +164,7 @@ def batch_log_x_gen_vs_log_x_obs(vae_model, batch, n_samples, latent_size, batch
 def evaluation_function(device_rank, run_name, model_path, max_batches, max_seq_len, with_grad,
                         result_dir_path, batch_size, dataset_name, n_samples, n_chunks,
                         world_size, num_workers):
+
     # Prepare some variables & result directory
     device_name = f"cuda:{device_rank}"
     latent_size = 32 if "latent32" in model_path else 64
@@ -187,8 +193,9 @@ def evaluation_function(device_rank, run_name, model_path, max_batches, max_seq_
 
         # Get model
         #vae_model = #(path=model_path, device_name=device_name)
-        vae_model = load_from_checkpoint(path=model_path, device_name=device_name, latent_size=latent_size, do_tie_embedding_spaces=True,
-                                         add_decoder_output_embedding_bias=False, do_tie_weights=True, add_latent_via_embeddings=False,
+        vae_model = load_from_checkpoint(path=model_path, device_name=device_name, latent_size=latent_size,
+                                         do_tie_embedding_spaces=True,  add_decoder_output_embedding_bias=False,
+                                         do_tie_weights=True, add_latent_via_embeddings=False,
                                          add_latent_via_memory=True, objective="vae", evaluation=True)
         vae_model = vae_model.to(device_name)
 

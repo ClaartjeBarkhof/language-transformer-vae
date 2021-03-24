@@ -6,7 +6,6 @@ from modules.decoder import DecoderNewsVAE
 from modules.encoder import EncoderNewsVAE
 import copy
 
-
 class NewsVAE(torch.nn.Module):
     def __init__(self, encoder, decoder, dataset_size, config):
         super(NewsVAE, self).__init__()
@@ -87,7 +86,6 @@ class NewsVAE(torch.nn.Module):
 
                 return_text_predictions=False,
                 tokenizer=None,
-                loss_term_manager=None,
 
                 return_posterior_stats=True,
 
@@ -176,50 +174,54 @@ class NewsVAE(torch.nn.Module):
                 device_name=device_name
             )
 
-        # Return text predictions
-        # if return_text_predictions and tokenizer is not None:
-        #     dec_out["text_predictions"] = tokenizer_batch_decode(dec_out["predictions"], tokenizer)
-
-        ########################
-        # TOTAL TRAIN LOSS     # <- not anymore
-        ########################
+        # Gather the results of the encoder and decoder forward pass
 
         loss_dict = dict()
 
         # Detach all except the total loss on which we need to base our backward pass
-        loss_dict["log_q_z"] = enc_out["log_q_z"] #.item()
-        loss_dict["log_p_z"] = enc_out["log_p_z"] #.item()
-        loss_dict["log_q_z_x"] = enc_out["log_q_z_x"] #.item()
-        loss_dict["log_q_z_prod_marg"] = enc_out["log_q_z_prod_marg"] #.item()
-        loss_dict["ce_per_word"] = dec_out["cross_entropy_per_word"].item() if return_cross_entropy and auto_regressive is False else None
+        loss_dict["log_q_z"] = enc_out["log_q_z"]
+        loss_dict["log_p_z"] = enc_out["log_p_z"]
+        loss_dict["log_q_z_x"] = enc_out["log_q_z_x"]
+        loss_dict["log_q_z_prod_marg"] = enc_out["log_q_z_prod_marg"]
+        loss_dict["ce_per_word"] = dec_out["cross_entropy_per_word"].item() if return_cross_entropy and (auto_regressive is False) else None
 
         if return_latents:
-            loss_dict["latents"] = enc_out["latent_z"] #.detach()
+            loss_dict["latents"] = enc_out["latent_z"]
 
         if return_mu_logvar:
-            loss_dict["mu"] = enc_out["mu"] #.detach()
-            loss_dict["logvar"] = enc_out["logvar"] #.detach()
+            loss_dict["mu"] = enc_out["mu"]
+            loss_dict["logvar"] = enc_out["logvar"]
+
+        # Return text predictions # TODO: fix this, tokenizer_batch_decode fn is gone
+        # if return_text_predictions and tokenizer is not None:
+        #     dec_out["text_predictions"] = tokenizer_batch_decode(dec_out["predictions"], tokenizer)
 
         if return_posterior_stats and enc_out["mu"] is not None:
-            mu, var = enc_out["mu"], enc_out["logvar"].exp()
-            mean_mu = mu.mean(dim=1).mean(dim=0)
-            var_mu = torch.var(mu, dim=1).mean(dim=0)
+            mu, std = enc_out["mu"], torch.sqrt(enc_out["logvar"].exp())
 
-            mean_var = var.mean(dim=1).mean(dim=0)
-            var_var = torch.var(var, dim=1).mean(dim=0)
+            mean_z_mu = mu.mean(dim=1).mean()
+            std_z_mu = torch.std(mu, dim=1).mean()
 
-            loss_dict["mean_mu"] = mean_mu.item()
-            loss_dict["var_mu"] = var_mu.item()
-            loss_dict["mean_var"] = mean_var.item()
-            loss_dict["var_var"] = var_var.item()
+            mean_z_std = std.mean(dim=1).mean()
+            std_z_std = torch.std(std, dim=1).mean()
+
+            mean_x_mu = mu.mean(dim=0).mean()
+            std_x_mu = torch.std(mu, dim=0).mean()
+
+            mean_x_std = std.mean(dim=0).mean()
+            std_x_std = torch.std(std, dim=0).mean()
+
+            loss_dict["mean_z_mu"] = mean_z_mu.item()
+            loss_dict["std_z_mu"] = std_z_mu.item()
+            loss_dict["mean_z_std"] = mean_z_std.item()
+            loss_dict["std_z_std"] = std_z_std.item()
+            loss_dict["mean_x_mu"] = mean_x_mu.item()
+            loss_dict["std_x_mu"] = std_x_mu.item()
+            loss_dict["mean_x_std"] = mean_x_std.item()
+            loss_dict["std_x_std"] = std_x_std.item()
 
         # Merge all the outputs together
         vae_outputs = {**loss_dict, **dec_out}
-
-        # Detach everything except for non-tensors and total loss
-        # for k, v in vae_outputs.items():
-        #     if torch.is_tensor(v) and k != "total_loss":
-        #         vae_outputs[k] = v.detach()
 
         # Delete all that is None
         key_list = list(vae_outputs.keys())
@@ -271,7 +273,7 @@ def get_loss_term_manager_with_model(config, world_master=True,
     vae_model = get_model_on_device(config, dataset_size=dataset_size,
                                     device_name=device_name, world_master=world_master)
 
-    # Init loss term manager
+    # Init loss term manager and set the device of the constraints
     loss_term_manager = LossTermManager(vae_model, config=config)
     if config.objective == "beta-vae":
         if config.b_vae_beta_constant_linear_lagrangian == "lagrangian":
@@ -289,9 +291,10 @@ def get_loss_term_manager_with_model(config, world_master=True,
 
     return loss_term_manager
 
+
 def get_model_on_device(config, dataset_size=42068, device_name="cuda:0", world_master=True):
     """
-    Load a fresh VAE model on correct device.
+    Load a fresh VAE model on correct device, using the config parameters.
     """
 
     if world_master: print("Loading model...")
