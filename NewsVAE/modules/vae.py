@@ -289,6 +289,15 @@ def get_loss_term_manager_with_model(config, world_master=True,
             loss_term_manager.manager["gamma_DimKL"]["constraint"] = \
                 loss_term_manager.manager["gamma_DimKL"]["constraint"].to(device_name)
 
+    if config.objective == "hoffman":
+        if config.hoffman_vae_alpha_constant_linear_lagrangian == "lagrangian":
+            loss_term_manager.manager["alpha_MI"]["constraint"] = \
+                loss_term_manager.manager["alpha_MI"]["constraint"].to(device_name)
+
+        if config.hoffman_vae_beta_constant_linear_lagrangian == "lagrangian":
+            loss_term_manager.manager["beta_marg_KL"]["constraint"] = \
+                loss_term_manager.manager["beta_marg_KL"]["constraint"].to(device_name)
+
     return loss_term_manager
 
 

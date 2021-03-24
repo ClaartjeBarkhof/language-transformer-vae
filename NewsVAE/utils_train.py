@@ -564,7 +564,7 @@ def get_lr(scheduler):
 
 def print_stats(stats, epoch, phase, global_step, max_global_train_steps,
                 global_grad_step, max_global_grad_train_steps,
-                batch_i, phase_max_steps):
+                batch_i, phase_max_steps, objective="beta-vae"):
     """
     Print statistics to track process.
 
@@ -589,24 +589,34 @@ def print_stats(stats, epoch, phase, global_step, max_global_train_steps,
     print_string += "\n** GENERAL STATS"
     stat_dict = stats[epoch][phase]
     for s, v in stat_dict.items():
-        if s not in ["alpha_MI", "beta_TC", "gamma_dim_KL", "alpha", "beta",
-                     "gamma", "beta_KL", "KL", "TC", "MI", "dim_KL"]:
-            if s != "LR":
+        if s != "LR":
+            print_string += " | {}: {:8.2f}".format(s, v[-1])
+        else:
+            if type(v[-1]) == float:
                 print_string += " | {}: {:8.2f}".format(s, v[-1])
-            else:
-                print_string += " | {}: {:8.8f}".format(s, v[-1])
-
-
-    # Beta-VAE
-    if "beta_KL" in stat_dict:
-        print_string += f"\n** BETA-VAE | beta {stat_dict['beta'][-1]:.2f} x KL {stat_dict['KL'][-1]:.2f} = {stat_dict['beta_KL'][-1]:.2f}"
-
-    # Beta-TC-VAE
-    elif "alpha_MI" in stat_dict:
-        print_string += f"\n** BETA-TC-VAE | alpha {stat_dict['alpha'][-1]:.2f} x MI {stat_dict['MI'][-1]:.2f} = {stat_dict['alpha_MI'][-1]:.2f}"
-        print_string += f" | beta {stat_dict['beta'][-1]:.2f} x TC {stat_dict['TC'][-1]:.2f} = {stat_dict['beta_TC'][-1]:.2f}"
-        print_string += f" | gamma {stat_dict['gamma'][-1]:.2f} x Dim. KL {stat_dict['dim_KL'][-1]:.2f} = {stat_dict['gamma_dim_KL'][-1]:.2f}"
-
+    # for s, v in stat_dict.items():
+    #     if s not in ["alpha_MI", "beta_TC", "gamma_dim_KL", "alpha", "beta",
+    #                  "gamma", "beta_KL", "KL", "TC", "MI", "dim_KL", "beta_marg_KL", 'marginal K']:
+    #         if s != "LR":
+    #             print_string += " | {}: {:8.2f}".format(s, v[-1])
+    #         else:
+    #             print_string += " | {}: {:8.8f}".format(s, v[-1])
+    #
+    #
+    # # Beta-VAE
+    # if objective == "beta-vae" or objective == "free-bits-beta-vae":
+    #     print_string += f"\n** BETA-VAE | beta {stat_dict['beta'][-1]:.2f} x KL {stat_dict['KL'][-1]:.2f} = {stat_dict['beta_KL'][-1]:.2f}"
+    #
+    # # Beta-TC-VAE
+    # elif objective == "beta-tc-vae":
+    #     print_string += f"\n** BETA-TC-VAE | alpha {stat_dict['alpha'][-1]:.2f} x MI {stat_dict['MI'][-1]:.2f} = {stat_dict['alpha_MI'][-1]:.2f}"
+    #     print_string += f" | beta {stat_dict['beta'][-1]:.2f} x TC {stat_dict['TC'][-1]:.2f} = {stat_dict['beta_TC'][-1]:.2f}"
+    #     print_string += f" | gamma {stat_dict['gamma'][-1]:.2f} x Dim. KL {stat_dict['dim_KL'][-1]:.2f} = {stat_dict['gamma_dim_KL'][-1]:.2f}"
+    #
+    # elif objective == "hoffman":
+    #     print_string += f"\n** HOFFMAN-VAE | alpha {stat_dict['alpha'][-1]:.2f} x MI {stat_dict['MI'][-1]:.2f} = {stat_dict['alpha_MI'][-1]:.2f}"
+    #     print_string += f" | beta {stat_dict['beta'][-1]:.2f} x marg. KL {stat_dict['marginal KL'][-1]:.2f} = {stat_dict['beta_marg_KL'][-1]:.2f}"
+    #
     print(print_string)
 
 

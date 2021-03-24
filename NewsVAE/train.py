@@ -256,7 +256,8 @@ def train(device_rank, config, run_name):
                 # PRINT
                 if world_master and global_step % config.print_every_n_steps == 0 and config.print_stats:
                     utils_train.print_stats(stats, epoch, phase, global_step, global_max_steps,
-                                            global_grad_step, global_max_grad_steps, batch_i, max_steps)
+                                            global_grad_step, global_max_grad_steps, batch_i, max_steps,
+                                            config.objective)
 
                 # LOG STEP (only if world master)
                 if batch_i % config.log_every_n_steps == 0 and config.logging and world_master:

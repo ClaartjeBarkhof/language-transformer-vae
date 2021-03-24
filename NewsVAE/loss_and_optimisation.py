@@ -333,6 +333,64 @@ class LossTermManager(torch.nn.Module):
                     f"{config.latent_size} = {target}, with relation 'ge' and alpha = {config.b_tc_vae_Dim_KL_lagrangian_alpha}"
                     f"and lr = {config.b_tc_vae_Dim_KL_lagrangian_lr}")
 
+        elif self.objective == "hoffman":
+            # alpha * MI
+            if config.hoffman_vae_alpha_constant_linear_lagrangian in ["constant", "linear"]:
+                print(f"Setting parameter schedule for Hoffman MI (alpha), schedule: "
+                      f"{config.hoffman_vae_alpha_constant_linear_lagrangian}, ramp length: "
+                      f"{config.hoffman_vae_alpha_ramp_len_grad_steps}, alpha value: {config.hoffman_vae_alpha}, ramp type:"
+                      f"{config.hoffman_vae_alpha_ramp_type}")
+                self.manager["alpha_MI"] = ParameterScheduler(
+                    cyc_lin_con=config.hoffman_vae_alpha_constant_linear_lagrangian,
+                    ramp_len_grad_steps=config.hoffman_vae_alpha_ramp_len_grad_steps,
+                    decrease_increase=config.hoffman_vae_alpha_ramp_type,
+                    value=config.hoffman_vae_alpha,
+                    name="alpha")
+            elif config.hoffman_vae_alpha_constant_linear_lagrangian == "lagrangian":
+                constraint = Constraint(config.hoffman_vae_MI_lagrangian_target,
+                                        config.hoffman_vae_MI_lagrangian_relation,
+                                        alpha=config.hoffman_vae_MI_lagrangian_alpha)
+                optimiser = ConstraintOptimizer(torch.optim.RMSprop, constraint.parameters(),
+                                                config.hoffman_vae_MI_lagrangian_lr)
+                self.manager["alpha_MI"] = {
+                    "constraint": constraint,
+                    "optimiser": optimiser
+                }
+                print(
+                    f"Setting Lagrangian for alpha MI term in Hoffman VAE, target: {config.hoffman_vae_MI_lagrangian_target},"
+                    f" with relation {config.hoffman_vae_MI_lagrangian_relation} and "
+                    f"alpha = {config.hoffman_vae_MI_lagrangian_alpha}"
+                    f"and lr = {config.hoffman_vae_MI_lagrangian_lr}")
+
+            # beta * marginal KL
+            if config.hoffman_vae_beta_constant_linear_lagrangian in ["constant", "linear"]:
+                print(f"Setting parameter schedule for Hoffman marginal KL (beta), schedule: "
+                      f"{config.hoffman_vae_beta_constant_linear_lagrangian}, ramp length: "
+                      f"{config.hoffman_vae_beta_ramp_len_grad_steps}, beta value: {config.hoffman_vae_beta}, ramp type:"
+                      f"{config.hoffman_vae_beta_ramp_type}")
+                self.manager["beta_marg_KL"] = ParameterScheduler(
+                    cyc_lin_con=config.hoffman_vae_beta_constant_linear_lagrangian,
+                    ramp_len_grad_steps=config.hoffman_vae_beta_ramp_len_grad_steps,
+                    decrease_increase=config.hoffman_vae_beta_ramp_type,
+                    value=config.hoffman_vae_beta,
+                    name="beta")
+            elif config.hoffman_vae_beta_constant_linear_lagrangian == "lagrangian":
+                constraint = Constraint(config.hoffman_vae_marg_KL_lagrangian_target,
+                                        config.hoffman_vae_marg_KL_lagrangian_relation,
+                                        alpha=config.hoffman_vae_marg_KL_lagrangian_alpha)
+                optimiser = ConstraintOptimizer(torch.optim.RMSprop, constraint.parameters(),
+                                                config.hoffman_vae_marg_KL_lagrangian_lr)
+                self.manager["beta_marg_KL"] = {
+                    "constraint": constraint,
+                    "optimiser": optimiser
+                }
+                print(
+                    f"Setting Lagrangian for beta marginal KL term in Hoffman VAE, target: "
+                    f"{config.hoffman_vae_marg_KL_lagrangian_target},"
+                    f" with relation {config.hoffman_vae_marg_KL_lagrangian_relation} and "
+                    f"alpha = {config.hoffman_vae_marg_KL_lagrangian_alpha}"
+                    f"and lr = {config.hoffman_vae_marg_KL_lagrangian_lr}")
+
     def forward(self, input_ids, attention_mask, return_exact_match=False, return_reconstruction_loss=True,
                 return_posterior_stats=True, device_name="cuda:0", return_cross_entropy=False,  reduce_seq_dim_ce="mean",
                 reduce_batch_dim_ce="mean", reduce_seq_dim_exact_match="mean", reduce_batch_dim_exact_match="mean"):
@@ -486,6 +544,52 @@ class LossTermManager(torch.nn.Module):
         elif self.objective == "mmd-vae":
             total_loss = reconstruction_loss + mmd
 
+        # HOFFMAN VAE
+        elif self.objective == "hoffman":
+            mi = log_q_z_x - log_q_z
+            marginal_kl = log_q_z - log_p_z
+
+            loss_dict["MI"] = mi
+            loss_dict["marginal KL"] = marginal_kl
+
+            total_loss = reconstruction_loss
+            if isinstance(self.manager["alpha_MI"], ParameterScheduler):
+                alpha = self.manager["alpha_MI"].current_val
+                alpha_mi = mi * alpha
+                total_loss = total_loss + alpha_mi
+
+                loss_dict["alpha"] = alpha.item() if torch.is_tensor(alpha) else alpha
+                loss_dict["alpha_MI"] = alpha_mi.item() if torch.is_tensor(alpha_mi) else alpha_mi
+
+            else:
+                multiplier = self.manager["alpha_MI"]["constraint"].multiplier
+                lagrange_loss_alpha = self.manager["alpha_MI"]["constraint"](mi)
+                total_loss = total_loss + mi + lagrange_loss_alpha
+
+                loss_dict["multiplier (alpha)"] = multiplier.item() if torch.is_tensor(multiplier) else multiplier
+                loss_dict["lagrange_loss_alpha"] = lagrange_loss_alpha.item() if torch.is_tensor(lagrange_loss_alpha) else lagrange_loss_alpha
+
+            if isinstance(self.manager["beta_marg_KL"], ParameterScheduler):
+                beta = self.manager["beta_marg_KL"].current_val
+                beta_marg_KL = marginal_kl * beta
+                total_loss = total_loss + beta_marg_KL
+
+                loss_dict["beta"] = beta.item() if torch.is_tensor(beta) else beta
+                loss_dict["beta_marg_KL"] = beta_marg_KL.item() if torch.is_tensor(beta_marg_KL) else beta_marg_KL
+
+            else:
+                multiplier = self.manager["beta_marg_KL"]["constraint"].multiplier
+                lagrange_loss_beta = self.manager["beta_marg_KL"]["constraint"](marginal_kl)
+                total_loss = total_loss + marginal_kl + lagrange_loss_beta
+
+                loss_dict["multiplier (beta)"] = multiplier.item() if torch.is_tensor(multiplier) else multiplier
+                loss_dict["lagrange_loss_beta"] = lagrange_loss_beta.item() if torch.is_tensor(lagrange_loss_beta) else lagrange_loss_beta
+
+            hoffman_elbo = reconstruction_loss + mi + marginal_kl
+            loss_dict["hoffman_elbo"] = hoffman_elbo.item()
+            loss_dict["marginal KL"] = marginal_kl.item()
+            loss_dict["MI"] = mi.item()
+            loss_dict["KL = (MI + marginal KL)"] = (mi + marginal_kl).item()
         # Evaluation
         else:
             total_loss = torch.tensor(0.0)

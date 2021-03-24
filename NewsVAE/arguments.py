@@ -195,7 +195,8 @@ def preprare_parser(jupyter=False, print_settings=True):
                              "  - 4. beta-vae (b_vae)"
                              "  - 5. free-bits-beta-vae (fb_b_vae)"
                              "  - 6. beta-tc-vae (b_tc_vae)"
-                             "  - 7. mmd-vae (mmd_vae)")
+                             "  - 7. mmd-vae (mmd_vae)"
+                             "  - 8. hoffman (hoffman_vae)")
 
     # ---------------------
     # BETA - VAE          #
@@ -317,6 +318,66 @@ def preprare_parser(jupyter=False, print_settings=True):
     parser.add_argument("--mmd_vae_lambda", default=10000, type=float,
                         help="Lambda to weight the MMD loss (default: lambda = 10e3).")
 
+    # ---------------------
+    # HOFFMAN -VAE        #
+    # ---------------------
+
+    # ----------------------------------------------------
+    # alpha * MI
+    # How is the MI term managed
+    parser.add_argument("--hoffman_vae_alpha_constant_linear_lagrangian", default="constant", type=str,
+                        help="What kind of 'annealing' is used for gamma in beta-tc-vae objective mode, options:"
+                             "  - constant"
+                             "  - linear"
+                             "  - lagrangian")
+
+    # If a schedule is used (constant or linear ramp) for alpha
+    parser.add_argument("--hoffman_vae_alpha", default=1.0, type=float,
+                        help="Weighting the MI term in hoffman VAE (default: alpha = 1.0)")
+    parser.add_argument("--hoffman_vae_alpha_ramp_len_grad_steps", default=1000, type=int,
+                        help="For alpha schedule set the length of the ramp in grad steps (default: 1000).")
+    parser.add_argument("--hoffman_vae_alpha_ramp_type", default="increase", type=str,
+                        help="For the parameter scheduler, set whether its orientation is 'decrease' or 'increase'.")
+
+    # If Lagrangian optimisation is used
+    parser.add_argument("--hoffman_vae_MI_lagrangian_target", default=15.0, type=float,
+                        help="Target MI for constrained optimisation in Hoffman VAE. (default: 15.0)")
+    parser.add_argument("--hoffman_vae_MI_lagrangian_alpha", default=0.5, type=float,
+                        help="alpha of lagrangian moving average, as in https://arxiv.org/abs/1810.00597. "
+                             "If alpha=0, no moving average is used. (default: 0.5)")
+    parser.add_argument("--hoffman_vae_MI_lagrangian_lr", default=0.00005, type=float,
+                        help="Learning rate for the MDR constraint optimiser. (default: 5e-5)")
+    parser.add_argument("--hoffman_vae_MI_lagrangian_relation", default='ge', type=str,
+                        help="Whether the MI constraint is 'ge' to the target or 'le' to the target. (default: 'ge')")
+
+    # ----------------------------------------------------
+    # beta * marginal KL
+    # How is the MI term managed
+    parser.add_argument("--hoffman_vae_beta_constant_linear_lagrangian", default="constant", type=str,
+                        help="What kind of 'annealing' is used for gamma in beta-tc-vae objective mode, options:"
+                             "  - constant"
+                             "  - linear"
+                             "  - lagrangian")
+
+    # If a schedule is used (constant or linear ramp) for alpha
+    parser.add_argument("--hoffman_vae_beta", default=1.0, type=float,
+                        help="Weighting the marginal KL term in hoffman VAE (default: alpha = 1.0)")
+    parser.add_argument("--hoffman_vae_beta_ramp_len_grad_steps", default=1000, type=int,
+                        help="For alpha schedule set the length of the ramp in grad steps (default: 1000).")
+    parser.add_argument("--hoffman_vae_beta_ramp_type", default="increase", type=str,
+                        help="For the parameter scheduler, set whether its orientation is 'decrease' or 'increase'.")
+
+    # If Lagrangian optimisation is used
+    parser.add_argument("--hoffman_vae_marg_KL_lagrangian_target", default=0.1, type=float,
+                        help="Per dimension target marginal KL for the lagrangian optimisation of marginal KL. (default: 0.5)")
+    parser.add_argument("--hoffman_vae_marg_KL_lagrangian_alpha", default=0.5, type=float,
+                        help="alpha of lagrangian moving average, as in https://arxiv.org/abs/1810.00597. "
+                             "If alpha=0, no moving average is used. (default: 0.5)")
+    parser.add_argument("--hoffman_vae_marg_KL_lagrangian_lr", default=0.00005, type=float,
+                        help="Learning rate for the MDR constraint optimiser. (default: 5e-5)")
+    parser.add_argument("--hoffman_vae_marg_KL_lagrangian_relation", default='le', type=str,
+                        help="Whether the MI constraint is 'ge' to the target or 'le' to the target. (default: 'ge')")
+
     #################################################
 
     # Hacky thing to be able to run in jupyter
@@ -359,7 +420,7 @@ def preprare_parser(jupyter=False, print_settings=True):
     #        - lambda * mmd
     #           - lambda constant
 
-    assert args.objective in ["evaluation", "autoencoder", "vae", "beta-vae",
+    assert args.objective in ["evaluation", "autoencoder", "vae", "beta-vae", "hoffman",
                               "free-bits-beta-vae", "beta-tc-vae", "mmd-vae"], "Invalid objective, see options. Quit!"
 
     # PRINT SOME SETTINGS
