@@ -109,6 +109,7 @@ def approximate_marginal_KL(mu, logvar, latent_z, method="chen", dataset_size=No
 
 
 def approximate_total_correlation(mu, logvar, latent_z, method="chen", dataset_size=None):
+    #
     # From Chen et al. (2019), Isolating Sources of Disentanglement
     # KL(q(z) || prod q(z_i)) <- mutual information, or dependence, between the latent dimensions
 
