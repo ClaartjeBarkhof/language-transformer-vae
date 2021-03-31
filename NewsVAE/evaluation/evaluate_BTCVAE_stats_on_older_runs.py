@@ -1,7 +1,6 @@
 import torch.multiprocessing as mp
 import argparse
-import sys;
-
+import sys
 sys.path.append("/home/cbarkhof/code-thesis/NewsVAE")
 from dataset_wrappper import NewsData
 from utils_train import transfer_batch_to_device
@@ -16,7 +15,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 import torch.distributed as dist
 from utils_train import set_ddp_environment_vars, load_from_checkpoint
-from utils import load_pickle, dump_pickle
+from utils_evaluation import load_pickle, dump_pickle
 import distutils
 
 
@@ -63,6 +62,7 @@ def get_dist_validation_loader(batch_size=12, num_workers=8, max_seq_len=64, wor
                         num_workers=num_workers, collate_fn=data.collate_fn)
 
     return loader
+
 
 
 def evaluation_function(device_rank, run_name, model_path, max_batches,

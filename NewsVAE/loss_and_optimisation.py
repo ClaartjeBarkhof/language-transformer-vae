@@ -392,7 +392,7 @@ class LossTermManager(torch.nn.Module):
                     f"alpha = {config.hoffman_vae_marg_KL_lagrangian_alpha}"
                     f"and lr = {config.hoffman_vae_marg_KL_lagrangian_lr}")
 
-    def forward(self, input_ids, attention_mask, return_exact_match=False, return_reconstruction_loss=True,
+    def forward(self, input_ids, attention_mask, return_exact_match=False, return_reconstruction_loss=True, decoder_only=False,
                 return_posterior_stats=True, device_name="cuda:0", return_cross_entropy=False,  reduce_seq_dim_ce="mean",
                 reduce_batch_dim_ce="mean", reduce_seq_dim_exact_match="mean", reduce_batch_dim_exact_match="mean"):
 
@@ -409,23 +409,34 @@ class LossTermManager(torch.nn.Module):
                                  reduce_batch_dim_ce=reduce_batch_dim_ce,
                                  device_name=device_name)
 
-        loss_dict = self.assemble_loss(vae_out["reconstruction_loss"], vae_out["mu"], vae_out["logvar"],
-                                       log_p_z=vae_out["log_p_z"],
-                                       log_q_z_x=vae_out["log_q_z_x"],
-                                       log_q_z=vae_out["log_q_z"],
-                                       log_q_z_prod_marg=vae_out["log_q_z_prod_marg"],
-                                       mmd=None)
+        if decoder_only is False:
+            loss_dict = self.assemble_loss(vae_out["reconstruction_loss"], vae_out["mu"], vae_out["logvar"],
+                                           log_p_z=vae_out["log_p_z"],
+                                           log_q_z_x=vae_out["log_q_z_x"],
+                                           log_q_z=vae_out["log_q_z"],
+                                           log_q_z_prod_marg=vae_out["log_q_z_prod_marg"],
+                                           mmd=None)
 
-        del vae_out["mu"]
-        del vae_out["logvar"]
+            del vae_out["mu"]
+            del vae_out["logvar"]
 
-        return_dict = {**vae_out, **loss_dict}
+            return_dict = {**vae_out, **loss_dict}
 
-        return return_dict
+            return return_dict
+        else:
+            # Delete all that is None
+            key_list = list(vae_out.keys())
+            for k in key_list:
+                if vae_out[k] is None:
+                    del vae_out[k]
+
+            return vae_out
 
     def assemble_loss(self, reconstruction_loss, mu, logvar,
                       log_p_z=None, log_q_z_x=None,
                       log_q_z=None, log_q_z_prod_marg=None, mmd=None):
+
+        loss_dict = dict()
 
         # Calculate the KL divergence analytically
         kl_analytical, fb_kl_analytical = kl_divergence(mu, logvar,
@@ -436,9 +447,15 @@ class LossTermManager(torch.nn.Module):
         # kl_loss = log_q_z_x - log_p_z
         elbo = - (reconstruction_loss + kl_analytical)
 
-
-
-        loss_dict = dict()
+        mi, tc, dim_kl, marginal_kl = None, None, None, None
+        if log_q_z_x is not None and log_q_z is not None:
+            mi = log_q_z_x - log_q_z
+        if log_q_z is not None and log_q_z_prod_marg is not None:
+            tc = log_q_z - log_q_z_prod_marg
+        if log_q_z_prod_marg is not None and log_p_z is not None:
+            dim_kl = log_q_z_prod_marg - log_p_z
+        if log_q_z is not None and log_p_z is not None:
+            marginal_kl = log_q_z - log_p_z
 
         # Autoencoder
         if self.objective == "autoencoder":
@@ -499,7 +516,7 @@ class LossTermManager(torch.nn.Module):
 
         # Beta-TC-VAE
         elif self.objective == "beta-tc-vae":
-            mi = log_q_z_x - log_q_z
+            #mi = log_q_z_x - log_q_z
             # Parameter schedule
             if isinstance(self.manager["alpha_MI"], ParameterScheduler):
                 alpha = self.manager["alpha_MI"].current_val
@@ -511,11 +528,11 @@ class LossTermManager(torch.nn.Module):
                 alpha_mi = self.manager["alpha_MI"]["constraint"](mi)
 
             # Parameter schedule
-            tc = log_q_z - log_q_z_prod_marg
+            #tc = log_q_z - log_q_z_prod_marg
             beta = self.manager["beta_TC"].current_val
             beta_tc = beta * tc
 
-            dim_kl = log_q_z_prod_marg - log_p_z
+            #dim_kl = log_q_z_prod_marg - log_p_z
             # Parameter schedule (linear or constant)
             if isinstance(self.manager["gamma_DimKL"], ParameterScheduler):
                 gamma = self.manager["gamma_DimKL"].current_val
@@ -525,11 +542,11 @@ class LossTermManager(torch.nn.Module):
                 gamma = self.manager["gamma_DimKL"]["constraint"].multiplier
                 gamma_dim_kl = self.manager["gamma_DimKL"]["constraint"](dim_kl)
 
-            marginal_kl = log_q_z - log_p_z
+            #marginal_kl = log_q_z - log_p_z
             approx_kl = log_q_z_x - log_p_z
 
             total_loss = reconstruction_loss + alpha_mi + beta_tc + gamma_dim_kl
-            loss_dict["MI"] = mi.item()
+
             loss_dict["alpha_MI"] = alpha_mi.item()
             loss_dict["alpha"] = alpha.item() if torch.is_tensor(alpha) else alpha
             loss_dict["TC"] = tc.item()
@@ -547,11 +564,11 @@ class LossTermManager(torch.nn.Module):
 
         # HOFFMAN VAE
         elif self.objective == "hoffman":
-            mi = log_q_z_x - log_q_z
-            marginal_kl = log_q_z - log_p_z
+            #mi = log_q_z_x - log_q_z
 
-            loss_dict["MI"] = mi
-            loss_dict["marginal KL"] = marginal_kl
+
+            #loss_dict["MI"] = mi
+            #loss_dict["marginal KL"] = marginal_kl
 
             total_loss = reconstruction_loss
             if isinstance(self.manager["alpha_MI"], ParameterScheduler):
@@ -588,13 +605,19 @@ class LossTermManager(torch.nn.Module):
 
             hoffman_elbo = reconstruction_loss + mi + marginal_kl
             loss_dict["hoffman_elbo"] = hoffman_elbo.item()
-            loss_dict["marginal KL"] = marginal_kl.item()
-            loss_dict["MI"] = mi.item()
+            #loss_dict["marginal KL"] = marginal_kl.item()
+            #loss_dict["MI"] = mi.item()
             loss_dict["KL = (MI + marginal KL)"] = (mi + marginal_kl).item()
+
         # Evaluation
         else:
             total_loss = torch.tensor(0.0)
 
+
+        loss_dict["MI"] = mi.item() if mi is not None else None
+        loss_dict["TC"] = tc.item() if tc is not None else None
+        loss_dict["dim_KL"] = dim_kl.item() if dim_kl is not None else None
+        loss_dict["marginal KL"] = marginal_kl.item() if marginal_kl is not None else None
         loss_dict["total_loss"] = total_loss
         loss_dict["elbo"] = elbo.item()
         loss_dict["kl_analytical"] = kl_analytical.item()

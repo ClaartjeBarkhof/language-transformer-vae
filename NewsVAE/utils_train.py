@@ -260,8 +260,9 @@ def get_dataloader(phases, ddp=False, batch_size=12, num_workers=8, max_seq_len=
 
 def load_from_checkpoint(path, world_master=True, ddp=False, device_name="cuda:0", latent_size=64,
                          do_tie_embeddings=True, do_tie_weights=True, add_latent_via_memory=True,
-                         add_latent_via_embeddings=True, do_tie_embedding_spaces=True, dataset_size=3370,
-                         add_decoder_output_embedding_bias=False, objective="evaluation", evaluation=True):
+                         add_latent_via_embeddings=False, do_tie_embedding_spaces=True, dataset_size=3370,
+                         add_decoder_output_embedding_bias=False, objective="evaluation", evaluation=True,
+                         return_loss_term_manager=False):
     # DETERMINE / CHECK PATH
     assert os.path.isfile(path), f"-> checkpoint file path ({path}) must exist for it to be loaded!"
     if world_master: print("Loading model from checkpoint: {}".format(path))
@@ -269,10 +270,14 @@ def load_from_checkpoint(path, world_master=True, ddp=False, device_name="cuda:0
     # LOAD CHECKPOINT
     checkpoint = torch.load(path, map_location='cpu')
 
+    # Get standard config
+    config = arguments.preprare_parser(jupyter=True, print_settings=False)
+
     if "config" in checkpoint:
-        config = checkpoint["config"]
+        for k, v in vars(checkpoint["config"]).items():
+            if k in vars(config):
+                setattr(config, k, v)
     else:
-        config = arguments.preprare_parser(jupyter=True, print_settings=False)
         config.do_tie_weights = do_tie_weights
         config.objective = objective
         config.latent_size = latent_size
@@ -281,7 +286,13 @@ def load_from_checkpoint(path, world_master=True, ddp=False, device_name="cuda:0
         config.do_tie_embedding_spaces = do_tie_embedding_spaces
         config.add_decoder_output_embedding_bias = add_decoder_output_embedding_bias
 
-    vae_model = vae.get_model_on_device(config, dataset_size=dataset_size, device_name=device_name, world_master=True)
+    if return_loss_term_manager:
+        loss_term_manager = vae.get_loss_term_manager_with_model(config, world_master=True,
+                                            dataset_size=dataset_size, device_name=device_name)
+        vae_model = loss_term_manager.vae_model
+    else:
+        vae_model = vae.get_model_on_device(config, dataset_size=dataset_size, device_name=device_name, world_master=True)
+
     # Bring to CPU, as state_dict loading needs to happen in CPU (strange memory errors occur otherwise)
     vae_model = vae_model.cpu()
 
@@ -311,13 +322,13 @@ def load_from_checkpoint(path, world_master=True, ddp=False, device_name="cuda:0
 
     # Do this again after loading checkpoint, because I am not sure if that is saved correctly
     # Weight tying / sharing between encoder and decoder RoBERTa part
-    if do_tie_weights:
+    if do_tie_weights and config.decoder_only is False:
         print("Tying encoder decoder RoBERTa checkpoint weights!")
         base_model_prefix = vae_model.decoder.model.base_model_prefix
         tie_weights(vae_model.encoder.model, vae_model.decoder.model._modules[base_model_prefix], base_model_prefix)
 
     # Make all embedding spaces the same (encoder input, decoder input, decoder output)
-    if do_tie_embeddings:
+    if do_tie_embeddings and config.decoder_only is False:
         print("Tying embedding spaces!")
         vae_model.tie_all_embeddings()
 
@@ -325,40 +336,11 @@ def load_from_checkpoint(path, world_master=True, ddp=False, device_name="cuda:0
         print("Setting to eval mode.")
         vae_model.eval()
 
-    return vae_model
-
-
-def change_checkpoint_to_after_refactor(state_dict):
-    """
-    Before the refactor, the model looked slightly different. If you're trying
-    to load a checkpoint from before the refactor it needs to be adjusted a bit.
-    """
-
-    from collections import OrderedDict
-    new_state_dict = OrderedDict()
-    for k, v in state_dict.items():
-        if "decoder.latent" in k:
-            name = "latent_to_decoder." + k[8:]
-        elif "encoder" in k[:8]:
-            name = k.replace("encoder", "encoder.model", 1)
-        elif "decoder" in k[:8]:
-            name = k.replace("decoder", "decoder.model", 1)
-        new_state_dict[name] = v
-    return new_state_dict
-
-
-def change_checkpoint_to_after_refactor_2(state_dict):
-    from collections import OrderedDict
-    new_state_dict = OrderedDict()
-    for k, v in state_dict.items():
-        if "latent_to_decoder" in k[:17]:
-            name = k.replace("latent_to_decoder", "decoder.latent_to_decoder")
-        elif "decoder.decoder.latent_to_decoder." in k:
-            name = k[8:]
-        else:
-            name = k
-        new_state_dict[name] = v
-    return new_state_dict
+    if return_loss_term_manager:
+        loss_term_manager.vae_model = vae_model
+        return loss_term_manager
+    else:
+        return vae_model
 
 
 def save_checkpoint_model(vae_model, run_name, code_dir_path, global_step, best_valid_loss, epoch, config, best=False):

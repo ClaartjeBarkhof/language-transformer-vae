@@ -10,7 +10,7 @@ from loss_and_optimisation import ParameterScheduler, LossTermManager
 import numpy as np
 
 
-def do_valid_step(loss_term_manager, batch, device_name="cuda:0", ddp=False):
+def do_valid_step(loss_term_manager, batch, device_name="cuda:0", ddp=False, decoder_only=False):
     """
     Perform a validation step.
     """
@@ -35,6 +35,8 @@ def do_valid_step(loss_term_manager, batch, device_name="cuda:0", ddp=False):
                                         reduce_seq_dim_exact_match="mean",
                                         reduce_batch_dim_exact_match="mean",
 
+                                        decoder_only=decoder_only,
+
                                         device_name=device_name)
 
         # Detach as no update being done
@@ -44,7 +46,7 @@ def do_valid_step(loss_term_manager, batch, device_name="cuda:0", ddp=False):
 
 
 def do_train_step(loss_term_manager, batch, global_step, use_amp=False, accumulate_n_batches_grad=1,
-                  device_name="cuda:0", gradient_clipping=True, ddp=False):
+                  device_name="cuda:0", gradient_clipping=True, ddp=False, decoder_only=False):
     """
     Perform a train step with mixed precision auto cast, gradients enabled and gradient accumulated backward.
     """
@@ -79,6 +81,7 @@ def do_train_step(loss_term_manager, batch, global_step, use_amp=False, accumula
                                        reduce_batch_dim_ce="mean",
                                        return_reconstruction_loss=True,
                                        return_posterior_stats=True,
+                                       decoder_only=decoder_only,
                                        device_name=device_name)
 
             loss = losses['total_loss'] / accumulate_n_batches_grad
@@ -241,10 +244,11 @@ def train(device_rank, config, run_name):
                         accumulate_n_batches_grad=config.accumulate_n_batches_grad,
                         device_name=device_name,
                         gradient_clipping=config.gradient_clipping,
+                        decoder_only=config.decoder_only,
                         ddp=config.ddp)
                 else:
                     losses = do_valid_step(loss_term_manager, batch,
-                                           device_name=device_name, ddp=config.ddp)
+                                           device_name=device_name, ddp=config.ddp, decoder_only=config.decoder_only)
 
                 # ----------------------------------------------------------------------------------------------------
                 # INSERT STATISTICS, PRINT, LOG, CHECKPOINT
@@ -291,7 +295,10 @@ def train(device_rank, config, run_name):
 
             # BEST MODEL CHECKPOINT
             if phase == 'validation' and world_master:
-                mean_valid_loss = np.mean(stats[epoch]['validation']['reconstruction_loss'])
+                if 'elbo' in stats[epoch]['validation']:
+                    mean_valid_loss = - np.mean(stats[epoch]['validation']['elbo'])  # <- select - ELBO
+                else:
+                    mean_valid_loss = np.mean(stats[epoch]['validation']['total_loss'])  # <- select on total loss
                 if config.checkpoint and mean_valid_loss < best_valid_loss:
                     print(f"Found better (mean) validation loss (at this device): "
                           f"{mean_valid_loss:.4f}. Saving checkpoint!")

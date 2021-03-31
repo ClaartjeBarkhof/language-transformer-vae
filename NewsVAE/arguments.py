@@ -7,7 +7,7 @@ def preprare_parser(jupyter=False, print_settings=True):
     parser = argparse.ArgumentParser()
 
     # RUN NAME
-    parser.add_argument("--run_name_prefix", default='TEST-18MAR', type=str,
+    parser.add_argument("--run_name_prefix", default='TEST-30MAR', type=str,
                         help="Prefix of the run name (to give it a marker or hparam settins) (default: '').")
 
     # TRAIN / VALIDATION
@@ -23,14 +23,14 @@ def preprare_parser(jupyter=False, print_settings=True):
                              "So to account for that multiply max_global_train_steps by accumulate_n_batches_grad.")
 
     # GRADIENT ACCUMULATION
-    parser.add_argument("--accumulate_n_batches_grad", default=2, type=int,
+    parser.add_argument("--accumulate_n_batches_grad", default=1, type=int,
                         help="Number of batches to accumulate gradients over."
                              "Default is no accumulation: 1.")
 
     # OPTIMISER + SCHEDULER (for the total loss)
-    parser.add_argument("--lr", default=0.00002, type=float,
+    parser.add_argument("--lr", default=0.00005, type=float,
                         help="Learning rate (default: 0.00002).")
-    parser.add_argument("--lr_scheduler", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
+    parser.add_argument("--lr_scheduler", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to use a lr scheduler (default: True).")
     parser.add_argument("--lr_warmup_updates", default=4000, type=int,
                         help="Warm-up updates (gradient steps), how many updates in take to "
@@ -54,11 +54,11 @@ def preprare_parser(jupyter=False, print_settings=True):
                         help="Whether or not to use automatic mixed precision (default: True).")
 
     # DISTRIBUTED TRAINING
-    parser.add_argument("--n_gpus", default=2, type=int,
+    parser.add_argument("--n_gpus", default=1, type=int,
                         help="Number GPUs to use (default: None).")
     parser.add_argument("--n_nodes", default=1, type=int,
                         help="Number nodes to use (default: 1).")
-    parser.add_argument("--ddp", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
+    parser.add_argument("--ddp", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to use Distributed Data Parallel (DDP) "
                              "(default: True if n_gpus > 1, else: False).")
 
@@ -87,7 +87,7 @@ def preprare_parser(jupyter=False, print_settings=True):
                         help="Every how many steps to print.")
 
     # CHECKPOINTING
-    parser.add_argument("--checkpoint", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
+    parser.add_argument("--checkpoint", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to checkpoint (save) the model. (default: False).")
     parser.add_argument("--checkpoint_every_n_steps", default=10, type=int,
                         help="Every how many (training) steps to checkpoint (default: 1000).")
@@ -136,9 +136,12 @@ def preprare_parser(jupyter=False, print_settings=True):
                         type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to add decoder output embedding bias, which makes the"
                              "embedding space different from the input embedding spaces (default: True).")
+    parser.add_argument("--decoder_only", default=False,
+                        type=lambda x: bool(distutils.util.strtobool(x)),
+                        help="Whether or not to run decoder_only mode (not a VAE). This is meant as a baseline mode.")
 
     # NOISY TEACHER-FORCED
-    parser.add_argument("--drop_inputs_decoder", default=True,
+    parser.add_argument("--drop_inputs_decoder", default=False,
                         type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to drop input embeddings at the decoder (default: True).")
     parser.add_argument("--drop_inputs_decoder_prob", default=0.2, type=float,

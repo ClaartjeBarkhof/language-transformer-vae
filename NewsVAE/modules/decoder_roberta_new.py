@@ -137,8 +137,20 @@ class RobertaEmbeddings(nn.Module):
         # so if the drop-out probability is 0.2, then the other weights are scaled by 1 / 0.8 = 1.25
         # this is to keep the expected magnitude of the embeddings the same.
         if self.drop_inputs_decoder and self.training:
-            inputs_embeds = torch.nn.functional.dropout2d(inputs_embeds, p=self.drop_inputs_decoder_prob,
-                                                          training=self.training, inplace=False)
+            # inputs_embeds = torch.nn.functional.dropout2d(inputs_embeds, p=self.drop_inputs_decoder_prob,
+            #                                               training=self.training, inplace=False)
+            #print("DROPOUT: self.drop_inputs_decoder_prob",self.drop_inputs_decoder_prob)
+            batch_size, seq_len = input_ids.shape
+            mask = (torch.rand(size=(batch_size, seq_len)) > (self.drop_inputs_decoder_prob)).float().unsqueeze(2).to(input_ids.device)
+            inputs_embeds = inputs_embeds * mask
+        """"
+        torch.cuda.FloatTensor(10, 10).uniform_() > 0.8
+        a  = torch.randn((2, 3, 3))
+        mask = torch.randint(low=0, high=2, size=(2, 3)).unsqueeze(2)
+        print(a)
+        print(mask)
+        print(a * mask)
+        """
 
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
 
@@ -210,6 +222,8 @@ class VaeDecoderRobertaSelfAttention(nn.Module):
             output_attentions=False,
     ):
         mixed_query_layer = self.query(hidden_states)
+
+        # print("hidden states.shape", hidden_states.shape)
 
         # If this is instantiated as a cross-attention module, the keys
         # and values come from an encoder; the attention mask needs to be
@@ -321,12 +335,20 @@ class VaeDecoderRobertaSelfAttention(nn.Module):
                 # Apply the attention mask is (precomputed for all layers in RobertaModel forward() function)
                 attention_scores = attention_scores + attention_mask
 
+
+
         # Normalize the attention scores to probabilities.
         attention_probs = nn.Softmax(dim=-1)(attention_scores)
 
         # This is actually dropping out entire tokens to attend to, which might
         # seem a bit unusual, but is taken from the original Transformer paper.
         attention_probs = self.dropout(attention_probs)
+
+        # print("value_layer.shape", value_layer.shape)
+        # print("attention_scores.shape", attention_scores.shape)
+        # print("attention_probs.shape", attention_probs.shape)
+        # quit()
+
 
         # Mask heads if we want to
         if head_mask is not None:
@@ -760,6 +782,9 @@ class VaeDecoderRobertaModel(RobertaPreTrainedModel):
             If set to :obj:`True`, :obj:`past_key_values` key value states are returned and can be used to speed up
             decoding (see :obj:`past_key_values`).
         """
+
+        #print("input_ids.shape", input_ids.shape)
+
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states

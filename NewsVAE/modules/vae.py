@@ -6,6 +6,7 @@ from modules.decoder import DecoderNewsVAE
 from modules.encoder import EncoderNewsVAE
 import copy
 
+
 class NewsVAE(torch.nn.Module):
     def __init__(self, encoder, decoder, dataset_size, config):
         super(NewsVAE, self).__init__()
@@ -14,8 +15,17 @@ class NewsVAE(torch.nn.Module):
         """
 
         # Main parts
-        self.encoder = encoder
+        if encoder is not None:
+            self.encoder = encoder
+            self.decoder_only = False
+        elif encoder is None and config.decoder_only is True:
+            print("Warning: No encoder provided and decoder_only mode.")
+            self.decoder_only = True
+        else:
+            print("Either provide an encoder or set decoder_only mode to True. Aborting!"); quit()
+
         self.decoder = decoder
+        self.latent_size = config.latent_size
 
         self.dataset_size = dataset_size
 
@@ -23,13 +33,13 @@ class NewsVAE(torch.nn.Module):
         self.objective = config.objective
 
         # Weight tying / sharing between encoder and decoder RoBERTa part
-        if config.do_tie_weights:
+        if config.do_tie_weights and not config.decoder_only:
             print("Tying encoder decoder RoBERTa checkpoint weights!")
             base_model_prefix = self.decoder.model.base_model_prefix
             tie_weights(self.encoder.model, self.decoder.model._modules[base_model_prefix], base_model_prefix)
 
         # Make all embedding spaces the same (encoder input, decoder input, decoder output)
-        if config.do_tie_embedding_spaces:
+        if config.do_tie_embedding_spaces and not config.decoder_only:
             print("Tying embedding spaces!")
             self.tie_all_embeddings()
 
@@ -59,11 +69,46 @@ class NewsVAE(torch.nn.Module):
         if hasattr(decoder_input_embeddings, "num_embeddings") and hasattr(encoder_input_embeddings, "num_embeddings"):
             decoder_input_embeddings.num_embeddings = encoder_input_embeddings.num_embeddings
 
+    def decoder_only_forward(self, input_ids=None, attention_mask=None, return_exact_match=False,
+                             return_predictions=False,
+                             return_cross_entropy=False, return_reconstruction_loss=True, reduce_seq_dim_ce="mean",
+                             reduce_seq_dim_exact_match="mean", reduce_batch_dim_exact_match="mean",
+                             reduce_batch_dim_ce="mean"):
+
+        out = self.decoder.model(latent_to_decoder_output=None,
+                                 input_ids=input_ids,
+                                 attention_mask=attention_mask,
+                                 labels=copy.deepcopy(input_ids),
+                                 return_attention_probs=False,
+                                 return_attention_to_latent=False,
+                                 return_hidden_states=False,
+                                 return_exact_match=return_exact_match,
+                                 return_predictions=return_predictions,
+                                 return_probabilities=False,
+                                 return_last_hidden_state=False,
+                                 return_output_embeddings=False,
+                                 return_logits=False,
+                                 return_cross_entropy=return_cross_entropy,
+                                 return_reconstruction_loss=return_reconstruction_loss,
+                                 return_log_probs=False,
+                                 reduce_seq_dim_ce=reduce_seq_dim_ce,
+                                 reduce_seq_dim_exact_match=reduce_seq_dim_exact_match,
+                                 reduce_batch_dim_exact_match=reduce_batch_dim_exact_match,
+                                 reduce_batch_dim_ce=reduce_batch_dim_ce,
+                                 nucleus_sampling=False,
+                                 top_k=0,
+                                 top_p=0.0)
+
+        out["total_loss"] = out["reconstruction_loss"]
+
+        return out
+
     def forward(self,
-                input_ids,
+                input_ids=None,
                 attention_mask=None,
 
                 auto_regressive=False,
+                max_seq_len=64,
 
                 return_latents=False,
                 return_mu_logvar=False,
@@ -99,6 +144,7 @@ class NewsVAE(torch.nn.Module):
                 top_p=1.0,
 
                 decode_sample_from_prior=False,
+                n_prior_samples=64,
 
                 device_name="cuda:0"):
 
@@ -106,22 +152,27 @@ class NewsVAE(torch.nn.Module):
         Perform a forward pass through the whole VAE with the sampling operation in between (reparameterisation).
         """
 
-        # Forward through encoder and sample (reparameterisation)
-        enc_out = self.encoder.encode(input_ids=input_ids,
-                                      attention_mask=attention_mask,
-                                      n_samples=1,
-                                      dataset_size=self.dataset_size,
-                                      return_log_q_z_x=True,
-                                      return_log_p_z=True,
-                                      return_log_q_z=True,
-                                      return_embeddings=False)
+        # Decoder only model (not a VAE)
+
+        if self.decoder_only is True:
+            return self.decoder_only_forward(input_ids=input_ids, attention_mask=attention_mask)
 
         # If instead use a sample from the prior, go ahead and sample it
         if decode_sample_from_prior:
             latent_z = self.sample_from_prior(latent_size=self.decoder.latent_size,
-                                              n_samples=input_ids.shape[0],
-                                              device_name=input_ids.get_device())
+                                              n_samples=n_prior_samples,
+                                              device_name=device_name)
+            enc_out = None
         else:
+            # Forward through encoder and sample (reparameterisation)
+            enc_out = self.encoder.encode(input_ids=input_ids,
+                                          attention_mask=attention_mask,
+                                          n_samples=1,
+                                          dataset_size=self.dataset_size,
+                                          return_log_q_z_x=True,
+                                          return_log_p_z=True,
+                                          return_log_q_z=True,
+                                          return_embeddings=False)
             latent_z = enc_out["latent_z"]
 
         # Parallel predictions with teacher forcing (during training)
@@ -152,7 +203,7 @@ class NewsVAE(torch.nn.Module):
             dec_out = self.decoder.autoregressive_decode(
                 latent_z,
                 labels=copy.copy(input_ids),
-                max_seq_len=input_ids.shape[1],
+                max_seq_len=max_seq_len,
                 return_exact_match=return_exact_match,
                 return_cross_entropy=return_cross_entropy,
                 return_reconstruction_loss=return_reconstruction_loss,
@@ -179,16 +230,18 @@ class NewsVAE(torch.nn.Module):
         loss_dict = dict()
 
         # Detach all except the total loss on which we need to base our backward pass
-        loss_dict["log_q_z"] = enc_out["log_q_z"]
-        loss_dict["log_p_z"] = enc_out["log_p_z"]
-        loss_dict["log_q_z_x"] = enc_out["log_q_z_x"]
-        loss_dict["log_q_z_prod_marg"] = enc_out["log_q_z_prod_marg"]
-        loss_dict["ce_per_word"] = dec_out["cross_entropy_per_word"].item() if return_cross_entropy and (auto_regressive is False) else None
+        if enc_out is not None:
+            loss_dict["log_q_z"] = enc_out["log_q_z"]
+            loss_dict["log_p_z"] = enc_out["log_p_z"]
+            loss_dict["log_q_z_x"] = enc_out["log_q_z_x"]
+            loss_dict["log_q_z_prod_marg"] = enc_out["log_q_z_prod_marg"]
+        loss_dict["ce_per_word"] = dec_out["cross_entropy_per_word"].item() if return_cross_entropy and (
+                    auto_regressive is False) else None
 
-        if return_latents:
+        if return_latents and enc_out is not None:
             loss_dict["latents"] = enc_out["latent_z"]
 
-        if return_mu_logvar:
+        if return_mu_logvar and enc_out is not None:
             loss_dict["mu"] = enc_out["mu"]
             loss_dict["logvar"] = enc_out["logvar"]
 
@@ -196,29 +249,30 @@ class NewsVAE(torch.nn.Module):
         # if return_text_predictions and tokenizer is not None:
         #     dec_out["text_predictions"] = tokenizer_batch_decode(dec_out["predictions"], tokenizer)
 
-        if return_posterior_stats and enc_out["mu"] is not None:
-            mu, std = enc_out["mu"], torch.sqrt(enc_out["logvar"].exp())
+        if return_posterior_stats and enc_out is not None:
+            if enc_out["mu"] is not None:
+                mu, std = enc_out["mu"], torch.sqrt(enc_out["logvar"].exp())
 
-            mean_z_mu = mu.mean(dim=1).mean()
-            std_z_mu = torch.std(mu, dim=1).mean()
+                mean_z_mu = mu.mean(dim=1).mean()
+                std_z_mu = torch.std(mu, dim=1).mean()
 
-            mean_z_std = std.mean(dim=1).mean()
-            std_z_std = torch.std(std, dim=1).mean()
+                mean_z_std = std.mean(dim=1).mean()
+                std_z_std = torch.std(std, dim=1).mean()
 
-            mean_x_mu = mu.mean(dim=0).mean()
-            std_x_mu = torch.std(mu, dim=0).mean()
+                mean_x_mu = mu.mean(dim=0).mean()
+                std_x_mu = torch.std(mu, dim=0).mean()
 
-            mean_x_std = std.mean(dim=0).mean()
-            std_x_std = torch.std(std, dim=0).mean()
+                mean_x_std = std.mean(dim=0).mean()
+                std_x_std = torch.std(std, dim=0).mean()
 
-            loss_dict["mean_z_mu"] = mean_z_mu.item()
-            loss_dict["std_z_mu"] = std_z_mu.item()
-            loss_dict["mean_z_std"] = mean_z_std.item()
-            loss_dict["std_z_std"] = std_z_std.item()
-            loss_dict["mean_x_mu"] = mean_x_mu.item()
-            loss_dict["std_x_mu"] = std_x_mu.item()
-            loss_dict["mean_x_std"] = mean_x_std.item()
-            loss_dict["std_x_std"] = std_x_std.item()
+                loss_dict["mean_z_mu"] = mean_z_mu.item()
+                loss_dict["std_z_mu"] = std_z_mu.item()
+                loss_dict["mean_z_std"] = mean_z_std.item()
+                loss_dict["std_z_std"] = std_z_std.item()
+                loss_dict["mean_x_mu"] = mean_x_mu.item()
+                loss_dict["std_x_mu"] = std_x_mu.item()
+                loss_dict["mean_x_std"] = mean_x_std.item()
+                loss_dict["std_x_std"] = std_x_std.item()
 
         # Merge all the outputs together
         vae_outputs = {**loss_dict, **dec_out}
@@ -316,8 +370,11 @@ def get_model_on_device(config, dataset_size=42068, device_name="cuda:0", world_
                              drop_inputs_decoder=config.drop_inputs_decoder,
                              drop_inputs_decoder_prob=config.drop_inputs_decoder_prob)
 
-    encoder = EncoderNewsVAE(gradient_checkpointing=config.gradient_checkpointing,
-                             latent_size=config.latent_size)
+    if config.decoder_only is True:
+        encoder = None
+    else:
+        encoder = EncoderNewsVAE(gradient_checkpointing=config.gradient_checkpointing,
+                                 latent_size=config.latent_size)
 
     vae_model = NewsVAE(encoder, decoder, dataset_size, config)
 
