@@ -126,6 +126,9 @@ def preprare_parser(jupyter=False, print_settings=True):
     parser.add_argument("--add_latent_via_embeddings", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Add the latent to the decoding process by adding it to the"
                              "embeddings (initial hidden states). (default: True)")
+    parser.add_argument("--add_latent_via_cross_attention", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
+                        help="Add the latent to the decoding process by adding it via the cross attention mechanism"
+                             "(Latent Decoder Attention). (default: True)")
     parser.add_argument("--do_tie_weights", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to tie the weights of the encoder and decoder"
                              "(default: True).")

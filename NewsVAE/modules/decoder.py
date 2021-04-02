@@ -9,6 +9,7 @@ class DecoderNewsVAE(torch.nn.Module):
                  gradient_checkpointing=False,
                  add_latent_via_memory=True,
                  add_latent_via_embeddings=True,
+                 add_latent_via_cross_attention=False,
                  latent_size=768,
                  add_decoder_output_embedding_bias=True,
                  drop_inputs_decoder=False,
@@ -26,6 +27,12 @@ class DecoderNewsVAE(torch.nn.Module):
         config = RobertaConfig.from_pretrained("roberta-base")
         self.model = VaeDecoderRobertaForCausalLM.from_pretrained("roberta-base",
                                                                   gradient_checkpointing=gradient_checkpointing)
+        # A bit cumbersome, but delete the cross attention if not going to be used
+        # (otherwise I need to change the from_pretrained function) <- I could also manipulate the .is_decoder and
+        # .add_cross_attention attributes, but not doing that now
+        if add_latent_via_cross_attention is False:
+            for l in self.model.roberta.encoder.layer:
+                del l.crossattention
 
         # Set dropout variables
         self.model.roberta.embeddings.drop_inputs_decoder = drop_inputs_decoder
@@ -50,6 +57,7 @@ class DecoderNewsVAE(torch.nn.Module):
         # via embeddings or via memory or both
         self.latent_to_decoder = LatentToDecoderNewsVAE(add_latent_via_memory=add_latent_via_memory,
                                                         add_latent_via_embeddings=add_latent_via_embeddings,
+                                                        add_latent_via_cross_attention=add_latent_via_cross_attention,
                                                         latent_size=self.latent_size,
                                                         hidden_size=self.hidden_size,
                                                         n_layers=self.n_layers,
@@ -236,12 +244,8 @@ class DecoderNewsVAE(torch.nn.Module):
             else:
                 labels_so_far = None
 
-            # # Only add at the beginning. In the second forward past,
-            # # it should be contained in the cache (past_key_values)
-            # if i > 0:
-            #     latent_to_decoder = None
-
-            decoder_outs = self.model(input_ids=generated_so_far, attention_mask=None,
+            decoder_outs = self.model(input_ids=generated_so_far,
+                                      attention_mask=None,
                                       latent_to_decoder_output=latent_to_decoder,
                                       labels=labels_so_far,
 
@@ -386,6 +390,7 @@ class DecoderNewsVAE(torch.nn.Module):
 class LatentToDecoderNewsVAE(nn.Module):
     def __init__(self, add_latent_via_memory=True,
                  add_latent_via_embeddings=True,
+                 add_latent_via_cross_attention=False,
                  latent_size=768, hidden_size=768, n_layers=12,
                  initializer_range=0.02):
         """
@@ -396,6 +401,7 @@ class LatentToDecoderNewsVAE(nn.Module):
 
         self.add_latent_via_memory = add_latent_via_memory
         self.add_latent_via_embeddings = add_latent_via_embeddings
+        self.add_latent_via_cross_attention = add_latent_via_cross_attention
 
         self.hidden_size = hidden_size
 
@@ -408,6 +414,10 @@ class LatentToDecoderNewsVAE(nn.Module):
         if self.add_latent_via_embeddings:
             self.latent_to_embedding_projection = nn.Linear(latent_size, hidden_size)
             self.latent_to_embedding_projection.weight.data.normal_(mean=0.0, std=initializer_range)
+
+        if self.add_latent_via_cross_attention:
+            self.latent_to_cross_projection = nn.Linear(latent_size, hidden_size * n_layers)
+            self.latent_to_cross_projection.weight.data.normal_(mean=0.0, std=initializer_range)
 
     def forward(self, latent_z):
         """
@@ -424,13 +434,20 @@ class LatentToDecoderNewsVAE(nn.Module):
         """
 
         output = {"latent_to_memory": None,
-                  "latent_to_embeddings": None}
+                  "latent_to_embeddings": None,
+                  "latent_to_cross": None}
 
         if self.add_latent_via_memory:
             latent_to_memory = self.latent_to_memory_projection(latent_z)
             # Makes tuple of equally sized tensors of (batch x 1 x hidden_size)
             latent_to_memory = torch.split(latent_to_memory.unsqueeze(1), self.hidden_size, dim=2)
             output["latent_to_memory"] = latent_to_memory
+
+        if self.add_latent_via_cross_attention:
+            latent_to_cross = self.latent_to_cross_projection(latent_z)
+            # Makes tuple of equally sized tensors of (batch x 1 x hidden_size)
+            latent_to_cross = torch.split(latent_to_cross.unsqueeze(1), self.hidden_size, dim=2)
+            output["latent_to_cross"] = latent_to_cross
 
         if self.add_latent_via_embeddings:
             latent_to_embeddings = self.latent_to_embedding_projection(latent_z)

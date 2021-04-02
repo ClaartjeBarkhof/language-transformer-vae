@@ -215,13 +215,33 @@ class VaeDecoderRobertaSelfAttention(nn.Module):
             hidden_states,
             attention_mask=None,
             latent_layer_memory_i=None,  # >>>> Claartje code
+            latent_layer_cross_i=None,  # >>>> Claartje code
             head_mask=None,
             encoder_hidden_states=None,
             encoder_attention_mask=None,
             past_key_value=None,
             output_attentions=False,
     ):
+
+        """
+
+        Shapes:
+            hidden_states:          [Batch, Seq_len, Hidden_size]
+            mixed_query_layer:      [Batch, Seq_len, N_heads x Head_size], which is [Batch, Seq_len, Hidden_size]
+            mixed_key_layer:        ,,
+            mixed_value_layer:      ,,
+            latent_layer_memory_i:  [Batch, 1, Hidden_size]
+            latent_layer_cross_i:   ,,
+            query_layer:            [Batch, N_heads, Seq_len, Head_size]
+            key_layer:              ,,
+            value_layer:            ,,
+        """
+
         mixed_query_layer = self.query(hidden_states)
+
+        # print("hidden_states.shape", hidden_states.shape)
+        # print("mixed_query_layer.shape", mixed_query_layer.shape)
+        # print("latent_layer_memory_i.shape", latent_layer_memory_i.shape)
 
         # print("hidden states.shape", hidden_states.shape)
 
@@ -236,11 +256,31 @@ class VaeDecoderRobertaSelfAttention(nn.Module):
             key_layer = past_key_value[0]
             value_layer = past_key_value[1]
             attention_mask = encoder_attention_mask
+
         # Cross attention no cache
         elif is_cross_attention:
             key_layer = self.transpose_for_scores(self.key(encoder_hidden_states))
             value_layer = self.transpose_for_scores(self.value(encoder_hidden_states))
             attention_mask = encoder_attention_mask
+
+        # >>>>>>> Claartje code
+        # Cross latent attention or Latent Decoder attention
+        elif latent_layer_cross_i is not None:
+            # latent_layer_cross_i should be of shape (batch x 1 x hidden_size)
+            mixed_key_layer = self.key(hidden_states)
+            mixed_value_layer = self.value(hidden_states)
+
+            # This should now be: [Batch, N_heads, Seq_len, Head_size]
+            key_layer = self.transpose_for_scores(mixed_key_layer)
+            value_layer = self.transpose_for_scores(mixed_value_layer)
+
+            # This should now be: [Batch, N_heads, 1, Head_size]
+            key_latent_layer = self.transpose_for_scores(latent_layer_cross_i)
+            value_latent_layer = self.transpose_for_scores(latent_layer_cross_i)
+
+            # This should now be: [Batch, N_heads, Seq_len + 1, Head_size]
+            key_layer = torch.cat([key_latent_layer, key_layer], dim=2)
+            value_layer = torch.cat([value_latent_layer, value_layer], dim=2)
 
         # Normal attention with cache (use_cache is True and time_step > 0)
         elif past_key_value is not None:
@@ -296,7 +336,12 @@ class VaeDecoderRobertaSelfAttention(nn.Module):
             past_key_value = (key_layer, value_layer)
 
         # Take the dot product between "query" and "key" to get the raw attention scores.
+        # print("query_layer.shape", query_layer.shape)
+        # print("value_layer.shape", value_layer.shape)
+        # print("key_layer.shape", key_layer.shape)
+        # print("key_layer.transpose(-1, -2).shape", key_layer.transpose(-1, -2).shape)
         attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
+        # print("attention_scores.shape", attention_scores.shape)
 
         if self.position_embedding_type == "relative_key" or self.position_embedding_type == "relative_key_query":
             seq_length = hidden_states.size()[1]
@@ -321,20 +366,49 @@ class VaeDecoderRobertaSelfAttention(nn.Module):
             if latent_layer_memory_i is not None:
                 # If there is a latent vector added to the key, value matrices, the attention mask should
                 # not mask attending to this. When tokens are masked their value is set to -1000.0 and
-                # when they are not masked they are set to 0.0. We want all tokens to have access to the latens
+                # when they are not masked they are set to 0.0. We want all tokens to have access to the latents
                 # so we will concat series of 0.0 to the attention mask (in front) to not mask the latent.
                 batch, _, seq_l, _ = attention_mask.shape
+                # print("attention_mask.shape", attention_mask.shape)
                 extension = torch.zeros(batch, 1, seq_l, 1).type_as(attention_mask)
-
+                # print("extention.shape", extension.shape)
                 attention_mask_extended_for_memory = torch.cat((extension,
                                                                 attention_mask), dim=3)
+                # print("attention_mask extended.shape", attention_mask_extended_for_memory.shape)
                 attention_scores = attention_scores + attention_mask_extended_for_memory
+                # print("-"*80)
 
             # <<<<<< End Claartje code
+
+            elif latent_layer_cross_i is not None:
+                batch_size, seq_len, _ = hidden_states.shape
+
+                # First make a mask that has zero on the diagonal and -1000.0 off diagonal of shape seq_len x seq_len
+                # so that all the hidden states may attend to themselves (0.0 mask)
+                square_mask = torch.ones(seq_len, seq_len) * -10000.0
+                square_mask = square_mask * (1.0 - torch.eye(seq_len, seq_len))
+                # then add the extension for attention to the latent (which must be allowed) -> 0.0 mask
+
+                zero_vec_extension = torch.zeros((seq_len, 1))
+
+                # print("square_mask.shape",square_mask.shape)
+                # print("zero_vec_extension.shape", zero_vec_extension.shape)
+                # print(square_mask)
+                # print(zero_vec_extension)
+
+                # add the extension for the latent
+                cross_attention_mask = torch.cat((zero_vec_extension, square_mask), dim=1)
+
+                # then replicate to match the correct shape for attention scores
+                # final shape should be: [Batch, 1, Q_dim, K_dim] = [Batch, 1, Seq_len, Seq_len+1] (+1 for the latent)
+                cross_attention_mask = cross_attention_mask.unsqueeze(0).unsqueeze(0)
+                cross_attention_mask = cross_attention_mask.repeat(batch_size, 1, 1, 1).type_as(attention_mask)
+
+                attention_scores = attention_scores + cross_attention_mask
+
             else:
                 # Apply the attention mask is (precomputed for all layers in RobertaModel forward() function)
                 attention_scores = attention_scores + attention_mask
-
 
 
         # Normalize the attention scores to probabilities.
@@ -348,7 +422,6 @@ class VaeDecoderRobertaSelfAttention(nn.Module):
         # print("attention_scores.shape", attention_scores.shape)
         # print("attention_probs.shape", attention_probs.shape)
         # quit()
-
 
         # Mask heads if we want to
         if head_mask is not None:
@@ -414,6 +487,7 @@ class VaeDecoderRobertaAttention(nn.Module):
             hidden_states,
             attention_mask=None,
             latent_layer_memory_i=None,  # >>>> Claartje code
+            latent_layer_cross_i=None,  # >>>> Claartje code
             head_mask=None,
             encoder_hidden_states=None,
             encoder_attention_mask=None,
@@ -421,14 +495,15 @@ class VaeDecoderRobertaAttention(nn.Module):
             output_attentions=False,
     ):
         self_outputs = self.self(
-            hidden_states,
-            attention_mask,
-            latent_layer_memory_i,  # >>>> Claartje code
-            head_mask,
-            encoder_hidden_states,
-            encoder_attention_mask,
-            past_key_value,
-            output_attentions,
+            hidden_states=hidden_states,
+            attention_mask=attention_mask,
+            latent_layer_memory_i=latent_layer_memory_i,  # >>>> Claartje code
+            latent_layer_cross_i=latent_layer_cross_i,  # >>>> Claartje code
+            head_mask=head_mask,
+            encoder_hidden_states=encoder_hidden_states,
+            encoder_attention_mask=encoder_attention_mask,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
         )
         attention_output = self.output(self_outputs[0], hidden_states)
         outputs = (attention_output,) + self_outputs[1:]  # add attentions if we output them
@@ -468,7 +543,7 @@ class RobertaOutput(nn.Module):
 
 # Copied from transformers.models.bert.modeling_bert.BertLayer with Bert->Roberta
 class VaeDecoderRobertaLayer(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, add_latent_via_cross_attention=False):
         super().__init__()
         self.chunk_size_feed_forward = config.chunk_size_feed_forward
         self.seq_len_dim = 1
@@ -478,6 +553,11 @@ class VaeDecoderRobertaLayer(nn.Module):
         if self.add_cross_attention:
             assert self.is_decoder, f"{self} should be used as a decoder model if cross attention is added"
             self.crossattention = VaeDecoderRobertaAttention(config)
+
+        if add_latent_via_cross_attention:
+            print("Adding cross attention")
+            self.crossattention = VaeDecoderRobertaAttention(config)
+
         self.intermediate = RobertaIntermediate(config)
         self.output = RobertaOutput(config)
 
@@ -486,55 +566,82 @@ class VaeDecoderRobertaLayer(nn.Module):
             hidden_states,
             attention_mask=None,
             latent_memory_i=None,
+            latent_cross_i=None,
             head_mask=None,
             encoder_hidden_states=None,
             encoder_attention_mask=None,
             past_key_value=None,
             output_attentions=False,
     ):
+
         # decoder uni-directional self-attention cached key/values tuple is at positions 1,2
         self_attn_past_key_value = past_key_value[:2] if past_key_value is not None else None
         self_attention_outputs = self.attention(
-            hidden_states,
-            attention_mask,
-            latent_memory_i,  # <<<< Claartje code
-            head_mask,
+            hidden_states=hidden_states,
+            attention_mask=attention_mask,
+            latent_layer_memory_i=latent_memory_i,  # <<<< Claartje code
+            latent_layer_cross_i=None,  # <<< just to explicify that this is not cross attention
+            encoder_attention_mask=None,  # <<< just to explicify that this is not cross attention
+            encoder_hidden_states=None,  # <<< just to explicify that this is not cross attention
+            head_mask=head_mask,
             output_attentions=output_attentions,
             past_key_value=self_attn_past_key_value,
         )
         attention_output = self_attention_outputs[0]
 
-        # if decoder, the last output is tuple of self-attn cache
+        # if decoder, the last output is tuple of self-attn cache # TODO: I dont understand why this would be the case in decoder mode?
         if self.is_decoder:
             outputs = self_attention_outputs[1:-1]
             present_key_value = self_attention_outputs[-1]
         else:
             outputs = self_attention_outputs[1:]  # add self attentions if we output attention weights
 
-        cross_attn_present_key_value = None
-        if self.is_decoder and encoder_hidden_states is not None:
-            print("Claartje: Warning: this shouldn't happen: cross-attention")
-            assert hasattr(
-                self, "crossattention"
-            ), f"If `encoder_hidden_states` are passed, {self} has to be instantiated with cross-attention layers by setting `config.add_cross_attention=True`"
+        # Claartje: remove this on purpose, because we are "abusing" the cross attention module for latent attention
+        # cross_attn_present_key_value = None
+        # if self.is_decoder and encoder_hidden_states is not None:
+        #     print("Claartje: Warning: this shouldn't happen: cross-attention")
+        #     assert hasattr(
+        #         self, "crossattention"
+        #     ), f"If `encoder_hidden_states` are passed, {self} has to be instantiated with cross-attention layers by setting `config.add_cross_attention=True`"
+        #
+        #     # cross_attn cached key/values tuple is at positions 3,4 of past_key_value tuple
+        #     cross_attn_past_key_value = past_key_value[-2:] if past_key_value is not None else None
+        #     cross_attention_outputs = self.crossattention(
+        #         attention_output,
+        #         attention_mask,
+        #         head_mask,
+        #         encoder_hidden_states,
+        #         encoder_attention_mask,
+        #         cross_attn_past_key_value,
+        #         output_attentions,
+        #     )
+        #     attention_output = cross_attention_outputs[0]
+        #     outputs = outputs + cross_attention_outputs[1:-1]  # add cross attentions if we output attention weights
+        #
+        #     # add cross-attn cache to positions 3,4 of present_key_value tuple
+        #     cross_attn_present_key_value = cross_attention_outputs[-1]
+        #     present_key_value = present_key_value + cross_attn_present_key_value
 
-            # cross_attn cached key/values tuple is at positions 3,4 of past_key_value tuple
-            cross_attn_past_key_value = past_key_value[-2:] if past_key_value is not None else None
+        if latent_cross_i is not None:
             cross_attention_outputs = self.crossattention(
-                attention_output,
-                attention_mask,
-                head_mask,
-                encoder_hidden_states,
-                encoder_attention_mask,
-                cross_attn_past_key_value,
-                output_attentions,
+                hidden_states=attention_output,
+                attention_mask=attention_mask,
+                head_mask=head_mask,  # head mask: not needed
+                latent_layer_memory_i=None,
+                latent_layer_cross_i=latent_cross_i,
+                encoder_hidden_states=None,
+                encoder_attention_mask=None,
+                past_key_value=None,
+                output_attentions=output_attentions  # cross_attn_past_key_value no cache needed
             )
+
             attention_output = cross_attention_outputs[0]
             outputs = outputs + cross_attention_outputs[1:-1]  # add cross attentions if we output attention weights
 
-            # add cross-attn cache to positions 3,4 of present_key_value tuple
-            cross_attn_present_key_value = cross_attention_outputs[-1]
-            present_key_value = present_key_value + cross_attn_present_key_value
+            # No adding to the cache
+            # # add cross-attn cache to positions 3,4 of present_key_value tuple
+            # cross_attn_present_key_value = cross_attention_outputs[-1]
+            # present_key_value = present_key_value + cross_attn_present_key_value
 
         layer_output = apply_chunking_to_forward(
             self.feed_forward_chunk, self.chunk_size_feed_forward, self.seq_len_dim, attention_output
@@ -555,10 +662,12 @@ class VaeDecoderRobertaLayer(nn.Module):
 
 # Copied from transformers.models.bert.modeling_bert.BertEncoder with Bert->Roberta
 class VaeDecoderRobertaEncoder(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, add_latent_via_cross_attention=False):
         super().__init__()
         self.config = config
-        self.layer = nn.ModuleList([VaeDecoderRobertaLayer(config) for _ in range(config.num_hidden_layers)])
+        self.layer = nn.ModuleList([VaeDecoderRobertaLayer(config,
+                                                           add_latent_via_cross_attention=add_latent_via_cross_attention) \
+                                    for _ in range(config.num_hidden_layers)])
 
     def forward(
             self,
@@ -568,6 +677,7 @@ class VaeDecoderRobertaEncoder(nn.Module):
             head_mask=None,
             encoder_hidden_states=None,
             encoder_attention_mask=None,
+            latent_layer_cross=None,  # <<<< Claartje code
             past_key_values=None,
             use_cache=None,
             output_attentions=False,
@@ -593,6 +703,12 @@ class VaeDecoderRobertaEncoder(nn.Module):
                 latent_layer_memory_i = None
             # >>>> Claartje code
 
+            if latent_layer_cross is not None:
+                latent_layer_cross_i = latent_layer_cross[i]
+            else:
+                latent_layer_cross_i = None
+
+            # TODO: mind you, gradient_checkpointing is broken
             if getattr(self.config, "gradient_checkpointing", False) and self.training:
 
                 if use_cache:
@@ -622,15 +738,27 @@ class VaeDecoderRobertaEncoder(nn.Module):
                     encoder_attention_mask,
                 )
             else:
+                """
+                hidden_states,
+                attention_mask=None,
+                latent_memory_i=None,
+                latent_cross_i=None,
+                head_mask=None,
+                encoder_hidden_states=None,
+                encoder_attention_mask=None,
+                past_key_value=None,
+                output_attentions=False,
+                """
                 layer_outputs = layer_module(
-                    hidden_states,
-                    attention_mask,
-                    latent_layer_memory_i,  # <<<< Claartje code
-                    layer_head_mask,
-                    encoder_hidden_states,
-                    encoder_attention_mask,
-                    past_key_value,
-                    output_attentions,
+                    hidden_states=hidden_states,
+                    attention_mask=attention_mask,
+                    latent_memory_i=latent_layer_memory_i,  # <<<< Claartje code
+                    latent_cross_i=latent_layer_cross_i, # <<<<< Claartje code
+                    head_mask=layer_head_mask,
+                    encoder_hidden_states=encoder_hidden_states,
+                    encoder_attention_mask=encoder_attention_mask,
+                    past_key_value=past_key_value,
+                    output_attentions=output_attentions,
                 )
 
             hidden_states = layer_outputs[0]
@@ -720,12 +848,12 @@ class VaeDecoderRobertaModel(RobertaPreTrainedModel):
     _keys_to_ignore_on_load_missing = [r"position_ids"]
 
     # Copied from transformers.models.bert.modeling_bert.BertModel.__init__ with Bert->Roberta
-    def __init__(self, config, add_pooling_layer=True):
+    def __init__(self, config, add_pooling_layer=True, add_latent_via_cross_attention=False):
         super().__init__(config)
         self.config = config
 
         self.embeddings = RobertaEmbeddings(config)
-        self.encoder = VaeDecoderRobertaEncoder(config)
+        self.encoder = VaeDecoderRobertaEncoder(config, add_latent_via_cross_attention=add_latent_via_cross_attention)
 
         # self.pooler = VAE_Decoder_RobertaPooler(config) if add_pooling_layer else None  <<<< disabled by Claartje
         self.pooler = None  # >>>> Claartje code
@@ -759,6 +887,7 @@ class VaeDecoderRobertaModel(RobertaPreTrainedModel):
             inputs_embeds=None,
             encoder_hidden_states=None,
             encoder_attention_mask=None,
+            latent_layer_cross=None,  # >>>>>> Claartje code
             past_key_values=None,
             use_cache=None,
             output_attentions=None,
@@ -860,6 +989,7 @@ class VaeDecoderRobertaModel(RobertaPreTrainedModel):
             head_mask=head_mask,
             encoder_hidden_states=encoder_hidden_states,
             encoder_attention_mask=encoder_extended_attention_mask,
+            latent_layer_cross=latent_layer_cross,
             past_key_values=past_key_values,
             use_cache=use_cache,
             output_attentions=output_attentions,
@@ -897,7 +1027,9 @@ class VaeDecoderRobertaForCausalLM(RobertaPreTrainedModel):
         config.return_dict = True
         # <<<< Claartje code
 
-        self.roberta = VaeDecoderRobertaModel(config, add_pooling_layer=False)
+        # add the cross attention modules, potentially delete again later
+        self.roberta = VaeDecoderRobertaModel(config, add_pooling_layer=False,
+                                              add_latent_via_cross_attention=True)
         self.lm_head = RobertaLMHead(config)
 
         # >>>> Claartje code
@@ -944,8 +1076,8 @@ class VaeDecoderRobertaForCausalLM(RobertaPreTrainedModel):
             position_ids=None,
             head_mask=None,
             inputs_embeds=None,
-            encoder_hidden_states=None,
-            encoder_attention_mask=None,
+            encoder_hidden_states=None,  # >>>>>> Claartje: this should never enter
+            encoder_attention_mask=None,  # >>>>>> Claartje: this should never enter
 
             # >>>> Claartje code
             return_attention_probs=None,
@@ -983,8 +1115,9 @@ class VaeDecoderRobertaForCausalLM(RobertaPreTrainedModel):
         if latent_to_decoder_output is not None:
             latent_layer_memory = latent_to_decoder_output['latent_to_memory']
             latent_embedding = latent_to_decoder_output['latent_to_embeddings']
+            latent_layer_cross = latent_to_decoder_output['latent_to_cross']
         else:
-            latent_layer_memory, latent_embedding = None, None
+            latent_layer_memory, latent_embedding, latent_layer_cross = None, None, None
         # <<<< Claartje code
 
         output_attentions = True if (return_attention_to_latent or return_attention_probs) else False
@@ -996,8 +1129,9 @@ class VaeDecoderRobertaForCausalLM(RobertaPreTrainedModel):
             position_ids=position_ids,
             head_mask=head_mask,
             inputs_embeds=inputs_embeds,
-            encoder_hidden_states=encoder_hidden_states,
-            encoder_attention_mask=encoder_attention_mask,
+            encoder_hidden_states=encoder_hidden_states,  # >>>>>> Claartje: abusing these for my attention to latent
+            encoder_attention_mask=encoder_attention_mask,  # >>>>>> Claartje: abusing these for my attention to latent
+            latent_layer_cross=latent_layer_cross,
             past_key_values=past_key_values,
             use_cache=use_cache,
             output_attentions=output_attentions,
