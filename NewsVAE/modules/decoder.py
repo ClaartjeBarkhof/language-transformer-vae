@@ -10,6 +10,7 @@ class DecoderNewsVAE(torch.nn.Module):
                  add_latent_via_memory=True,
                  add_latent_via_embeddings=True,
                  add_latent_via_cross_attention=False,
+                 add_latent_via_gating=False,
                  latent_size=768,
                  add_decoder_output_embedding_bias=True,
                  drop_inputs_decoder=False,
@@ -21,7 +22,7 @@ class DecoderNewsVAE(torch.nn.Module):
         """
         super(DecoderNewsVAE, self).__init__()
 
-
+        self.add_latent_via_gating = add_latent_via_gating
 
         # The functional part of this class
         config = RobertaConfig.from_pretrained("roberta-base")
@@ -58,6 +59,7 @@ class DecoderNewsVAE(torch.nn.Module):
         self.latent_to_decoder = LatentToDecoderNewsVAE(add_latent_via_memory=add_latent_via_memory,
                                                         add_latent_via_embeddings=add_latent_via_embeddings,
                                                         add_latent_via_cross_attention=add_latent_via_cross_attention,
+                                                        add_latent_via_gating=add_latent_via_gating,
                                                         latent_size=self.latent_size,
                                                         hidden_size=self.hidden_size,
                                                         n_layers=self.n_layers,
@@ -134,6 +136,7 @@ class DecoderNewsVAE(torch.nn.Module):
                                   input_ids=input_ids,
                                   attention_mask=attention_mask,
                                   labels=labels,
+                                  gating=self.add_latent_via_gating,
                                   return_attention_probs=return_attention_probs,
                                   return_attention_to_latent=return_attention_to_latent,
                                   return_hidden_states=return_hidden_states,
@@ -391,6 +394,7 @@ class LatentToDecoderNewsVAE(nn.Module):
     def __init__(self, add_latent_via_memory=True,
                  add_latent_via_embeddings=True,
                  add_latent_via_cross_attention=False,
+                 add_latent_via_gating=False,
                  latent_size=768, hidden_size=768, n_layers=12,
                  initializer_range=0.02):
         """
@@ -402,11 +406,12 @@ class LatentToDecoderNewsVAE(nn.Module):
         self.add_latent_via_memory = add_latent_via_memory
         self.add_latent_via_embeddings = add_latent_via_embeddings
         self.add_latent_via_cross_attention = add_latent_via_cross_attention
+        self.add_latent_via_gating = add_latent_via_gating
 
         self.hidden_size = hidden_size
 
         # Latent via memory layer
-        if self.add_latent_via_memory:
+        if self.add_latent_via_memory or self.add_latent_via_gating:
             self.latent_to_memory_projection = nn.Linear(latent_size, hidden_size * n_layers)
             self.latent_to_memory_projection.weight.data.normal_(mean=0.0, std=initializer_range)
 
@@ -437,7 +442,7 @@ class LatentToDecoderNewsVAE(nn.Module):
                   "latent_to_embeddings": None,
                   "latent_to_cross": None}
 
-        if self.add_latent_via_memory:
+        if self.add_latent_via_memory or self.add_latent_via_gating:
             latent_to_memory = self.latent_to_memory_projection(latent_z)
             # Makes tuple of equally sized tensors of (batch x 1 x hidden_size)
             latent_to_memory = torch.split(latent_to_memory.unsqueeze(1), self.hidden_size, dim=2)

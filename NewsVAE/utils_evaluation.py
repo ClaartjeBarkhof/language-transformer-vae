@@ -1,5 +1,5 @@
 import torch
-from utils_train import transfer_batch_to_device, load_from_checkpoint
+from utils_train import transfer_batch_to_device, load_from_checkpoint, cat_pad_uneven
 import os
 import copy
 import numpy as np
@@ -95,6 +95,27 @@ def acc_drop_over_relative_seq_len(data_loader, model=None, path=None, device="c
 # IMPORTANCE WEIGHTED LOG LIKELIHOOD log p (x)
 # ----------------------------------------------------------------------------------------------------
 
+def make_batch_from_model_samples(predictions, eos_token_id=2, pad_token_id=1, bos_token_id=0):
+    # Add a <s> token to the predictions
+    bos = torch.zeros_like(predictions)[:, 0].unsqueeze(1)
+    predictions = torch.cat([bos, predictions], dim=1)
+
+    # Make a tensor with position indices per row
+    ind = torch.arange(predictions.shape[1]).repeat(predictions.shape[0], 1)
+
+    # Check where the eos_token is in the predictions, if not there set to max_len
+    lens = torch.tensor(
+        [a.index(eos_token_id) if eos_token_id in a else len(a) for a in predictions.tolist()]).unsqueeze(1)
+
+    # Mask everything after the eos_token_id (set to 0.0)
+    mask = (ind > lens)
+
+    # Pad the predictions (setting all tokens after </s> to <pad>)
+    predictions[mask] = pad_token_id
+
+    return predictions, mask, lens.flatten()
+
+
 def iw_log_p_x(vae_model, batch, n_samples=600, n_chunks=3, verbose=False):
     batch_size = batch["input_ids"].shape[0]
 
@@ -147,6 +168,53 @@ def iw_log_p_x(vae_model, batch, n_samples=600, n_chunks=3, verbose=False):
     return likelihood
 
 
+def iw_log_p_x_generated(model=None, path=None, n_batches=10, batch_size=64, n_samples=600,
+                         n_chunks=3, verbose=False, ddp=False, device_name="cuda:0", max_seq_len_gen=64):
+
+    if model is None and path is None:
+        print("Either provide a model, or a checkpoint path. Not neither. Aborting.");
+        quit()
+
+    if path is not None:
+        print("Loading a model because provided a path {}.".format(path))
+        model = load_from_checkpoint(path, world_master=True, ddp=ddp, device_name=device_name, evaluation=True,
+                                     return_loss_term_manager=False)
+
+    log_p_xs, log_p_x_ws = [], []
+
+    for batch_i in range(n_batches):
+        if verbose:
+            print(f"Batch {batch_i}/{n_batches}")
+
+        with torch.no_grad():
+            # Sample from the model by decoding from prior auto-regressively with sampling
+            out = model(return_reconstruction_loss=False,
+                        return_posterior_stats=False,
+                        auto_regressive=True,
+                        max_seq_len=max_seq_len_gen,
+                        return_predictions=True,
+                        nucleus_sampling=True,
+                        top_k=0,  # no filtering
+                        top_p=1.0,  # no filtering
+                        decode_sample_from_prior=True,
+                        n_prior_samples=batch_size,
+                        device_name=device_name)
+
+            padded_predictions, mask, lens = make_batch_from_model_samples(out["predictions"])
+
+            batch = dict(input_ids=padded_predictions.to(device_name), attention_mask=mask.to(device_name))
+
+            log_p_x = iw_log_p_x(model, batch, n_samples=n_samples, n_chunks=n_chunks, verbose=True).cpu()
+            log_p_x_w = log_p_x / lens
+
+            log_p_xs.append(log_p_x)
+            log_p_x_ws.append(log_p_x_w)
+
+    log_p_xs = torch.cat(log_p_xs)
+    log_p_x_ws = torch.cat(log_p_x_ws)
+
+    return log_p_xs, log_p_x_ws, lens
+
 def iw_log_p_x_dataset(data_loader, model=None, path=None, n_samples=600, n_chunks=3,
                        verbose=False, ddp=False, device_name="cuda:0", max_batches=-1):
     if model is None and path is None:
@@ -181,8 +249,9 @@ def iw_log_p_x_dataset(data_loader, model=None, path=None, n_samples=600, n_chun
 
     log_likelihood = torch.cat(log_p_xs, dim=0).cpu()
     sent_lens = torch.cat(sent_lens, dim=0).cpu()
+    log_likelihood_p_w = log_likelihood / sent_lens
 
-    return log_likelihood, sent_lens
+    return log_likelihood, log_likelihood_p_w, sent_lens
 
 
 def iw_perplexity(data_loader, model=None, path=None, n_samples=600, n_chunks=3,
@@ -265,15 +334,6 @@ def summary_statistics(path, run_name, data_loader, max_batches=-1,
 # UTILS
 # ----------------------------------------------------------------------------------------------------
 
-def cat_pad_uneven(list_of_blocks, pad_value=0):
-    max_len = max([t.shape[1] for t in list_of_blocks])
-
-    list_of_blocks_padded = [torch.nn.functional.pad(a, (0, max_len - a.shape[1]), mode='constant', value=pad_value)
-                             for a in list_of_blocks]
-
-    blocks_concatted = torch.cat(list_of_blocks_padded, dim=0)
-
-    return blocks_concatted
 
 
 class HiddenPrints:

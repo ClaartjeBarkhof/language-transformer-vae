@@ -6,6 +6,7 @@ import os
 import wandb
 import arguments
 import numpy as np
+from scipy import stats
 
 import torch
 import torch.backends.cudnn as cudnn
@@ -305,7 +306,7 @@ def load_from_checkpoint(path, world_master=True, ddp=False, device_name="cuda:0
 
     elif "module." not in list(checkpoint["VAE_model_state_dict"].keys())[0] and ddp:
         print("Adding module string to state dict from checkpoint")
-        parameter_state_dict = add_remove_module_from_state_dict(remove=False)
+        parameter_state_dict = add_remove_module_from_state_dict(parameter_state_dict, remove=False)
 
     # in place procedure
     vae_model.load_state_dict(parameter_state_dict)
@@ -409,6 +410,38 @@ def add_remove_module_from_state_dict(state_dict, remove=True):
 # LOGGING
 # ----------------------------------------------------------------------------------------------------
 
+def stats_over_sequence(list_of_stat_batches, list_of_mask_batches, with_relative_positions=True, N_bins=-1):
+    assert list_of_stat_batches[0].shape == list_of_mask_batches[0].shape, "stats blocks and mask blocks need to be of equal size"
+
+    acc_stats = cat_pad_uneven(list_of_stat_batches, pad_value=0)
+    masks = cat_pad_uneven(list_of_mask_batches, pad_value=0)
+    seq_lens = masks.sum(dim=1)
+
+    n_samples, max_len = acc_stats.shape
+    if N_bins == -1:
+        N_bins = max_len
+    positions = torch.arange(1, max_len + 1).unsqueeze(0).repeat(n_samples, 1)
+    relative_positions = positions / seq_lens.unsqueeze(1)
+
+    stats_masked = torch.masked_select(acc_stats, masks == 1.0).tolist()
+    absolute_positions_masked = torch.masked_select(positions, masks == 1.0)
+    relative_positions_masked = torch.masked_select(relative_positions, masks == 1.0)
+
+    if with_relative_positions is True:
+        positions = relative_positions_masked.tolist()
+        bin_means, bin_edges, bin_ids = stats.binned_statistic(positions,
+                                                               stats_masked,
+                                                               statistic='mean', bins=N_bins)
+    else:
+        positions = absolute_positions_masked.tolist()
+        bin_means, bin_edges, bin_ids = stats.binned_statistic(positions,
+                                                               stats_masked,
+                                                               statistic='mean', bins=N_bins)
+
+
+    return bin_means, bin_edges, bin_ids, stats_masked, positions
+
+
 def init_logging(vae_model, run_name, code_dir_path, wandb_project, config):
     """
     Initialise W&B logging.
@@ -429,7 +462,7 @@ def init_logging(vae_model, run_name, code_dir_path, wandb_project, config):
     wandb.watch(vae_model)
 
 
-def log_stats_epoch(stats, epoch, global_step, global_grad_step):
+def log_stats_epoch(stats, epoch, global_step, global_grad_step, atts_to_latent, masks):
     """
     Log mean stats of epoch to W&B.
 
@@ -440,8 +473,24 @@ def log_stats_epoch(stats, epoch, global_step, global_grad_step):
         global_step: int
         global_grad_step: int
     """
-
     logs = {}
+
+    if len(masks) > 0:
+        bin_means, bin_edges, bin_ids, stats_masked, _ = stats_over_sequence(atts_to_latent, masks,
+                                                                             with_relative_positions=True, N_bins=-1)
+        avg_first_three_bins = np.mean(bin_means[:3])
+        avg_last_three_bins = np.mean(bin_means[-3:])
+        data = [[x, y] for (x, y) in zip(bin_edges, bin_means)]
+        table = wandb.Table(data=data, columns=["relative_positions", "avg_att_to_latent"])
+        wandb.log({f"attention_to_latent_epoch_{epoch}": wandb.plot.line(table,
+                  "relative_positions", "avg_att_to_latent", title="Avg attention to latent with relative positions")})
+
+        logs["Epoch mean (validation) avg_attention_to_latent"] = np.mean(stats_masked)
+        logs["Epoch mean (validation) FIRST_three_bins avg_attention_to_latent"] = avg_first_three_bins
+        logs["Epoch mean (validation) LAST_three_bins avg_attention_to_latent"] = avg_last_three_bins
+        logs["Epoch mean (validation) DIFF FIRST LAST three_bins avg_attention_to_latent"] = avg_first_three_bins - avg_last_three_bins
+        logs["Epoch std (validation) std_attention_to_latent"] = np.std(stats_masked)
+
     for phase, phase_stats in stats[epoch].items():
         for stat_name, stat in phase_stats.items():
             log_name = "Epoch mean ({}) {}".format(phase, stat_name)
@@ -696,3 +745,14 @@ def get_platform():
     """
     platform_name = 'lisa' if 'lisa' in platform.node() else 'local'
     return platform_name, platform.node()
+
+
+def cat_pad_uneven(list_of_blocks, pad_value=0):
+    max_len = max([t.shape[1] for t in list_of_blocks])
+
+    list_of_blocks_padded = [torch.nn.functional.pad(a, (0, max_len - a.shape[1]), mode='constant', value=pad_value)
+                             for a in list_of_blocks]
+
+    blocks_concatted = torch.cat(list_of_blocks_padded, dim=0)
+
+    return blocks_concatted

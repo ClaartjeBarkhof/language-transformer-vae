@@ -7,15 +7,15 @@ def preprare_parser(jupyter=False, print_settings=True):
     parser = argparse.ArgumentParser()
 
     # RUN NAME
-    parser.add_argument("--run_name_prefix", default='TEST-30MAR', type=str,
+    parser.add_argument("--run_name_prefix", default='TEST-ATT-TO-LATENT', type=str,
                         help="Prefix of the run name (to give it a marker or hparam settins) (default: '').")
 
     # TRAIN / VALIDATION
     parser.add_argument("--batch_size", default=32, type=int,
                         help="Batch size for data loading and training.")
-    parser.add_argument("--max_train_steps_epoch_per_rank", default=20, type=int,
+    parser.add_argument("--max_train_steps_epoch_per_rank", default=3, type=int,
                         help="Maximum number of train steps (per epoch / phase) (for all set to -1).")  # max 192246
-    parser.add_argument("--max_valid_steps_epoch_per_rank", default=20, type=int,
+    parser.add_argument("--max_valid_steps_epoch_per_rank", default=10, type=int,
                         help="Maximum number of validation steps (per epoch / phase) (for all set to -1).")  # max 1220
     parser.add_argument("--max_global_train_steps", default=50000, type=int,
                         help="Maximum number of train steps in total. Careful this is NOT the "
@@ -119,16 +119,20 @@ def preprare_parser(jupyter=False, print_settings=True):
                         help="The size of the latent space. The output from the "
                              "encoder is now 32 x 2 (first and last token). The last projection should be 2 x the "
                              "size of the latent space, because it contains mean and logvar with"
-                             "both the dimensionality of the latent space.")
-    parser.add_argument("--add_latent_via_memory", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
+                             "both the dimensionality of the space.")
+    parser.add_argument("--add_latent_via_memory", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Add the latent to the decoding process by the memory mechanism"
                              "as descrbed in the Optimus paper (default: True)")
-    parser.add_argument("--add_latent_via_embeddings", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
+    parser.add_argument("--add_latent_via_embeddings", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Add the latent to the decoding process by adding it to the"
                              "embeddings (initial hidden states). (default: True)")
-    parser.add_argument("--add_latent_via_cross_attention", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
+    parser.add_argument("--add_latent_via_cross_attention", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Add the latent to the decoding process by adding it via the cross attention mechanism"
                              "(Latent Decoder Attention). (default: True)")
+    parser.add_argument("--add_latent_via_gating", default=True,
+                        type=lambda x: bool(distutils.util.strtobool(x)),
+                        help="Add the latent to the decoding process using a gating mechanism based on "
+                             "self-attention scores. (default: True)")
     parser.add_argument("--do_tie_weights", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to tie the weights of the encoder and decoder"
                              "(default: True).")
@@ -193,7 +197,7 @@ def preprare_parser(jupyter=False, print_settings=True):
     #        - lambda * mmd
     #           - lambda constant
 
-    parser.add_argument("--objective", default='beta-tc-vae', type=str,
+    parser.add_argument("--objective", default='vae', type=str,
                         help="Which objective to use, options:"
                              "  - 1. evaluation (eval)"
                              "  - 2. autoencoder (ae)"

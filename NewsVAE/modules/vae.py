@@ -366,6 +366,7 @@ def get_model_on_device(config, dataset_size=42068, device_name="cuda:0", world_
                              add_latent_via_memory=config.add_latent_via_memory,
                              add_latent_via_embeddings=config.add_latent_via_embeddings,
                              add_latent_via_cross_attention=config.add_latent_via_cross_attention,
+                             add_latent_via_gating=config.add_latent_via_gating,
                              latent_size=config.latent_size,
                              add_decoder_output_embedding_bias=config.add_decoder_output_embedding_bias,
                              drop_inputs_decoder=config.drop_inputs_decoder,

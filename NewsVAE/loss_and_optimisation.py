@@ -394,7 +394,8 @@ class LossTermManager(torch.nn.Module):
 
     def forward(self, input_ids, attention_mask, return_exact_match=False, return_reconstruction_loss=True, decoder_only=False,
                 return_posterior_stats=True, device_name="cuda:0", return_cross_entropy=False,  reduce_seq_dim_ce="mean",
-                reduce_batch_dim_ce="mean", reduce_seq_dim_exact_match="mean", reduce_batch_dim_exact_match="mean"):
+                reduce_batch_dim_ce="mean", reduce_seq_dim_exact_match="mean", reduce_batch_dim_exact_match="mean",
+                return_attention_to_latent=False):
 
         vae_out = self.vae_model(input_ids=input_ids, attention_mask=attention_mask,
                                  return_exact_match=return_exact_match,
@@ -402,12 +403,23 @@ class LossTermManager(torch.nn.Module):
                                  reduce_batch_dim_exact_match=reduce_batch_dim_exact_match,
                                  return_mu_logvar=True,
                                  return_latents=False,
+                                 return_attention_to_latent=return_attention_to_latent,
                                  return_reconstruction_loss=return_reconstruction_loss,
                                  return_posterior_stats=return_posterior_stats,
                                  return_cross_entropy=return_cross_entropy,
                                  reduce_seq_dim_ce=reduce_seq_dim_ce,
                                  reduce_batch_dim_ce=reduce_batch_dim_ce,
                                  device_name=device_name)
+
+        if return_attention_to_latent:
+            if "self_attention_to_latent" in vae_out:
+                # avg over heads and layers
+                vae_out["attention_to_latent"] = vae_out["self_attention_to_latent"].mean(dim=1).mean(dim=1)
+                del vae_out["self_attention_to_latent"]
+            elif "cross_attention_to_latent" in vae_out:
+                # avg over heads and layers
+                vae_out["attention_to_latent"] = vae_out["cross_attention_to_latent"].mean(dim=1).mean(dim=1)
+                del vae_out["cross_attention_to_latent"]
 
         if decoder_only is False:
             loss_dict = self.assemble_loss(vae_out["reconstruction_loss"], vae_out["mu"], vae_out["logvar"],

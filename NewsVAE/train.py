@@ -25,6 +25,8 @@ def do_valid_step(loss_term_manager, batch, device_name="cuda:0", ddp=False, dec
 
                                         return_reconstruction_loss=True,  # ce summed, averaged
 
+                                        return_attention_to_latent=True,
+
                                         return_cross_entropy=True,  # ce per word
                                         reduce_seq_dim_ce="mean",
                                         reduce_batch_dim_ce="mean",
@@ -82,6 +84,7 @@ def do_train_step(loss_term_manager, batch, global_step, use_amp=False, accumula
                                        return_reconstruction_loss=True,
                                        return_posterior_stats=True,
                                        decoder_only=decoder_only,
+                                       return_attention_to_latent=False,
                                        device_name=device_name)
 
             loss = losses['total_loss'] / accumulate_n_batches_grad
@@ -217,6 +220,7 @@ def train(device_rank, config, run_name):
     # ----------------------------------------------------------------------------------------------------
     while not finished_training:
         # TRAIN, VALID
+
         for phase in data_loaders.keys():
 
             if finished_training: break
@@ -226,7 +230,7 @@ def train(device_rank, config, run_name):
                 samplers[phase].set_epoch(epoch)  # needed to explicitly shuffle
 
             max_steps = max_train_steps_epoch_per_rank if phase == 'train' else max_valid_steps_epoch_per_rank
-
+            atts_to_latent, masks = [], []
             for batch_i, batch in enumerate(data_loaders[phase]):
                 # ----------------------------------------------------------------------------------------------------
                 # TRAIN / VALIDATION STEPS
@@ -249,6 +253,10 @@ def train(device_rank, config, run_name):
                 else:
                     losses = do_valid_step(loss_term_manager, batch,
                                            device_name=device_name, ddp=config.ddp, decoder_only=config.decoder_only)
+                    if "attention_to_latent" in losses:
+                        atts_to_latent.append(losses["attention_to_latent"].cpu())
+                        masks.append(batch["attention_mask"][:, 1:].cpu())
+                        del losses["attention_to_latent"]
 
                 # ----------------------------------------------------------------------------------------------------
                 # INSERT STATISTICS, PRINT, LOG, CHECKPOINT
@@ -314,7 +322,7 @@ def train(device_rank, config, run_name):
 
         # LOG EPOCH STATS (if world master)
         if config.logging and world_master:
-            utils_train.log_stats_epoch(stats, epoch, global_step, global_grad_step)
+            utils_train.log_stats_epoch(stats, epoch, global_step, global_grad_step, atts_to_latent, masks)
 
         epoch += 1
 
