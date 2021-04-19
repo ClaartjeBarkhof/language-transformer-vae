@@ -256,10 +256,10 @@ def iw_log_p_x_dataset(data_loader, model=None, path=None, n_samples=600, n_chun
 
 def iw_perplexity(data_loader, model=None, path=None, n_samples=600, n_chunks=3,
                   verbose=False, ddp=False, device_name="cuda:0", max_batches=-1):
-    log_likelihood, sent_lens = iw_log_p_x_dataset(data_loader, model=model, path=path, n_samples=n_samples,
-                                                   n_chunks=n_chunks, verbose=verbose, ddp=ddp,
-                                                   device_name=device_name, max_batches=max_batches)
-    iw_ppl = torch.exp((-log_likelihood / sent_lens).mean())
+    _, log_likelihood_p_w, _ = iw_log_p_x_dataset(data_loader, model=model, path=path, n_samples=n_samples,
+                                                  n_chunks=n_chunks, verbose=verbose, ddp=ddp,
+                                                  device_name=device_name, max_batches=max_batches)
+    iw_ppl = torch.exp((-log_likelihood_p_w).mean())
 
     return iw_ppl.item()
 
@@ -270,8 +270,12 @@ def iw_perplexity(data_loader, model=None, path=None, n_samples=600, n_chunks=3,
 
 
 def summary_statistics(path, run_name, data_loader, max_batches=-1,
-                       device="cuda:0", result_folder="result-files"):
-    os.makedirs(result_folder, exist_ok=True)
+                       device="cuda:0", result_folder="result-files", result_file=None):
+
+    os.makedirs(f"{result_folder}/{run_name}", exist_ok=True)
+
+    if result_file is None:
+        result_file = f"{result_folder}/{run_name}/sum_stats_{run_name}.pth"
 
     # Make a loss term manager from checkpoint (includes the model)
     loss_term_manager = load_from_checkpoint(path, world_master=True, ddp=False, dataset_size=len(data_loader),
@@ -293,6 +297,7 @@ def summary_statistics(path, run_name, data_loader, max_batches=-1,
                 decoder_only = True
             else:
                 decoder_only = False
+
             out = loss_term_manager(input_ids=batch["input_ids"],
                                     attention_mask=batch["attention_mask"],
                                     return_exact_match=True,
@@ -304,7 +309,8 @@ def summary_statistics(path, run_name, data_loader, max_batches=-1,
                                     reduce_seq_dim_ce="mean",
                                     reduce_batch_dim_ce="mean",
                                     reduce_seq_dim_exact_match="mean",
-                                    reduce_batch_dim_exact_match="mean")
+                                    reduce_batch_dim_exact_match="mean",
+                                    train=False)
 
             for k, v in out.items():
                 if torch.is_tensor(v) and v.dim() == 0:
@@ -327,14 +333,12 @@ def summary_statistics(path, run_name, data_loader, max_batches=-1,
         else:
             results_cat[k] = v
 
-    dump_pickle(results_cat, "{}/{}.pth".format(result_folder, run_name))
+    dump_pickle(results_cat, result_file)
 
 
 # ----------------------------------------------------------------------------------------------------
 # UTILS
 # ----------------------------------------------------------------------------------------------------
-
-
 
 class HiddenPrints:
     def __enter__(self):
@@ -352,3 +356,12 @@ def load_pickle(f):
 
 def dump_pickle(o, f):
     pickle.dump(o, open(f, "wb"))
+
+
+def get_wandb_run_id(run_name, RUNS_DIR = "/home/cbarkhof/code-thesis/NewsVAE/Runs"):
+    path = f"{RUNS_DIR}/{run_name}/wandb/wandb"
+    run_id = None
+    for f in os.listdir(path):
+        if "run-" in f:
+            run_id = f.split("-")[-1]
+    return run_id

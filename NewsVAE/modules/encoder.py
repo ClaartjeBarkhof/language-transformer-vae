@@ -89,13 +89,13 @@ class EncoderNewsVAE(torch.nn.Module):
 
         if return_log_q_z_x:
             log_q_z_x = sample_log_likelihood(latent_z, mu=mu_, logvar=logvar_,
-                                              reduce_latent_dim=True, reduce_batch_dim=True)
+                                              reduce_latent_dim=True, reduce_batch_dim=False)
         else:
             log_q_z_x = None
 
         if return_log_p_z:
             log_p_z = sample_log_likelihood(latent_z, mu=None, logvar=None,
-                                            reduce_latent_dim=True, reduce_batch_dim=True)
+                                            reduce_latent_dim=True, reduce_batch_dim=False)
         else:
             log_p_z = None
 

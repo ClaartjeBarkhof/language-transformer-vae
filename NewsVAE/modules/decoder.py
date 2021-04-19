@@ -1,5 +1,5 @@
 import torch
-from modules.decoder_roberta_new import VaeDecoderRobertaForCausalLM
+from modules.decoder_roberta import VaeDecoderRobertaForCausalLM
 from transformers import RobertaConfig
 import torch.nn as nn
 

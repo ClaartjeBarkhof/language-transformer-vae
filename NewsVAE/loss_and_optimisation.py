@@ -395,14 +395,14 @@ class LossTermManager(torch.nn.Module):
     def forward(self, input_ids, attention_mask, return_exact_match=False, return_reconstruction_loss=True, decoder_only=False,
                 return_posterior_stats=True, device_name="cuda:0", return_cross_entropy=False,  reduce_seq_dim_ce="mean",
                 reduce_batch_dim_ce="mean", reduce_seq_dim_exact_match="mean", reduce_batch_dim_exact_match="mean",
-                return_attention_to_latent=False):
+                return_attention_to_latent=False, train=True):
 
         vae_out = self.vae_model(input_ids=input_ids, attention_mask=attention_mask,
                                  return_exact_match=return_exact_match,
                                  reduce_seq_dim_exact_match=reduce_seq_dim_exact_match,
                                  reduce_batch_dim_exact_match=reduce_batch_dim_exact_match,
                                  return_mu_logvar=True,
-                                 return_latents=False,
+                                 return_latents=True,
                                  return_attention_to_latent=return_attention_to_latent,
                                  return_reconstruction_loss=return_reconstruction_loss,
                                  return_posterior_stats=return_posterior_stats,
@@ -423,14 +423,16 @@ class LossTermManager(torch.nn.Module):
 
         if decoder_only is False:
             loss_dict = self.assemble_loss(vae_out["reconstruction_loss"], vae_out["mu"], vae_out["logvar"],
-                                           log_p_z=vae_out["log_p_z"],
-                                           log_q_z_x=vae_out["log_q_z_x"],
+                                           log_p_z=vae_out["log_p_z"].mean(),
+                                           log_q_z_x=vae_out["log_q_z_x"].mean(),
                                            log_q_z=vae_out["log_q_z"],
                                            log_q_z_prod_marg=vae_out["log_q_z_prod_marg"],
                                            mmd=None)
 
-            del vae_out["mu"]
-            del vae_out["logvar"]
+            if train is True:
+                del vae_out["mu"]
+                del vae_out["logvar"]
+                del vae_out["latents"]
 
             return_dict = {**vae_out, **loss_dict}
 

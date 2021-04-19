@@ -7,6 +7,7 @@ import wandb
 import arguments
 import numpy as np
 from scipy import stats
+import pandas as pd
 
 import torch
 import torch.backends.cudnn as cudnn
@@ -259,8 +260,9 @@ def get_dataloader(phases, ddp=False, batch_size=12, num_workers=8, max_seq_len=
 # LOAD + SAVE MODEL & CHECKPOINTING
 # ----------------------------------------------------------------------------------------------------
 
-def load_from_checkpoint(path, world_master=True, ddp=False, device_name="cuda:0", latent_size=64,
+def load_from_checkpoint(path, world_master=True, ddp=False, device_name="cuda:0", latent_size=32,
                          do_tie_embeddings=True, do_tie_weights=True, add_latent_via_memory=True,
+                         add_latent_via_gating=False, add_latent_via_cross_attention=False,
                          add_latent_via_embeddings=False, do_tie_embedding_spaces=True, dataset_size=3370,
                          add_decoder_output_embedding_bias=False, objective="evaluation", evaluation=True,
                          return_loss_term_manager=False):
@@ -275,17 +277,52 @@ def load_from_checkpoint(path, world_master=True, ddp=False, device_name="cuda:0
     config = arguments.preprare_parser(jupyter=True, print_settings=False)
 
     if "config" in checkpoint:
+        print("found a config in the checkpoint!")
         for k, v in vars(checkpoint["config"]).items():
             if k in vars(config):
                 setattr(config, k, v)
     else:
-        config.do_tie_weights = do_tie_weights
-        config.objective = objective
-        config.latent_size = latent_size
-        config.add_latent_via_memory = add_latent_via_memory
-        config.add_latent_via_embeddings = add_latent_via_embeddings
-        config.do_tie_embedding_spaces = do_tie_embedding_spaces
-        config.add_decoder_output_embedding_bias = add_decoder_output_embedding_bias
+        overview_file = "/home/cbarkhof/code-thesis/NewsVAE/runs_overview/overview_main.csv"
+        run_name = path.split("/")[-2]
+
+        print("Looking for run in overview:", run_name)
+
+        if os.path.isfile(overview_file):
+            run_df = pd.read_csv(overview_file, delimiter=";")
+            mechanism = run_df[run_df["Run name"] == run_name]['Latent mechanism'].values[0]
+
+            print("Found mechanism:", mechanism)
+
+            if mechanism == "Memory" or mechanism == "Memory + Embeddings":
+                config.add_latent_via_memory = True
+            else:
+                config.add_latent_via_memory = False
+
+            if mechanism == "Memory + Embeddings" or mechanism == "Embeddings":
+                config.add_latent_via_embeddings = True
+            else:
+                config.add_latent_via_embeddings = False
+
+            if mechanism == "Gating":
+                config.add_latent_via_gating = True
+            else:
+                config.add_latent_via_gating = False
+
+            if mechanism == "Cross-attention":
+                config.add_latent_via_cross_attention = True
+            else:
+                config.add_latent_via_cross_attention = False
+        else:
+
+            config.do_tie_weights = do_tie_weights
+            config.objective = objective
+            config.latent_size = latent_size
+            config.add_latent_via_memory = add_latent_via_memory
+            config.add_latent_via_gating = add_latent_via_gating
+            config.add_latent_via_cross_attention = add_latent_via_cross_attention
+            config.add_latent_via_embeddings = add_latent_via_embeddings
+            config.do_tie_embedding_spaces = do_tie_embedding_spaces
+            config.add_decoder_output_embedding_bias = add_decoder_output_embedding_bias
 
     if return_loss_term_manager:
         loss_term_manager = vae.get_loss_term_manager_with_model(config, world_master=True,

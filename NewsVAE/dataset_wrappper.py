@@ -26,7 +26,7 @@ class NewsData:
                  device="cuda:0"):
 
         # DATA DIRECTORY
-        os.makedirs('NewsData', exist_ok=True)
+        #os.makedirs('NewsData', exist_ok=True)
         self.device = device
 
         # FOR GPU USE

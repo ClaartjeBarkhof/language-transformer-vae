@@ -129,7 +129,7 @@ def preprare_parser(jupyter=False, print_settings=True):
     parser.add_argument("--add_latent_via_cross_attention", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Add the latent to the decoding process by adding it via the cross attention mechanism"
                              "(Latent Decoder Attention). (default: True)")
-    parser.add_argument("--add_latent_via_gating", default=True,
+    parser.add_argument("--add_latent_via_gating", default=False,
                         type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Add the latent to the decoding process using a gating mechanism based on "
                              "self-attention scores. (default: True)")
