@@ -7,11 +7,11 @@ def preprare_parser(jupyter=False, print_settings=True):
     parser = argparse.ArgumentParser()
 
     # RUN NAME
-    parser.add_argument("--run_name_prefix", default='TEST-ATT-TO-LATENT', type=str,
+    parser.add_argument("--run_name_prefix", default='XXX', type=str,
                         help="Prefix of the run name (to give it a marker or hparam settins) (default: '').")
 
     # TRAIN / VALIDATION
-    parser.add_argument("--batch_size", default=32, type=int,
+    parser.add_argument("--batch_size", default=22, type=int,
                         help="Batch size for data loading and training.")
     parser.add_argument("--max_train_steps_epoch_per_rank", default=3, type=int,
                         help="Maximum number of train steps (per epoch / phase) (for all set to -1).")  # max 192246
@@ -23,7 +23,7 @@ def preprare_parser(jupyter=False, print_settings=True):
                              "So to account for that multiply max_global_train_steps by accumulate_n_batches_grad.")
 
     # GRADIENT ACCUMULATION
-    parser.add_argument("--accumulate_n_batches_grad", default=1, type=int,
+    parser.add_argument("--accumulate_n_batches_grad", default=2, type=int,
                         help="Number of batches to accumulate gradients over."
                              "Default is no accumulation: 1.")
 
@@ -54,16 +54,16 @@ def preprare_parser(jupyter=False, print_settings=True):
                         help="Whether or not to use automatic mixed precision (default: True).")
 
     # DISTRIBUTED TRAINING
-    parser.add_argument("--n_gpus", default=1, type=int,
+    parser.add_argument("--n_gpus", default=4, type=int,
                         help="Number GPUs to use (default: None).")
     parser.add_argument("--n_nodes", default=1, type=int,
                         help="Number nodes to use (default: 1).")
-    parser.add_argument("--ddp", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
+    parser.add_argument("--ddp", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to use Distributed Data Parallel (DDP) "
                              "(default: True if n_gpus > 1, else: False).")
 
     # LOGGING
-    parser.add_argument("--logging", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
+    parser.add_argument("--logging", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to log the process of the model (default: True).")
     parser.add_argument("--log_every_n_steps", default=1, type=int,
                         help="Every how many steps to log (default: 20).")
@@ -120,7 +120,7 @@ def preprare_parser(jupyter=False, print_settings=True):
                              "encoder is now 32 x 2 (first and last token). The last projection should be 2 x the "
                              "size of the latent space, because it contains mean and logvar with"
                              "both the dimensionality of the space.")
-    parser.add_argument("--add_latent_via_memory", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
+    parser.add_argument("--add_latent_via_memory", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Add the latent to the decoding process by the memory mechanism"
                              "as descrbed in the Optimus paper (default: True)")
     parser.add_argument("--add_latent_via_embeddings", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
@@ -133,6 +133,9 @@ def preprare_parser(jupyter=False, print_settings=True):
                         type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Add the latent to the decoding process using a gating mechanism based on "
                              "self-attention scores. (default: True)")
+    parser.add_argument("--add_latent_w_matrix_influence", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
+                        help="Activate the mechanism to influence the weight matrices in the decoder as"
+                             "a function of the latent (default: False)")
     parser.add_argument("--do_tie_weights", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to tie the weights of the encoder and decoder"
                              "(default: True).")

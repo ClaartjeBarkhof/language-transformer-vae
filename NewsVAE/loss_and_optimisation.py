@@ -395,7 +395,7 @@ class LossTermManager(torch.nn.Module):
     def forward(self, input_ids, attention_mask, return_exact_match=False, return_reconstruction_loss=True, decoder_only=False,
                 return_posterior_stats=True, device_name="cuda:0", return_cross_entropy=False,  reduce_seq_dim_ce="mean",
                 reduce_batch_dim_ce="mean", reduce_seq_dim_exact_match="mean", reduce_batch_dim_exact_match="mean",
-                return_attention_to_latent=False, train=True):
+                mean_all=False, return_attention_to_latent=False, train=True):
 
         vae_out = self.vae_model(input_ids=input_ids, attention_mask=attention_mask,
                                  return_exact_match=return_exact_match,
@@ -433,6 +433,10 @@ class LossTermManager(torch.nn.Module):
                 del vae_out["mu"]
                 del vae_out["logvar"]
                 del vae_out["latents"]
+                vae_out["log_p_z"] = vae_out["log_p_z"].mean().cpu().item()
+                vae_out["log_q_z"] = vae_out["log_q_z"].mean().cpu().item()
+                vae_out["log_q_z_x"] = vae_out["log_q_z_x"].mean().cpu().item()
+                vae_out["log_q_z_prod_marg"] = vae_out["log_q_z_prod_marg"].mean().cpu().item()
 
             return_dict = {**vae_out, **loss_dict}
 

@@ -273,8 +273,12 @@ def train(device_rank, config, run_name):
 
                 # LOG STEP (only if world master)
                 if batch_i % config.log_every_n_steps == 0 and config.logging and world_master:
+                    if config.add_latent_w_matrix_influence:
+                        utils_train.add_matrix_influence_weight_to_loss(loss_term_manager, global_step,
+                                                                        global_grad_step, ddp=config.ddp)
                     utils_train.log_losses_step(losses, phase, epoch, config.log_every_n_steps, global_step,
                                                 global_grad_step)
+
 
                 # CHECKPOINT
                 if (global_step % config.checkpoint_every_n_steps == 0) and phase == 'train' \

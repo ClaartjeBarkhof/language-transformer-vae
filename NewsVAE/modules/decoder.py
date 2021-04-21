@@ -11,6 +11,7 @@ class DecoderNewsVAE(torch.nn.Module):
                  add_latent_via_embeddings=True,
                  add_latent_via_cross_attention=False,
                  add_latent_via_gating=False,
+                 add_latent_w_matrix_influence=False,
                  latent_size=768,
                  add_decoder_output_embedding_bias=True,
                  drop_inputs_decoder=False,
@@ -25,28 +26,16 @@ class DecoderNewsVAE(torch.nn.Module):
         self.add_latent_via_gating = add_latent_via_gating
 
         # The functional part of this class
-        config = RobertaConfig.from_pretrained("roberta-base")
-        self.model = VaeDecoderRobertaForCausalLM.from_pretrained("roberta-base",
-                                                                  gradient_checkpointing=gradient_checkpointing)
-        # A bit cumbersome, but delete the cross attention if not going to be used
-        # (otherwise I need to change the from_pretrained function) <- I could also manipulate the .is_decoder and
-        # .add_cross_attention attributes, but not doing that now
-        if add_latent_via_cross_attention is False:
-            for l in self.model.roberta.encoder.layer:
-                del l.crossattention
-
-        # Set dropout variables
-        self.model.roberta.embeddings.drop_inputs_decoder = drop_inputs_decoder
-        self.model.roberta.embeddings.drop_inputs_decoder_prob = drop_inputs_decoder_prob
-
-        print("self.model.roberta.embeddings.drop_inputs_decoder ", self.model.roberta.embeddings.drop_inputs_decoder)
-        print("self.model.roberta.embeddings.drop_inputs_decoder_prob",  self.model.roberta.embeddings.drop_inputs_decoder_prob)
-
-        # Replace the output embedding layer with one without bias if in config
-        if add_decoder_output_embedding_bias is False:
-            print("Replacing linear output layer with one without bias!")
-            self.model.lm_head.decoder = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
-            del self.model.lm_head.bias
+        self.model = VaeDecoderRobertaForCausalLM.from_pretrained(
+            "roberta-base",
+            gradient_checkpointing=gradient_checkpointing,
+            add_latent_via_cross_attention=add_latent_via_cross_attention,
+            drop_inputs_decoder=drop_inputs_decoder,
+            drop_inputs_decoder_prob=drop_inputs_decoder_prob,
+            add_decoder_output_embedding_bias=add_decoder_output_embedding_bias,
+            add_latent_w_matrix_influence=add_latent_w_matrix_influence,
+            latent_size=latent_size
+        )
 
         # Store some variables for convenience
         self.latent_size = latent_size
@@ -60,6 +49,7 @@ class DecoderNewsVAE(torch.nn.Module):
                                                         add_latent_via_embeddings=add_latent_via_embeddings,
                                                         add_latent_via_cross_attention=add_latent_via_cross_attention,
                                                         add_latent_via_gating=add_latent_via_gating,
+                                                        add_latent_w_matrix_influence=add_latent_w_matrix_influence,
                                                         latent_size=self.latent_size,
                                                         hidden_size=self.hidden_size,
                                                         n_layers=self.n_layers,
@@ -395,6 +385,7 @@ class LatentToDecoderNewsVAE(nn.Module):
                  add_latent_via_embeddings=True,
                  add_latent_via_cross_attention=False,
                  add_latent_via_gating=False,
+                 add_latent_w_matrix_influence=False,
                  latent_size=768, hidden_size=768, n_layers=12,
                  initializer_range=0.02):
         """
@@ -407,6 +398,7 @@ class LatentToDecoderNewsVAE(nn.Module):
         self.add_latent_via_embeddings = add_latent_via_embeddings
         self.add_latent_via_cross_attention = add_latent_via_cross_attention
         self.add_latent_via_gating = add_latent_via_gating
+        self.add_latent_w_matrix_influence = add_latent_w_matrix_influence
 
         self.hidden_size = hidden_size
 
@@ -424,6 +416,10 @@ class LatentToDecoderNewsVAE(nn.Module):
             self.latent_to_cross_projection = nn.Linear(latent_size, hidden_size * n_layers)
             self.latent_to_cross_projection.weight.data.normal_(mean=0.0, std=initializer_range)
 
+        if self.add_latent_w_matrix_influence:
+            self.latent_to_matrix_projection = nn.Linear(latent_size, hidden_size*n_layers)
+            self.latent_to_matrix_projection.weight.data.normal_(mean=0.0, std=initializer_range)
+
     def forward(self, latent_z):
         """
         Handles the connection between encoder and decoder by transforming
@@ -440,7 +436,8 @@ class LatentToDecoderNewsVAE(nn.Module):
 
         output = {"latent_to_memory": None,
                   "latent_to_embeddings": None,
-                  "latent_to_cross": None}
+                  "latent_to_cross": None,
+                  "latent_matrix_proj": None}
 
         if self.add_latent_via_memory or self.add_latent_via_gating:
             latent_to_memory = self.latent_to_memory_projection(latent_z)
@@ -457,5 +454,10 @@ class LatentToDecoderNewsVAE(nn.Module):
         if self.add_latent_via_embeddings:
             latent_to_embeddings = self.latent_to_embedding_projection(latent_z)
             output["latent_to_embeddings"] = latent_to_embeddings
+
+        if self.add_latent_w_matrix_influence:
+            latent_matrix_proj = self.latent_to_matrix_projection(latent_z)
+            latent_matrix_proj = torch.split(latent_matrix_proj, self.hidden_size, dim=-1)
+            output["latent_matrix_proj"] = latent_matrix_proj
 
         return output

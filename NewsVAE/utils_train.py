@@ -47,7 +47,7 @@ def set_device(device_rank):
     return device_name
 
 
-def set_ddp_environment_vars(port_nr=1234):
+def set_ddp_environment_vars(port_nr=1235):
     """
     Set the environment variables for the DDP environment.
 
@@ -260,6 +260,28 @@ def get_dataloader(phases, ddp=False, batch_size=12, num_workers=8, max_seq_len=
 # LOAD + SAVE MODEL & CHECKPOINTING
 # ----------------------------------------------------------------------------------------------------
 
+def fix_query_key_value_layer_name(state_dict):
+    from collections import OrderedDict
+    new_state_dict = OrderedDict()
+    for k, v in state_dict.items():
+        if "decoder" in k:
+            if "self.query" in k:
+
+                new_name = k.replace("self.query", "self.query_module.layer")
+                #print(f"replacing {k} with {new_name}")
+                new_state_dict[new_name] = v
+            elif "self.key" in k:
+                new_name = k.replace("self.key", "self.key_module.layer")
+                new_state_dict[new_name] = v
+            elif "self.value" in k:
+                new_name = k.replace("self.value", "self.value_module.layer")
+                new_state_dict[new_name] = v
+
+        new_state_dict[k] = v
+
+    return new_state_dict
+
+
 def load_from_checkpoint(path, world_master=True, ddp=False, device_name="cuda:0", latent_size=32,
                          do_tie_embeddings=True, do_tie_weights=True, add_latent_via_memory=True,
                          add_latent_via_gating=False, add_latent_via_cross_attention=False,
@@ -336,6 +358,12 @@ def load_from_checkpoint(path, world_master=True, ddp=False, device_name="cuda:0
 
     # DDP vs no DDP
     parameter_state_dict = checkpoint["VAE_model_state_dict"]
+
+
+    # if config.add_latent_w_matrix_influence is True:
+    #     print("TEST")
+    parameter_state_dict = fix_query_key_value_layer_name(parameter_state_dict)
+
     # MODEL
     if "module." in list(checkpoint["VAE_model_state_dict"].keys())[0] and not ddp:
         print("Removing module string from state dict from checkpoint")
@@ -446,6 +474,24 @@ def add_remove_module_from_state_dict(state_dict, remove=True):
 # ----------------------------------------------------------------------------------------------------
 # LOGGING
 # ----------------------------------------------------------------------------------------------------
+
+def add_matrix_influence_weight_to_loss(loss_term_manager, global_step, global_grad_step, ddp=False):
+    gate_weights = {
+        "global_step": global_step,
+        "global_grad_step": global_grad_step
+    }
+
+    if ddp is True:
+        model = loss_term_manager.module.vae_model
+    else:
+        model = loss_term_manager.vae_model
+
+    for l_i, l in enumerate(model.decoder.model.roberta.encoder.layer):
+        gate_weights[f"query_{l_i}"] = l.attention.self.query_module.current_gate_weight.item()
+        gate_weights[f"key_{l_i}"] = l.attention.self.key_module.current_gate_weight.item()
+        gate_weights[f"value_{l_i}"] = l.attention.self.value_module.current_gate_weight.item()
+
+    wandb.log(gate_weights)
 
 def stats_over_sequence(list_of_stat_batches, list_of_mask_batches, with_relative_positions=True, N_bins=-1):
     assert list_of_stat_batches[0].shape == list_of_mask_batches[0].shape, "stats blocks and mask blocks need to be of equal size"
@@ -590,7 +636,10 @@ def insert_stats(stats, new_stats, epoch, phase):
         if type(stats[epoch][phase][stat_name]) != list:
             stats[epoch][phase][stat_name] = []
         if torch.is_tensor(value):
-            stats[epoch][phase][stat_name].append(value.item())
+            if value.dim() > 0:
+                stats[epoch][phase][stat_name].append(value.cpu().mean().item())
+            else:
+                stats[epoch][phase][stat_name].append(value.cpu().item())
         else:
             stats[epoch][phase][stat_name].append(value)
 

@@ -10,9 +10,6 @@ import pathlib
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-# # TODO: get rid of this dangerous statement
-# os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
-
 # transformers.logging.set_verbosity_error()
 
 
