@@ -23,7 +23,9 @@ class NewsData:
                  device="cuda:0"):
 
         # DATA DIRECTORY
-        #os.makedirs('NewsData', exist_ok=True)
+        dataset_list = ["cnn_dailymail", "ptb_text_only", "tom_ptb"]
+        assert dataset_name in dataset_list, f"Make sure the data set exists, choices: {dataset_list}"
+
         self.device = device
 
         # FOR GPU USE
@@ -57,9 +59,17 @@ class NewsData:
                 print(split, len(self.datasets[split]))
         else:
             print("New pre-processing")
+            if dataset_name in ["ptb_text_only", "cnn_dailymail"]:
+                for split in ['train', 'validation', 'test']:
+                    self.datasets[split] = load_dataset(self.dataset_name, name=name, ignore_verifications=True, split=split)
+            elif dataset_name == "tom_ptb":
+                self.datasets = load_dataset("text", data_files=dict(
+                    train= f"/home/cbarkhof/code-thesis/NewsVAE/NewsData/tom_ptb/train_repreprocessed.txt",
+                    validation= f"/home/cbarkhof/code-thesis/NewsVAE/NewsData/tom_ptb/valid_repreprocessed.txt",
+                    test= f"/home/cbarkhof/code-thesis/NewsVAE/NewsData/tom_ptb/test_repreprocessed.txt",
+                ))
+
             for split in ['train', 'validation', 'test']:
-                self.datasets[split] = load_dataset(self.dataset_name, name=name, ignore_verifications=True,
-                                                    split=split)
                 self.datasets[split] = self.datasets[split].map(self.convert_to_features, batched=True)
                 columns = ['attention_mask', 'input_ids']
 
@@ -117,6 +127,8 @@ class NewsData:
 
         if self.dataset_name == "cnn_dailymail":
             key = "article"
+        elif self.dataset_name == "tom_ptb":
+            key = "text"
         else:
             key = "sentence"
 
@@ -127,16 +139,9 @@ class NewsData:
 
 if __name__ == "__main__":
     print("-> Begin!")
-    data = NewsData('cnn_dailymail', 'roberta', max_seq_len=64)
+    data = NewsData('bla', 'roberta', max_seq_len=64)
     print("-> End!")
 
     print(data.datasets['train'].shape)
     print(data.datasets['validation'].shape)
     print(data.datasets['test'].shape)
-
-    for batch in data.train_dataloader():
-        for k, v in batch.items():
-            print(k)
-            print(v.shape)
-
-        break

@@ -19,16 +19,32 @@ from utils_evaluation import iw_log_p_x_generated, iw_log_p_x_dataset, dump_pick
 # only target rate of 0.5 per dimension
 # only drop-out rates of 0.0, 0.4, 0.8
 
+# RUNS_TO_EVALUATE = [
+#     '2021-04-02-2APR_EmbedOnly_VAE_FB_0.0-run-17:49:57',
+#     '2021-04-05-EXP - CROSS - VAE - DROP-0.4-run-18:00:31',
+#     '2021-04-05-EXP - CROSS - VAE - DROP-0.8-run-18:01:02',
+#     '2021-04-02-2APR_EmbedOnly_BetaVAE_FB_0.5-run-15:27:53',
+#     '2021-04-02-2APR_LongTestCross_BetaVAE_FB_0.5-run-20:05:16',
+#     '2021-04-05-EXP - CROSS - FB-0.5 - DROP-0.8-run-18:01:02',
+#     '2021-04-07-EXP - MDR-0.5 - CROSS - DROP-0.4-run-09:31:15',
+#     '2021-04-07-EXP - MDR-0.5 - CROSS - DROP-0.8-run-09:31:15'
+# ]
+
 RUNS_TO_EVALUATE = [
-    '2021-04-02-2APR_EmbedOnly_VAE_FB_0.0-run-17:49:57',
-    '2021-04-05-EXP - CROSS - VAE - DROP-0.4-run-18:00:31',
-    '2021-04-05-EXP - CROSS - VAE - DROP-0.8-run-18:01:02',
-    '2021-04-02-2APR_EmbedOnly_BetaVAE_FB_0.5-run-15:27:53',
-    '2021-04-02-2APR_LongTestCross_BetaVAE_FB_0.5-run-20:05:16',
-    '2021-04-05-EXP - CROSS - FB-0.5 - DROP-0.8-run-18:01:02',
-    '2021-04-07-EXP - MDR-0.5 - CROSS - DROP-0.4-run-09:31:15',
-    '2021-04-07-EXP - MDR-0.5 - CROSS - DROP-0.8-run-09:31:15'
+    '2021-04-19-TEST-MATRIX-INFLUENCE-run-21:56:16',
+    '2021-04-20-20APRIL-MATRIX-INFLUENCE-DROP-0.4-run-11:28:18',
+    '2021-04-21-21APRIL-matrix-influence-FB-0.5-DROP-0.8-run-12:44:17',
+    '2021-04-22-21APRIL-matrix-influence-memory-FB-0.5-NO-DROP-run-06:25:03',
+    '2021-04-22-21APRIL-matrix-influence-memory-FB-0.5-DROP-0.4-run-07:50:36',
+    '2021-04-22-21APRIL-matrix-influence-memory-FB-0.5-DROP-0.8-run-08:50:58',
+    '2021-04-21-21APRIL-matrix-influence-MDR-0.5-NO-DROP-run-20:23:33',
+    '2021-04-22-21APRIL-matrix-influence-MDR-0.5-DROP-0.4-run-01:24:44',
+    '2021-04-22-21APRIL-matrix-influence-MDR-0.5-DROP-0.8-run-05:52:39',
+    '2021-04-22-21APRIL-matrix-influence-memory-MDR-0.5-NO-DROP-run-14:22:09',
+    '2021-04-22-21APRIL-matrix-influence-memory-MDR-0.5-DROP-0.4-run-21:33:53',
+    '2021-04-23-21APRIL-matrix-influence-memory-MDR-0.5-DROP-0.8-run-02:34:45'
 ]
+
 
 def combine_results_N_gpus(result_dir_path, run_name, max_batches, batch_size, n_samples, world_size):
     result_dir = Path(result_dir_path) / run_name
@@ -93,7 +109,7 @@ def dist_iw_log_likelihood_x_obs_x_gen(device_rank, run_name, model_path, max_ba
 
     # combined for all GPUs
     full_result_file = result_dir / f"{run_name}_world_size_{world_size}_max_batches_{max_batches}_" \
-                             f"batch_size_{batch_size}_n_samples_{n_samples}.pickle"
+                                    f"batch_size_{batch_size}_n_samples_{n_samples}.pickle"
 
     if os.path.isfile(result_file) or os.path.isfile(full_result_file):
 
@@ -190,7 +206,7 @@ def get_config():
     parser.add_argument("--model_path", required=False, type=str, default='dummy.pth',
                         help="Path to the model needed to evaluate it.")
     parser.add_argument("--result_dir_path", required=False, type=str,
-                        default="/home/cbarkhof/code-thesis/NewsVAE/iw_log_likelihood_x_obs_x_gen",
+                        default="/home/cbarkhof/code-thesis/NewsVAE/Results",
                         help="Path to directory to store the results.")
     parser.add_argument("--dataset_name", required=False, type=str,
                         default="ptb_text_only", help="The name of the dataset (default: ptb_text_only).")

@@ -88,7 +88,15 @@ def acc_drop_over_relative_seq_len(data_loader, model=None, path=None, device="c
     bin_means, bin_edges, bin_ids = stats.binned_statistic(relative_positions_masked.tolist(), acc_drops.tolist(),
                                                            statistic='mean', bins=N_bins)
 
-    return bin_means, bin_edges, acc_drops.mean()
+    return_dict = dict(
+        bin_means=bin_means,
+        bin_edges=bin_edges,
+        acc_drops=acc_drops,
+        prior_accs=prior_accs_masked,
+        posterior_accs=post_accs_masked
+    )
+
+    return return_dict
 
 
 # ----------------------------------------------------------------------------------------------------
