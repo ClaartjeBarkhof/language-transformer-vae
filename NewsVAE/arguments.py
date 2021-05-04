@@ -54,11 +54,11 @@ def preprare_parser(jupyter=False, print_settings=True):
                         help="Whether or not to use automatic mixed precision (default: True).")
 
     # DISTRIBUTED TRAINING
-    parser.add_argument("--n_gpus", default=4, type=int,
+    parser.add_argument("--n_gpus", default=1, type=int,
                         help="Number GPUs to use (default: None).")
     parser.add_argument("--n_nodes", default=1, type=int,
                         help="Number nodes to use (default: 1).")
-    parser.add_argument("--ddp", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
+    parser.add_argument("--ddp", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to use Distributed Data Parallel (DDP) "
                              "(default: True if n_gpus > 1, else: False).")
 
@@ -91,6 +91,10 @@ def preprare_parser(jupyter=False, print_settings=True):
                         help="Whether or not to checkpoint (save) the model. (default: False).")
     parser.add_argument("--checkpoint_every_n_steps", default=10, type=int,
                         help="Every how many (training) steps to checkpoint (default: 1000).")
+    parser.add_argument("--early_stop_epochs", default=3, type=int,
+                        help="After how many epochs of non-improving model the script should early stop (default: 3).")
+    parser.add_argument("--early_stopping", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
+                        help="Whether or not to apply early stopping after <early_stop_epochs> epochs of no improvement. (default: True).")
     # parser.add_argument("--load_from_checkpoint", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
     #                     help="Load from checkpoint given by checkpoint_file (default: False).")
     # parser.add_argument("--checkpoint_file", default="", type=str,
@@ -120,7 +124,7 @@ def preprare_parser(jupyter=False, print_settings=True):
                              "encoder is now 32 x 2 (first and last token). The last projection should be 2 x the "
                              "size of the latent space, because it contains mean and logvar with"
                              "both the dimensionality of the space.")
-    parser.add_argument("--add_latent_via_memory", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
+    parser.add_argument("--add_latent_via_memory", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Add the latent to the decoding process by the memory mechanism"
                              "as descrbed in the Optimus paper (default: True)")
     parser.add_argument("--add_latent_via_embeddings", default=False, type=lambda x: bool(distutils.util.strtobool(x)),

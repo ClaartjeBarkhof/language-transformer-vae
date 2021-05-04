@@ -206,7 +206,8 @@ def train(device_rank, config, run_name):
     stats = utils_train.make_nested_dict()
     finished_training = False
 
-    epoch, global_step, global_grad_step, best_valid_loss = 0, 0, 0, 1000
+    epoch, global_step, global_grad_step, not_improved_epochs = 0, 0, 0, 0
+    best_valid_loss, best_valid_rate, best_valid_rec = 1000, -1000, 1000
 
     # These are actual steps, not gradient steps, so they work in combination with global step
     max_train_steps_epoch_per_rank, max_valid_steps_epoch_per_rank = utils_train.determine_max_epoch_steps_per_rank(
@@ -223,7 +224,8 @@ def train(device_rank, config, run_name):
 
         for phase in data_loaders.keys():
 
-            if finished_training: break
+            if finished_training:
+                break
 
             if config.ddp:
                 print(f"-> Setting epoch explicitly to {epoch} on device {device_name}")
@@ -285,7 +287,7 @@ def train(device_rank, config, run_name):
                         and config.checkpoint and device_rank == 0:
                     vae_model = loss_term_manager.vae_model if config.ddp is False else loss_term_manager.module.vae_model
                     utils_train.save_checkpoint_model(vae_model, run_name, config.code_dir_path, global_step,
-                                                      best_valid_loss, epoch, config, best=False)
+                                                      best_valid_loss, epoch, config, checkpoint_type="last")
 
                 # ----------------------------------------------------------------------------------------------------
                 # KEEP TRACK OF STEPS (IN PHASE AND GLOBALLY)
@@ -307,17 +309,26 @@ def train(device_rank, config, run_name):
 
             # BEST MODEL CHECKPOINT
             if phase == 'validation' and world_master:
-                if 'elbo' in stats[epoch]['validation']:
-                    mean_valid_loss = - np.mean(stats[epoch]['validation']['elbo'])  # <- select - ELBO
+                val_epoch_stats = stats[epoch]['validation']
+                checkpoint_type, best_valid_loss, best_valid_rate, best_valid_rec = utils_train.determine_checkpoint(
+                    val_epoch_stats, best_valid_loss, best_valid_rate, best_valid_rec)
+
+                if checkpoint_type == "no-checkpoint":
+                    not_improved_epochs += 1
                 else:
-                    mean_valid_loss = np.mean(stats[epoch]['validation']['total_loss'])  # <- select on total loss
-                if config.checkpoint and mean_valid_loss < best_valid_loss:
-                    print(f"Found better (mean) validation loss (at this device): "
-                          f"{mean_valid_loss:.4f}. Saving checkpoint!")
+                    not_improved_epochs = 0
+
+                # Early stopping
+                if (not_improved_epochs > config.early_stop_epochs) and config.early_stopping:
+                    print("*" * 50);
+                    print("EARLY STOPPING!");
+                    print("*" * 50)
+                    finished_training = True
+
+                if config.checkpoint and checkpoint_type != "no-checkpoint":
                     vae_model = loss_term_manager.vae_model if config.ddp is False else loss_term_manager.module.vae_model
                     utils_train.save_checkpoint_model(vae_model, run_name, config.code_dir_path, global_step,
-                                                      best_valid_loss, epoch, config, best=True)
-                    best_valid_loss = mean_valid_loss
+                                                      best_valid_loss, epoch, config, checkpoint_type=checkpoint_type)
             # TODO: evaluation loop
 
         # ----------------------------------------------------------------------------------------------------

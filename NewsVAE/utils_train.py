@@ -362,7 +362,7 @@ def load_from_checkpoint(path, world_master=True, ddp=False, device_name="cuda:0
 
     # if config.add_latent_w_matrix_influence is True:
     #     print("TEST")
-    parameter_state_dict = fix_query_key_value_layer_name(parameter_state_dict)
+    #parameter_state_dict = fix_query_key_value_layer_name(parameter_state_dict)
 
     # MODEL
     if "module." in list(checkpoint["VAE_model_state_dict"].keys())[0] and not ddp:
@@ -408,18 +408,57 @@ def load_from_checkpoint(path, world_master=True, ddp=False, device_name="cuda:0
     else:
         return vae_model
 
+def determine_checkpoint(val_epoch_stats, best_valid_loss, best_valid_rate, best_valid_rec):
 
-def save_checkpoint_model(vae_model, run_name, code_dir_path, global_step, best_valid_loss, epoch, config, best=False):
+    if 'elbo' in val_epoch_stats:
+        mean_valid_loss = - np.mean(val_epoch_stats['elbo'])  # <- select - ELBO
+    else:
+        mean_valid_loss = np.mean(val_epoch_stats['total_loss'])  # <- select on total loss
+
+    mean_valid_rate = np.mean(val_epoch_stats["kl_analytical"])
+    mean_valid_rec = np.mean(val_epoch_stats["reconstruction_loss"])
+
+    # Better ELBO, lower rec and higher rate
+    if mean_valid_rec < best_valid_rec and mean_valid_rate > best_valid_rate and mean_valid_loss < best_valid_loss:
+        print(f"Found a better model in terms of ELBO and in terms of rate / distortion (non-collapsed model) on this device: "
+              f"elbo: {mean_valid_loss:.2f} rate: {mean_valid_rate:.2f}, {mean_valid_rec:.2f}. Saving model!")
+        checkpoint_type = "best-elbo-rate-distortion"
+        best_valid_rate = mean_valid_rate
+        best_valid_rec = mean_valid_rec
+        best_valid_loss = mean_valid_loss
+
+    # Lower rec, higher rate
+    elif mean_valid_rec < best_valid_rec and mean_valid_rate > best_valid_rate:
+        print(f"Found a better model in terms of rate / distortion (non-collapsed model) on this device: "
+              f"rate: {mean_valid_rate:.2f}, {mean_valid_rec:.2f}. Saving model!")
+        checkpoint_type = "best-rate-distortion"
+        best_valid_rate = mean_valid_rate
+        best_valid_rec = mean_valid_rec
+
+    # Better ELBO
+    elif mean_valid_loss < best_valid_loss:
+        print(f"Found better model in terms of ELBO on this device: {mean_valid_loss:.2f}. Saving model!")
+        checkpoint_type = "best-elbo"
+        best_valid_loss = mean_valid_loss
+
+    else:
+        checkpoint_type = "no-checkpoint"
+
+    return checkpoint_type, best_valid_loss, best_valid_rate, best_valid_rec
+
+
+def save_checkpoint_model(vae_model, run_name, code_dir_path, global_step,
+                          best_valid_loss, epoch, config, checkpoint_type="best"):
     """
     Save checkpoint for later use.
     """
 
     # Put in the name that it is a 'best' model
-    if best:
-        global_step = "best"
+    if checkpoint_type != "last":
+        global_step = checkpoint_type
 
     # If just a regular checkpoint, remove the previous checkpoint
-    if not best:
+    if checkpoint_type == "last":
         for ckpt in os.listdir('{}/Runs/{}'.format(code_dir_path, run_name)):
             if ('best' not in ckpt) and ('checkpoint' in ckpt):
                 print("Removing previously saved checkpoint: 'Runs/{}/{}'".format(run_name, ckpt))
