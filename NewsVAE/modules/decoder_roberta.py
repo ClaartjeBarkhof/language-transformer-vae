@@ -190,6 +190,8 @@ class QueryKeyValueLayer(nn.Module):
             self.alpha = nn.Parameter(torch.zeros(all_head_size))  # TODO: think about init
             self.gate_score = nn.Parameter(torch.zeros(1))
             self.current_gate_weight = None
+            self.avg_predicted_matrix_norm = None
+            self.original_matrix_norm = None
 
     def forward(self, hidden_states, proj_latent=None):
         # print("Hidden states shape", hidden_states.shape)
@@ -205,6 +207,8 @@ class QueryKeyValueLayer(nn.Module):
 
             predicted_weight_matrices = torch.matmul(proj_latent.unsqueeze(-1), alpha_T)  # [batch, hidden_in, hidden_out]
             # print("Predicted weight matrices", predicted_weight_matrices.shape)
+            self.avg_predicted_matrix_norm = torch.sum(torch.abs(predicted_weight_matrices.mean(dim=0)))
+            self.orginal_matrix_norm = torch.sum(torch.abs(self.layer.weight))
 
             # a linear layer has a weight matrix of shape [out, in], we need [in, out]
             weighted_base_weight_matrix = (1 - gate_weight) * self.layer.weight.T

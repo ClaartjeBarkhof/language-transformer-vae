@@ -2,7 +2,7 @@ import torch as torch
 import transformers
 from torch.utils.data import DataLoader
 from transformers import RobertaTokenizerFast, logging as transformers_logging  # type: ignore
-from datasets import load_dataset, list_datasets, load_from_disk  # type: ignore
+from datasets import load_dataset, list_datasets, load_from_disk, ReadInstruction  # type: ignore
 from typing import List, Dict, Union, Optional
 from collections import OrderedDict
 import os
@@ -23,7 +23,7 @@ class NewsData:
                  device="cuda:0"):
 
         # DATA DIRECTORY
-        dataset_list = ["cnn_dailymail", "ptb_text_only", "tom_ptb"]
+        dataset_list = ["cnn_dailymail", "ptb_text_only", "tom_ptb", "wikipedia"]
         assert dataset_name in dataset_list, f"Make sure the data set exists, choices: {dataset_list}"
 
         self.device = device
@@ -68,12 +68,21 @@ class NewsData:
                     validation= f"/home/cbarkhof/code-thesis/NewsVAE/NewsData/tom_ptb/valid_repreprocessed.txt",
                     test= f"/home/cbarkhof/code-thesis/NewsVAE/NewsData/tom_ptb/test_repreprocessed.txt",
                 ))
-
+            elif dataset_name == "wikipedia":
+                splits = [0, 70, 85, 100] # make train 70%, valid 15%, test 15% split from the train split
+                datasets = load_dataset("wikipedia", "20200501.en",
+                                        split=[ReadInstruction('train', from_=splits[i], to=splits[i + 1],
+                                                               unit='%') for i in range(3)])
+                self.datasets = {"train": datasets[0], "validation": datasets[1], "test": datasets[2]}
+                print(type(self.datasets["train"]))
             for split in ['train', 'validation', 'test']:
                 self.datasets[split] = self.datasets[split].map(self.convert_to_features, batched=True)
                 columns = ['attention_mask', 'input_ids']
 
                 self.datasets[split].set_format(type='torch', columns=columns)
+
+                if self.dataset_name == "wikipedia":
+                    self.datasets[split].__dict__["_split"] = split  # to bypass a bug in save_to_disk
                 self.datasets[split].save_to_disk(data_path+"/"+split)
 
                 print(f"Saved split {split} in {data_path+'/'+split}")
@@ -127,7 +136,7 @@ class NewsData:
 
         if self.dataset_name == "cnn_dailymail":
             key = "article"
-        elif self.dataset_name == "tom_ptb":
+        elif self.dataset_name == "tom_ptb" or self.dataset_name == "wikipedia":
             key = "text"
         else:
             key = "sentence"
@@ -139,7 +148,7 @@ class NewsData:
 
 if __name__ == "__main__":
     print("-> Begin!")
-    data = NewsData('bla', 'roberta', max_seq_len=64)
+    data = NewsData('wikipedia', 'roberta', max_seq_len=64)
     print("-> End!")
 
     print(data.datasets['train'].shape)

@@ -362,7 +362,7 @@ def load_from_checkpoint(path, world_master=True, ddp=False, device_name="cuda:0
 
     # if config.add_latent_w_matrix_influence is True:
     #     print("TEST")
-    #parameter_state_dict = fix_query_key_value_layer_name(parameter_state_dict)
+    parameter_state_dict = fix_query_key_value_layer_name(parameter_state_dict)
 
     # MODEL
     if "module." in list(checkpoint["VAE_model_state_dict"].keys())[0] and not ddp:
@@ -529,6 +529,29 @@ def add_matrix_influence_weight_to_loss(loss_term_manager, global_step, global_g
         gate_weights[f"query_{l_i}"] = l.attention.self.query_module.current_gate_weight.item()
         gate_weights[f"key_{l_i}"] = l.attention.self.key_module.current_gate_weight.item()
         gate_weights[f"value_{l_i}"] = l.attention.self.value_module.current_gate_weight.item()
+        gate_weights[f"query_{l_i}_original_matrix_norm"] = l.attention.self.query_module.orginal_matrix_norm.item()
+        gate_weights[f"key_{l_i}_original_matrix_norm"] = l.attention.self.key_module.orginal_matrix_norm.item()
+        gate_weights[f"value_{l_i}_original_matrix_norm"] = l.attention.self.value_module.orginal_matrix_norm.item()
+        gate_weights[f"query_{l_i}_avg_predicted_matrix_norm"] = l.attention.self.query_module.avg_predicted_matrix_norm.item()
+        gate_weights[f"key_{l_i}_avg_predicted_matrix_norm"] = l.attention.self.key_module.avg_predicted_matrix_norm.item()
+        gate_weights[f"value_{l_i}_avg_predicted_matrix_norm"] = l.attention.self.value_module.avg_predicted_matrix_norm.item()
+
+    N_layers = len(model.decoder.model.roberta.encoder.layer)
+    gate_weights["average_query_gate_score"] = np.mean([gate_weights[f"query_{i}"] for i in range(N_layers)])
+    gate_weights["average_key_gate_score"] = np.mean([gate_weights[f"key_{i}"] for i in range(N_layers)])
+    gate_weights["average_value_gate_score"] = np.mean([gate_weights[f"query_{i}"] for i in range(N_layers)])
+    gate_weights["average_query_avg_predicted_matrix_norm"] = np.mean(
+        [gate_weights[f"query_{i}_avg_predicted_matrix_norm"] for i in range(N_layers)])
+    gate_weights["average_key_avg_predicted_matrix_norm"] = np.mean(
+        [gate_weights[f"key_{i}_avg_predicted_matrix_norm"] for i in range(N_layers)])
+    gate_weights["average_value_avg_predicted_matrix_norm"] = np.mean(
+        [gate_weights[f"value_{i}_avg_predicted_matrix_norm"] for i in range(N_layers)])
+    gate_weights["average_query_original_matrix_norm"] = np.mean(
+        [gate_weights[f"query_{i}_original_matrix_norm"] for i in range(N_layers)])
+    gate_weights["average_value_original_matrix_norm"] = np.mean(
+        [gate_weights[f"value_{i}_original_matrix_norm"] for i in range(N_layers)])
+    gate_weights["average_key_original_matrix_norm"] = np.mean(
+        [gate_weights[f"key_{i}_original_matrix_norm"] for i in range(N_layers)])
 
     wandb.log(gate_weights)
 
