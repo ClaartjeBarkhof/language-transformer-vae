@@ -526,20 +526,32 @@ def add_matrix_influence_weight_to_loss(loss_term_manager, global_step, global_g
         model = loss_term_manager.vae_model
 
     for l_i, l in enumerate(model.decoder.model.roberta.encoder.layer):
-        gate_weights[f"query_{l_i}"] = l.attention.self.query_module.current_gate_weight.item()
-        gate_weights[f"key_{l_i}"] = l.attention.self.key_module.current_gate_weight.item()
-        gate_weights[f"value_{l_i}"] = l.attention.self.value_module.current_gate_weight.item()
-        gate_weights[f"query_{l_i}_original_matrix_norm"] = l.attention.self.query_module.orginal_matrix_norm.item()
-        gate_weights[f"key_{l_i}_original_matrix_norm"] = l.attention.self.key_module.orginal_matrix_norm.item()
-        gate_weights[f"value_{l_i}_original_matrix_norm"] = l.attention.self.value_module.orginal_matrix_norm.item()
-        gate_weights[f"query_{l_i}_avg_predicted_matrix_norm"] = l.attention.self.query_module.avg_predicted_matrix_norm.item()
-        gate_weights[f"key_{l_i}_avg_predicted_matrix_norm"] = l.attention.self.key_module.avg_predicted_matrix_norm.item()
-        gate_weights[f"value_{l_i}_avg_predicted_matrix_norm"] = l.attention.self.value_module.avg_predicted_matrix_norm.item()
+        gate_weights[f"avg_query_{l_i}"] = l.attention.self.query_module.current_gate_weight_mean
+        gate_weights[f"avg_key_{l_i}"] = l.attention.self.key_module.current_gate_weight_mean
+        gate_weights[f"avg_value_{l_i}"] = l.attention.self.value_module.current_gate_weight_mean
+
+        gate_weights[f"std_query_{l_i}"] = l.attention.self.query_module.current_gate_weight_std
+        gate_weights[f"std_key_{l_i}"] = l.attention.self.key_module.current_gate_weight_std
+        gate_weights[f"std_value_{l_i}"] = l.attention.self.value_module.current_gate_weight_std
+
+        gate_weights[f"query_{l_i}_original_matrix_norm"] = l.attention.self.query_module.orginal_matrix_norm
+        gate_weights[f"key_{l_i}_original_matrix_norm"] = l.attention.self.key_module.orginal_matrix_norm
+        gate_weights[f"value_{l_i}_original_matrix_norm"] = l.attention.self.value_module.orginal_matrix_norm
+
+        gate_weights[f"query_{l_i}_avg_predicted_matrix_norm"] = l.attention.self.query_module.avg_predicted_matrix_norm
+        gate_weights[f"key_{l_i}_avg_predicted_matrix_norm"] = l.attention.self.key_module.avg_predicted_matrix_norm
+        gate_weights[f"value_{l_i}_avg_predicted_matrix_norm"] = l.attention.self.value_module.avg_predicted_matrix_norm
 
     N_layers = len(model.decoder.model.roberta.encoder.layer)
-    gate_weights["average_query_gate_score"] = np.mean([gate_weights[f"query_{i}"] for i in range(N_layers)])
-    gate_weights["average_key_gate_score"] = np.mean([gate_weights[f"key_{i}"] for i in range(N_layers)])
-    gate_weights["average_value_gate_score"] = np.mean([gate_weights[f"query_{i}"] for i in range(N_layers)])
+
+    gate_weights["average_avg_query_gate_score"] = np.mean([gate_weights[f"avg_query_{i}"] for i in range(N_layers)])
+    gate_weights["average_avg_key_gate_score"] = np.mean([gate_weights[f"avg_key_{i}"] for i in range(N_layers)])
+    gate_weights["average_avg_value_gate_score"] = np.mean([gate_weights[f"avg_query_{i}"] for i in range(N_layers)])
+
+    gate_weights["average_std_query_gate_score"] = np.mean([gate_weights[f"std_query_{i}"] for i in range(N_layers)])
+    gate_weights["average_std_key_gate_score"] = np.mean([gate_weights[f"std_key_{i}"] for i in range(N_layers)])
+    gate_weights["average_std_value_gate_score"] = np.mean([gate_weights[f"std_query_{i}"] for i in range(N_layers)])
+
     gate_weights["average_query_avg_predicted_matrix_norm"] = np.mean(
         [gate_weights[f"query_{i}_avg_predicted_matrix_norm"] for i in range(N_layers)])
     gate_weights["average_key_avg_predicted_matrix_norm"] = np.mean(

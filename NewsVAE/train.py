@@ -304,7 +304,7 @@ def train(device_rank, config, run_name):
                 if global_step >= global_max_steps: finished_training = True; break
 
             # ----------------------------------------------------------------------------------------------------
-            # END OF PHASE
+            # END OF TRAIN / VALID PHASE
             # ----------------------------------------------------------------------------------------------------
 
             # BEST MODEL CHECKPOINT

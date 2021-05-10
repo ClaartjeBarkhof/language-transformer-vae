@@ -188,38 +188,59 @@ class QueryKeyValueLayer(nn.Module):
 
         if self.add_latent_w_matrix_influence is True:
             self.alpha = nn.Parameter(torch.zeros(all_head_size))  # TODO: think about init
-            self.gate_score = nn.Parameter(torch.zeros(1))
-            self.current_gate_weight = None
+            #self.gate_score = nn.Parameter(torch.zeros(1)) # outdated
+            self.current_gate_weight_mean = None
+            self.current_gate_weight_std = None
             self.avg_predicted_matrix_norm = None
             self.original_matrix_norm = None
 
     def forward(self, hidden_states, proj_latent=None):
-        # print("Hidden states shape", hidden_states.shape)
-        # print("Projected latent", proj_latent.shape)
+        """
+
+        hidden_states: [batch, seq_len, hidden_size]
+        projected latent: [batch, hidden_size+1]
+
+        """
 
         # Projection with latent influenced matrix
         if self.add_latent_w_matrix_influence is True:
             alpha_T = self.alpha.unsqueeze(0)  # [1, hidden_out] (row)
-            gate_weight = torch.sigmoid(self.gate_score)
-            self.current_gate_weight = gate_weight
+            # gate_weight = torch.sigmoid(self.gate_score)
+            proj_latent = proj_latent[:, 1:]
+            gate_weight = torch.sigmoid(proj_latent[:, 0])  # [batch_size]
+            # print("gate_weight.shape", gate_weight.shape)
 
-            # print("Alpha.T shape", alpha_T.shape)
+            # self.current_gate_weight = gate_weight
+            self.current_gate_weight_mean = gate_weight.mean().item()
+            self.current_gate_weight_std = gate_weight.std().item()
 
-            predicted_weight_matrices = torch.matmul(proj_latent.unsqueeze(-1), alpha_T)  # [batch, hidden_in, hidden_out]
-            # print("Predicted weight matrices", predicted_weight_matrices.shape)
-            self.avg_predicted_matrix_norm = torch.sum(torch.abs(predicted_weight_matrices.mean(dim=0)))
-            self.orginal_matrix_norm = torch.sum(torch.abs(self.layer.weight))
+            # [batch, hidden_in, hidden_out]
+            predicted_weight_matrices = torch.matmul(proj_latent.unsqueeze(-1), alpha_T)
+            # print("predicted_weight_matrices.shape", predicted_weight_matrices.shape)
 
+            # Log the norms of predicted and original matrix
+            self.avg_predicted_matrix_norm = torch.sum(torch.abs(predicted_weight_matrices.mean(dim=0))).item()
+            self.orginal_matrix_norm = torch.sum(torch.abs(self.layer.weight)).item()
+
+            # Expand normal weight matrix to [batch, hidden_in, hidden_out]
+            batch_size = gate_weight.shape[0]
             # a linear layer has a weight matrix of shape [out, in], we need [in, out]
-            weighted_base_weight_matrix = (1 - gate_weight) * self.layer.weight.T
-            # print("Base weight matrix", weighted_base_weight_matrix.shape)
+            normal_matrix = self.layer.weight.T.unsqueeze(0).repeat(batch_size, 1, 1)
+            # print("normal_matrix.shape", normal_matrix.shape)
+            gate_weight = gate_weight.view(-1, 1, 1).expand_as(normal_matrix)
+            # print("gate_weight.shape 2", gate_weight.shape)
 
-            weight_matrices = (gate_weight * predicted_weight_matrices) + weighted_base_weight_matrix  # b, i, o
-            # print("Combined weight matrices", weight_matrices.shape)
+            # Apply gate
+            weighted_normal_matrix = (1 - gate_weight) * normal_matrix
+            weighted_predicted_matrix = gate_weight * predicted_weight_matrices
+            weight_matrices = weighted_normal_matrix + weighted_predicted_matrix # [batch, hidden_in, hidden_out]
+            # print("weight_matrices.shape", weight_matrices.shape)
 
+            # Use einsum to do a matrix multipication for each element in batch with its own matrix
             out = torch.einsum('bsi, bio -> bso', hidden_states, weight_matrices) + self.layer.bias
 
             # print("Output shape", out.shape)
+            # quit()
 
         # Normal projection
         else:

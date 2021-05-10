@@ -23,7 +23,7 @@ class NewsData:
                  device="cuda:0"):
 
         # DATA DIRECTORY
-        dataset_list = ["cnn_dailymail", "ptb_text_only", "tom_ptb", "wikipedia"]
+        dataset_list = ["cnn_dailymail", "ptb_text_only", "tom_ptb", "wikipedia", "yelp"]
         assert dataset_name in dataset_list, f"Make sure the data set exists, choices: {dataset_list}"
 
         self.device = device
@@ -75,13 +75,18 @@ class NewsData:
                                                                unit='%') for i in range(3)])
                 self.datasets = {"train": datasets[0], "validation": datasets[1], "test": datasets[2]}
                 print(type(self.datasets["train"]))
+            elif dataset_name == "yelp":
+                splits = [0, 50, 100] # split test in validation and test
+                s = ["train"] + [ReadInstruction('test', from_=splits[i], to=splits[i + 1], unit='%') for i in range(2)]
+                datasets = load_dataset("yelp_review_full", split=s)
+                self.datasets = {"train": datasets[0], "validation": datasets[1], "test": datasets[2]}
             for split in ['train', 'validation', 'test']:
                 self.datasets[split] = self.datasets[split].map(self.convert_to_features, batched=True)
                 columns = ['attention_mask', 'input_ids']
 
                 self.datasets[split].set_format(type='torch', columns=columns)
 
-                if self.dataset_name == "wikipedia":
+                if self.dataset_name in ["wikipedia", "yelp"]:
                     self.datasets[split].__dict__["_split"] = split  # to bypass a bug in save_to_disk
                 self.datasets[split].save_to_disk(data_path+"/"+split)
 
@@ -136,7 +141,7 @@ class NewsData:
 
         if self.dataset_name == "cnn_dailymail":
             key = "article"
-        elif self.dataset_name == "tom_ptb" or self.dataset_name == "wikipedia":
+        elif self.dataset_name == "tom_ptb" or self.dataset_name == "wikipedia" or self.dataset_name == "yelp":
             key = "text"
         else:
             key = "sentence"
@@ -148,7 +153,7 @@ class NewsData:
 
 if __name__ == "__main__":
     print("-> Begin!")
-    data = NewsData('wikipedia', 'roberta', max_seq_len=64)
+    data = NewsData('yelp', 'roberta', max_seq_len=64)
     print("-> End!")
 
     print(data.datasets['train'].shape)

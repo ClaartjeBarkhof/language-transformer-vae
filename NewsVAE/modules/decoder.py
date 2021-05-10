@@ -417,7 +417,8 @@ class LatentToDecoderNewsVAE(nn.Module):
             self.latent_to_cross_projection.weight.data.normal_(mean=0.0, std=initializer_range)
 
         if self.add_latent_w_matrix_influence:
-            self.latent_to_matrix_projection = nn.Linear(latent_size, hidden_size*n_layers)
+            # + 1 for the gate weight prediction
+            self.latent_to_matrix_projection = nn.Linear(latent_size, (hidden_size+1)*n_layers)
             self.latent_to_matrix_projection.weight.data.normal_(mean=0.0, std=initializer_range)
 
     def forward(self, latent_z):
@@ -457,7 +458,7 @@ class LatentToDecoderNewsVAE(nn.Module):
 
         if self.add_latent_w_matrix_influence:
             latent_matrix_proj = self.latent_to_matrix_projection(latent_z)
-            latent_matrix_proj = torch.split(latent_matrix_proj, self.hidden_size, dim=-1)
+            latent_matrix_proj = torch.split(latent_matrix_proj, self.hidden_size+1, dim=-1)
             output["latent_matrix_proj"] = latent_matrix_proj
 
         return output
