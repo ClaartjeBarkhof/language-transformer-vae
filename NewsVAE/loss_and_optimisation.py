@@ -411,6 +411,7 @@ class LossTermManager(torch.nn.Module):
                                  reduce_batch_dim_ce=reduce_batch_dim_ce,
                                  device_name=device_name)
 
+        # 
         if return_attention_to_latent:
             if "self_attention_to_latent" in vae_out:
                 # avg over heads and layers
