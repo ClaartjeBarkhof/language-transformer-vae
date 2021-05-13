@@ -4,7 +4,7 @@ from torch.cuda.amp import GradScaler
 import torch
 import numpy as np
 import math
-
+import copy
 
 def kl_divergence(mu, logvar, hinge_kl_loss_lambda=0.5, average_batch=True, sum_latent=True):
     """
@@ -75,6 +75,13 @@ def sample_log_likelihood(latent_z, mu=None, logvar=None, reduce_latent_dim=True
     This function calculates the log likelihood of samples under the Normal
     Distribution, either parameterised by mu, logvar (posterior), else under the standard Normal (prior).
     """
+
+    # Multi sample posterior case
+    if latent_z.dim() == 3 and mu is not None and logvar is not None:
+        if mu.dim() != 3:
+            mu = mu.unsqueeze(1)
+        if logvar.dim() != 3:
+            logvar = logvar.unsqueeze(1)
 
     # Under a posterior z under q(z|x)
     if logvar is not None and mu is not None:
@@ -148,7 +155,7 @@ def approximate_log_q_z(mu, logvar, latent_z, method="chen", dataset_size=42068,
     if method == "chen":
         assert dataset_size is not None, "if using method 'chen', you need to provide a dataset size"
 
-    #print("dataset size", dataset_size)
+    # print("dataset size", dataset_size)
 
     # Get shapes
     x_batch, n_dim = mu.shape
@@ -214,6 +221,7 @@ class LossTermManager(torch.nn.Module):
         and can assemble the total loss (on which the VAE parameters bases its updates) according
         to the objective that is set.
         """
+
     def __init__(self, vae_model, config):
         super(LossTermManager, self).__init__()
 
@@ -392,68 +400,228 @@ class LossTermManager(torch.nn.Module):
                     f"alpha = {config.hoffman_vae_marg_KL_lagrangian_alpha}"
                     f"and lr = {config.hoffman_vae_marg_KL_lagrangian_lr}")
 
-    def forward(self, input_ids, attention_mask, return_exact_match=False, return_reconstruction_loss=True, decoder_only=False,
-                return_posterior_stats=True, device_name="cuda:0", return_cross_entropy=False,  reduce_seq_dim_ce="mean",
-                reduce_batch_dim_ce="mean", reduce_seq_dim_exact_match="mean", reduce_batch_dim_exact_match="mean",
-                mean_all=False, return_attention_to_latent=False, train=True):
+    def multi_sample_vae_forward(self, input_ids, attention_mask, return_exact_match=False,
+                                 n_samples=100, return_attention_to_latent=False):
 
-        vae_out = self.vae_model(input_ids=input_ids, attention_mask=attention_mask,
-                                 return_exact_match=return_exact_match,
-                                 reduce_seq_dim_exact_match=reduce_seq_dim_exact_match,
-                                 reduce_batch_dim_exact_match=reduce_batch_dim_exact_match,
-                                 return_mu_logvar=True,
-                                 return_latents=True,
-                                 return_attention_to_latent=return_attention_to_latent,
-                                 return_reconstruction_loss=return_reconstruction_loss,
-                                 return_posterior_stats=return_posterior_stats,
-                                 return_cross_entropy=return_cross_entropy,
-                                 reduce_seq_dim_ce=reduce_seq_dim_ce,
-                                 reduce_batch_dim_ce=reduce_batch_dim_ce,
-                                 device_name=device_name)
+        # Encode these input ids and sample <n_samples> for each x
+        enc_out = self.vae_model.encoder.encode(input_ids, attention_mask,
+                                                n_samples=n_samples,
+                                                return_log_q_z_x=True,
+                                                return_log_q_z=True,
+                                                return_log_p_z=True,
+                                                return_embeddings=False)
 
-        #
-        if return_attention_to_latent:
-            if "self_attention_to_latent" in vae_out:
-                # avg over heads and layers
-                vae_out["attention_to_latent"] = vae_out["self_attention_to_latent"].mean(dim=1).mean(dim=1)
-                del vae_out["self_attention_to_latent"]
-            elif "cross_attention_to_latent" in vae_out:
-                # avg over heads and layers
-                vae_out["attention_to_latent"] = vae_out["cross_attention_to_latent"].mean(dim=1).mean(dim=1)
-                del vae_out["cross_attention_to_latent"]
+        # Unpack the tensors we need, shapes: [batch, n_samples, latent_dim], [batch, n_samples], [batch, n_samples]
+        post_samples, post_log_p_z, post_log_q_z_x = enc_out["latent_z"], enc_out["log_p_z"], enc_out["log_q_z_x"]
 
-        if decoder_only is False:
-            loss_dict = self.assemble_loss(vae_out["reconstruction_loss"], vae_out["mu"], vae_out["logvar"],
+        # Multi sample decode
+        log_p_x_z, dec_out = [], None
+        for i in range(n_samples):
+            latent_z = post_samples[:, i, :]
+
+            dec_out = self.vae_model.decoder(latent_z, input_ids, attention_mask,
+                                             return_attention_to_latent=return_attention_to_latent,
+                                             return_exact_match=return_exact_match,
+                                             return_cross_entropy=True,
+                                             return_reconstruction_loss=True,
+                                             reduce_batch_reconstruction_loss=False,
+                                             reduce_seq_dim_ce="mean",
+                                             reduce_seq_dim_exact_match="mean",
+                                             reduce_batch_dim_exact_match="mean",
+                                             reduce_batch_dim_ce="mean",
+                                             labels=copy.copy(input_ids))
+
+            # log likelihood = - reconstruction_loss
+            log_p_x_z.append(- dec_out["reconstruction_loss"])
+
+        log_p_x_z = torch.stack(log_p_x_z, dim=1)
+
+        iw_ll = self.iw_log_p_x(log_p_x_z, log_p_z=enc_out["log_p_z"], log_q_z_x=enc_out["log_q_z_x"])
+
+        # normalise for length
+        lens = torch.sum(attention_mask, dim=-1)
+        iw_ll_not_zero = iw_ll[lens > 0.0]
+        lens_not_zero = lens[lens > 0.0]
+
+        if len(lens[lens == 0]) > 0:
+            print("-> Zero length sequence generation!")
+
+        iw_ll_p_w = iw_ll_not_zero / lens_not_zero
+
+        vae_out = {**enc_out, **dec_out, "log_p_x_z": log_p_x_z.mean().cpu().item(),
+                   "lens": lens.float(), "iw_ll": iw_ll_not_zero, "iw_ll_mean": iw_ll_not_zero.mean().cpu().item(),
+                   "iw_ll_p_w": iw_ll_p_w, "iw_ll_p_w_mean": iw_ll_p_w.mean().cpu().item()}
+
+        return vae_out
+
+    @staticmethod
+    def make_batch_from_model_samples(predictions, eos_token_id=2, pad_token_id=1, bos_token_id=0):
+        # Add a <s> token to the predictions
+        bos = torch.zeros_like(predictions)[:, 0].unsqueeze(1)
+        predictions = torch.cat([bos, predictions], dim=1)
+
+        # Make a tensor with position indices per row
+        ind = torch.arange(predictions.shape[1]).repeat(predictions.shape[0], 1)
+
+        # Check where the eos_token is in the predictions, if not there set to max_len
+        lens = torch.tensor(
+            [a.index(eos_token_id) if eos_token_id in a else len(a) for a in predictions.tolist()]).unsqueeze(1)
+
+        # Mask everything after the eos_token_id (set to 0.0)
+        mask = (ind > lens)
+
+        # Pad the predictions (setting all tokens after </s> to <pad>)
+        predictions[mask] = pad_token_id
+
+        return predictions, mask, lens.flatten()
+
+
+    def forward(self, input_ids, attention_mask, return_exact_match=False, decoder_only=False, eval_iw_ll_x_gen=False,
+                return_posterior_stats=True, device_name="cuda:0", iw_ll_n_samples=10,
+                return_attention_to_latent=False, train=True, max_seq_len_x_gen=64):
+        """
+        This forward implements the forward of the VAE in train or validation mode and then assembles
+        the loss / stats that are relevant for training. This is separate from the normal VAE forward as it is focused
+        on assembling quantities that are relevant for training and optimisation, rather than practical features such as
+        returning embeddings etc.
+
+        There are two important settings:
+            - decoder_only: if True, the model is a regular language model, everything related to the encoder is skipped
+
+            - n_samples: the number of samples used to approximate the log likelihood of the data
+                if > 1: importance weighted ll
+                else: normal elbo
+
+        """
+
+        # Decoder only mode
+        if decoder_only:
+            vae_out = self.vae_model.decoder_only_forward(input_ids=input_ids, attention_mask=attention_mask)
+
+        # Normal VAE mode
+        else:
+            vae_out = self.multi_sample_vae_forward(input_ids=input_ids, attention_mask=attention_mask,
+                                                    return_exact_match=return_exact_match, n_samples=iw_ll_n_samples,
+                                                    return_attention_to_latent=return_attention_to_latent)
+
+            if return_posterior_stats:
+                post_stats = self.vae_model.calc_posterior_stats(mu=vae_out["mu"], logvar=vae_out["logvar"])
+                vae_out = {**vae_out, **post_stats}
+
+            # Shapes at this point
+            # vae_out["reconstruction_loss"] (- log p_x_z), log_q_z_x, log_p_z = [batch, n_samples]
+            # log_q_z, log_q_z_prod_marg = 0-dim (number)
+            loss_dict = self.assemble_loss(reconstruction_loss=vae_out["reconstruction_loss"].mean(),
+                                           mu=vae_out["mu"], logvar=vae_out["logvar"],
                                            log_p_z=vae_out["log_p_z"].mean(),
                                            log_q_z_x=vae_out["log_q_z_x"].mean(),
                                            log_q_z=vae_out["log_q_z"],
                                            log_q_z_prod_marg=vae_out["log_q_z_prod_marg"],
                                            mmd=None)
 
+
+            vae_out = {**vae_out, **loss_dict}
+
             if train is True:
+                # these are not tracked with train
                 del vae_out["mu"]
                 del vae_out["logvar"]
-                del vae_out["latents"]
-                vae_out["log_p_z"] = vae_out["log_p_z"].mean().cpu().item()
-                vae_out["log_q_z"] = vae_out["log_q_z"].mean().cpu().item()
-                vae_out["log_q_z_x"] = vae_out["log_q_z_x"].mean().cpu().item()
-                vae_out["log_q_z_prod_marg"] = vae_out["log_q_z_prod_marg"].mean().cpu().item()
+                del vae_out["latent_z"]
+                del vae_out["cross_entropy"] # spurious
 
-            return_dict = {**vae_out, **loss_dict}
+                for k in list(vae_out.keys()):
+                    if torch.is_tensor(vae_out[k]) and k != "total_loss" and k not in ["iw_ll", "iw_ll_p_w", "lens"]:
+                        vae_out[k] = vae_out[k].mean().cpu().item()
+                    elif vae_out[k] is None:
+                        del vae_out[k]
 
-            return return_dict
-        else:
-            # Delete all that is None
-            key_list = list(vae_out.keys())
-            for k in key_list:
-                if vae_out[k] is None:
-                    del vae_out[k]
+            # Evaluate the likelihood given to samples that originate from the generative model
+            # i.w. log p(x_gen)
+            if eval_iw_ll_x_gen:
+                # Without grad, because used as 'external' to the model
+                with torch.no_grad():
+                    # Sample from the model by decoding from prior auto-regressively with sampling
+                    out = self.vae_model(return_reconstruction_loss=False,
+                                         return_posterior_stats=False,
+                                         auto_regressive=True,
+                                         max_seq_len=max_seq_len_x_gen,
+                                         return_predictions=True,
+                                         nucleus_sampling=True,
+                                         top_k=0,  # no filtering
+                                         top_p=1.0,  # no filtering
+                                         decode_sample_from_prior=True,
+                                         n_prior_samples=input_ids.shape[0],
+                                         device_name=device_name)
 
-            return vae_out
+                    # this prepares the predictions as input samples
+                    padded_predictions, mask, lens = self.make_batch_from_model_samples(out["predictions"])
+
+                # Should use gradients, but for now only used in
+                vae_out_x_gen = self.multi_sample_vae_forward(input_ids=padded_predictions.to(device_name),
+                                                              attention_mask=mask.to(device_name),
+                                                              return_exact_match=False, n_samples=eval_iw_ll_x_gen,
+                                                              return_attention_to_latent=False)
+
+                # Log the mean of the batch as well as the values to add to histogram
+                vae_out["iw_ll_x_gen_mean"] = vae_out_x_gen["iw_ll_mean"]
+                vae_out["iw_ll_x_gen"] = vae_out_x_gen["iw_ll"].detach()
+                vae_out["iw_ll_x_gen_p_w_mean"] = vae_out_x_gen["iw_ll_p_w_mean"]
+                vae_out["iw_ll_x_gen_p_w"] = vae_out_x_gen["iw_ll_p_w"].detach()
+                vae_out["lens_x_gen"] = vae_out_x_gen["lens"].detach()
+
+            # print("-" * 40)
+            # print("VAE OUT")
+            # for k, v in vae_out.items():
+            #     if torch.is_tensor(v):
+            #         print(k, ":", v.shape)
+            #     else:
+            #         print(k, v)
+            # print("-" * 40)
+            #
+            # quit()
+
+        # Delete all that is None
+        key_list = list(vae_out.keys())
+        for k in key_list:
+            if vae_out[k] is None:
+                del vae_out[k]
+
+        # TODO: check this
+        if return_attention_to_latent:
+            if "self_attention_to_latent" in vae_out:
+                # avg over heads and layers
+                # vae_out["attention_to_latent"] = vae_out["self_attention_to_latent"].mean(dim=1).mean(dim=1)
+                del vae_out["self_attention_to_latent"]
+
+            elif "cross_attention_to_latent" in vae_out:
+                # avg over heads and layers
+                # vae_out["attention_to_latent"] = vae_out["cross_attention_to_latent"].mean(dim=1).mean(dim=1)
+                del vae_out["cross_attention_to_latent"]
+
+        return vae_out
+
+    def iw_log_p_x(self, log_p_x_z, log_p_z, log_q_z_x):
+        """
+        Importance weighted likelihood.
+
+        log_p_x_z, log_p_z, log_q_z_x: [batch, n_samples]
+        """
+        n_samples = log_p_x_z.shape[1]
+        iw_frac = log_p_x_z + log_p_z - log_q_z_x
+
+        # Reduce the sample dimension with logsumexp, leaves shape [batch_size]
+        iw_likelihood = torch.logsumexp(iw_frac, dim=-1) - np.log(n_samples)
+        return iw_likelihood
+
 
     def assemble_loss(self, reconstruction_loss, mu, logvar,
                       log_p_z=None, log_q_z_x=None,
                       log_q_z=None, log_q_z_prod_marg=None, mmd=None):
+        """
+        # log_p_x_z, log_q_z_x, log_p_z = [batch, n_samples]
+        # log_q_z, log_q_z_prod_marg = 0-dim (numbers)
+
+        """
 
         loss_dict = dict()
 
@@ -535,7 +703,7 @@ class LossTermManager(torch.nn.Module):
 
         # Beta-TC-VAE
         elif self.objective == "beta-tc-vae":
-            #mi = log_q_z_x - log_q_z
+            # mi = log_q_z_x - log_q_z
             # Parameter schedule
             if isinstance(self.manager["alpha_MI"], ParameterScheduler):
                 alpha = self.manager["alpha_MI"].current_val
@@ -547,11 +715,11 @@ class LossTermManager(torch.nn.Module):
                 alpha_mi = self.manager["alpha_MI"]["constraint"](mi)
 
             # Parameter schedule
-            #tc = log_q_z - log_q_z_prod_marg
+            # tc = log_q_z - log_q_z_prod_marg
             beta = self.manager["beta_TC"].current_val
             beta_tc = beta * tc
 
-            #dim_kl = log_q_z_prod_marg - log_p_z
+            # dim_kl = log_q_z_prod_marg - log_p_z
             # Parameter schedule (linear or constant)
             if isinstance(self.manager["gamma_DimKL"], ParameterScheduler):
                 gamma = self.manager["gamma_DimKL"].current_val
@@ -561,7 +729,7 @@ class LossTermManager(torch.nn.Module):
                 gamma = self.manager["gamma_DimKL"]["constraint"].multiplier
                 gamma_dim_kl = self.manager["gamma_DimKL"]["constraint"](dim_kl)
 
-            #marginal_kl = log_q_z - log_p_z
+            # marginal_kl = log_q_z - log_p_z
             approx_kl = log_q_z_x - log_p_z
 
             total_loss = reconstruction_loss + alpha_mi + beta_tc + gamma_dim_kl
@@ -583,11 +751,10 @@ class LossTermManager(torch.nn.Module):
 
         # HOFFMAN VAE
         elif self.objective == "hoffman":
-            #mi = log_q_z_x - log_q_z
+            # mi = log_q_z_x - log_q_z
 
-
-            #loss_dict["MI"] = mi
-            #loss_dict["marginal KL"] = marginal_kl
+            # loss_dict["MI"] = mi
+            # loss_dict["marginal KL"] = marginal_kl
 
             total_loss = reconstruction_loss
             if isinstance(self.manager["alpha_MI"], ParameterScheduler):
@@ -604,7 +771,8 @@ class LossTermManager(torch.nn.Module):
                 total_loss = total_loss + mi + lagrange_loss_alpha
 
                 loss_dict["multiplier (alpha)"] = multiplier.item() if torch.is_tensor(multiplier) else multiplier
-                loss_dict["lagrange_loss_alpha"] = lagrange_loss_alpha.item() if torch.is_tensor(lagrange_loss_alpha) else lagrange_loss_alpha
+                loss_dict["lagrange_loss_alpha"] = lagrange_loss_alpha.item() if torch.is_tensor(
+                    lagrange_loss_alpha) else lagrange_loss_alpha
 
             if isinstance(self.manager["beta_marg_KL"], ParameterScheduler):
                 beta = self.manager["beta_marg_KL"].current_val
@@ -620,18 +788,18 @@ class LossTermManager(torch.nn.Module):
                 total_loss = total_loss + marginal_kl + lagrange_loss_beta
 
                 loss_dict["multiplier (beta)"] = multiplier.item() if torch.is_tensor(multiplier) else multiplier
-                loss_dict["lagrange_loss_beta"] = lagrange_loss_beta.item() if torch.is_tensor(lagrange_loss_beta) else lagrange_loss_beta
+                loss_dict["lagrange_loss_beta"] = lagrange_loss_beta.item() if torch.is_tensor(
+                    lagrange_loss_beta) else lagrange_loss_beta
 
             hoffman_elbo = reconstruction_loss + mi + marginal_kl
             loss_dict["hoffman_elbo"] = hoffman_elbo.item()
-            #loss_dict["marginal KL"] = marginal_kl.item()
-            #loss_dict["MI"] = mi.item()
+            # loss_dict["marginal KL"] = marginal_kl.item()
+            # loss_dict["MI"] = mi.item()
             loss_dict["KL = (MI + marginal KL)"] = (mi + marginal_kl).item()
 
         # Evaluation
         else:
             total_loss = torch.tensor(0.0)
-
 
         loss_dict["MI"] = mi.item() if mi is not None else None
         loss_dict["TC"] = tc.item() if tc is not None else None

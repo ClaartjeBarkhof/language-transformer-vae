@@ -74,44 +74,43 @@ class EncoderNewsVAE(torch.nn.Module):
         # Forward
         encoder_out = self.forward(input_ids=input_ids, attention_mask=attention_mask,
                                    return_embeddings=return_embeddings)
-
         mu, logvar = encoder_out["mu"], encoder_out["logvar"]
 
         # Sample latents from posterior
-        latent_z = self.reparameterize(encoder_out["mu"], encoder_out["logvar"], n_samples=n_samples)
+        latent_z = self.reparameterize(mu, logvar, n_samples=n_samples)
+        single_sample_z = latent_z[:, 0, :]
 
-        if n_samples == 1:
-            latent_z = latent_z.squeeze(1)
-            logvar_, mu_ = logvar, mu
-        else:
-            # repeat along the sample dimension (1)
-            logvar_, mu_ = logvar.unsqueeze(1).repeat(1, n_samples, 1), mu.unsqueeze(1).repeat(1, n_samples, 1)
+        # print("mu.shape", mu.shape)
+        # print("latent_z.shape", latent_z.shape)
+        # print("logvar.shape", logvar.shape)
+        # print("single_sample.shape", single_sample_z.shape)
 
+        # return_log_q_z_x = True # TODO; remove this
+        # return_log_p_z = True # TODO; remove this
+
+        log_q_z_x, log_p_z, log_q_z, log_q_z_prod_marg = None, None, None, None
         if return_log_q_z_x:
-            log_q_z_x = sample_log_likelihood(latent_z, mu=mu_, logvar=logvar_,
+            log_q_z_x = sample_log_likelihood(latent_z, mu=mu, logvar=logvar,
                                               reduce_latent_dim=True, reduce_batch_dim=False)
-        else:
-            log_q_z_x = None
 
         if return_log_p_z:
             log_p_z = sample_log_likelihood(latent_z, mu=None, logvar=None,
                                             reduce_latent_dim=True, reduce_batch_dim=False)
-        else:
-            log_p_z = None
 
         if return_log_q_z:
-            log_q_z, log_q_z_prod_marg = approximate_log_q_z(mu, logvar, latent_z, method="chen",
+            # NB: only implemented with a single posterior sample
+            log_q_z, log_q_z_prod_marg = approximate_log_q_z(mu, logvar, single_sample_z, method="chen",
                                                              dataset_size=dataset_size,
                                                              prod_marginals=True)
-        else:
-            log_q_z, log_q_z_prod_marg = None, None
-
         # Calculate the Maximum Mean Discrepancy
-        if n_samples != 1:
-            # print("Warning, MMD loss not implemented for multiple samples.")
-            mmd_loss = None
-        else:
-            mmd_loss = maximum_mean_discrepancy(latent_z)
+        # NB: only implemented with a single posterior sample
+        mmd_loss = maximum_mean_discrepancy(single_sample_z)
+
+        # print("log_q_z_x.shape", log_q_z_x.shape)
+        # print("log_p_z.shape", log_p_z.shape)
+        # print("log_q_z.shape", log_q_z.shape)
+        # print("log_q_z_prod_marg.shape", log_q_z_prod_marg.shape)
+        # quit()
 
         return_dict = {
             "mu": mu,

@@ -14,6 +14,7 @@ import torch.backends.cudnn as cudnn
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
+from scipy import stats
 from utils_external import tie_weights
 import modules.vae as vae
 
@@ -408,78 +409,155 @@ def load_from_checkpoint(path, world_master=True, ddp=False, device_name="cuda:0
     else:
         return vae_model
 
-def determine_checkpoint(val_epoch_stats, best_valid_loss, best_valid_rate, best_valid_rec):
+# Code for the fn below is taken from: https://stackoverflow.com/questions/32791911/fast-calculation-of-pareto-front-in-python
+# Fairly fast for many datapoints, less fast for many costs, somewhat readable
+def is_pareto_efficient_simple(costs):
+    """
 
-    if 'elbo' in val_epoch_stats:
-        mean_valid_loss = - np.mean(val_epoch_stats['elbo'])  # <- select - ELBO
-    else:
-        mean_valid_loss = np.mean(val_epoch_stats['total_loss'])  # <- select on total loss
+    NB: I changed the function from costs to gains, changing the condition to a greater than.
 
-    mean_valid_rate = np.mean(val_epoch_stats["kl_analytical"])
-    mean_valid_rec = np.mean(val_epoch_stats["reconstruction_loss"])
+    Find the pareto-efficient points
+    :param costs: An (n_points, n_costs) array
+    :return: A (n_points, ) boolean array, indicating whether each point is Pareto efficient
+    """
+    is_efficient = np.ones(costs.shape[0], dtype = bool)
+    for i, c in enumerate(costs):
+        if is_efficient[i]:
+            # Keep any point with a lower cost (changed to greater than, for gain)
+            is_efficient[is_efficient] = np.any(costs[is_efficient] > c, axis=1)
+            is_efficient[i] = True  # And keep self
+    return is_efficient
 
-    # Better ELBO, lower rec and higher rate
-    if mean_valid_rec < best_valid_rec and mean_valid_rate > best_valid_rate and mean_valid_loss < best_valid_loss:
-        print(f"Found a better model in terms of ELBO and in terms of rate / distortion (non-collapsed model) on this device: "
-              f"elbo: {mean_valid_loss:.2f} rate: {mean_valid_rate:.2f}, {mean_valid_rec:.2f}. Saving model!")
-        checkpoint_type = "best-elbo-rate-distortion"
-        best_valid_rate = mean_valid_rate
-        best_valid_rec = mean_valid_rec
-        best_valid_loss = mean_valid_loss
 
-    # Lower rec, higher rate
-    elif mean_valid_rec < best_valid_rec and mean_valid_rate > best_valid_rate:
-        print(f"Found a better model in terms of rate / distortion (non-collapsed model) on this device: "
-              f"rate: {mean_valid_rate:.2f}, {mean_valid_rec:.2f}. Saving model!")
-        checkpoint_type = "best-rate-distortion"
-        best_valid_rate = mean_valid_rate
-        best_valid_rec = mean_valid_rec
+def determine_checkpoint(val_epoch_stats, epoch_pareto_effiency_dict, epoch):
+    """
 
-    # Better ELBO
-    elif mean_valid_loss < best_valid_loss:
-        print(f"Found better model in terms of ELBO on this device: {mean_valid_loss:.2f}. Saving model!")
-        checkpoint_type = "best-elbo"
-        best_valid_loss = mean_valid_loss
+    Args:
+        val_epoch_stats: a dict with metrics per epoch over batches, structured as follows:
+            val_epoch_stats[epoch_i][metric_i] = list of metric values for batches
 
-    else:
-        checkpoint_type = "no-checkpoint"
+        epoch_pareto_effiency_dict: a summary per epoch of a selection of metric to keep track of the
+            pareto frontier measured along those dimensions, the dimensions are defined as keys in the dict:
+                rate, -distortion, iw_ll_mean, iw_ll_x_gen_mean, -D_ks
+                -> the values are the mean of the metric at the epoch corresponding to the index in the list
+                -> some are negated to make the direction higher is better for all metrics
+    Returns:
+        epoch_pareto_effiency_dict: with the stats of the current epoch added
 
-    return checkpoint_type, best_valid_loss, best_valid_rate, best_valid_rec
+
+
+    """
+
+    iw_ll, iw_ll_x_gen = val_epoch_stats["iw_ll_p_w"], val_epoch_stats["iw_ll_x_gen_p_w"]
+    ks_statistic, pval = stats.ks_2samp(iw_ll, iw_ll_x_gen)
+
+    iw_ll_mean = np.mean(iw_ll)
+    iw_ll_x_gen_mean = np.mean(iw_ll_x_gen)
+    rate_mean = np.mean(val_epoch_stats["kl_analytical"])
+    min_distortion_mean = - np.mean(val_epoch_stats["reconstruction_loss"])
+    min_d_ks = - ks_statistic
+
+    epoch_pareto_effiency_dict["rate"].append(rate_mean)
+    epoch_pareto_effiency_dict["-distortion"].append(min_distortion_mean)
+    epoch_pareto_effiency_dict["-D_ks"].append(min_d_ks)
+    epoch_pareto_effiency_dict["iw_ll_mean"].append(iw_ll_mean)
+    epoch_pareto_effiency_dict["iw_ll_x_gen_mean"].append(iw_ll_x_gen_mean)
+
+    # Change the dict to a set of array of multi dimensional points
+    multi_dim_points = np.asarray([[
+        epoch_pareto_effiency_dict["rate"][i],
+        epoch_pareto_effiency_dict["-distortion"][i],
+        epoch_pareto_effiency_dict["-D_ks"][i],
+        epoch_pareto_effiency_dict["iw_ll_mean"][i],
+        epoch_pareto_effiency_dict["iw_ll_x_gen_mean"][i]] for i in range(epoch+1)])
+
+    efficient_epochs = is_pareto_efficient_simple(multi_dim_points)
+    efficient_epochs = np.where(efficient_epochs)[0].tolist() # convert boolean array to list with epoch indices
+
+    return epoch_pareto_effiency_dict, efficient_epochs
+
+    # print("iw_ll mean", iw_ll_mean)
+    # print("iw_ll x_gen mean", iw_ll_x_gen_mean)
+    # print("ks statistic, pvalue:", ks_statistic, pval)
+    # quit()
+
+    # if 'elbo' in val_epoch_stats:
+    #     mean_valid_loss = - np.mean(val_epoch_stats['elbo'])  # <- select - ELBO
+    # else:
+    #     mean_valid_loss = np.mean(val_epoch_stats['total_loss'])  # <- select on total loss
+    #
+    # mean_valid_rate = np.mean(val_epoch_stats["kl_analytical"])
+    # mean_valid_rec = np.mean(val_epoch_stats["reconstruction_loss"])
+    #
+    # # Better ELBO, lower rec and higher rate
+    # if mean_valid_rec < best_valid_rec and mean_valid_rate > best_valid_rate and mean_valid_loss < best_valid_loss:
+    #     print(f"Found a better model in terms of ELBO and in terms of rate / distortion (non-collapsed model) on this device: "
+    #           f"elbo: {mean_valid_loss:.2f} rate: {mean_valid_rate:.2f}, {mean_valid_rec:.2f}. Saving model!")
+    #     checkpoint_type = "best-elbo-rate-distortion"
+    #     best_valid_rate = mean_valid_rate
+    #     best_valid_rec = mean_valid_rec
+    #     best_valid_loss = mean_valid_loss
+    #
+    # # Lower rec, higher rate
+    # elif mean_valid_rec < best_valid_rec and mean_valid_rate > best_valid_rate:
+    #     print(f"Found a better model in terms of rate / distortion (non-collapsed model) on this device: "
+    #           f"rate: {mean_valid_rate:.2f}, {mean_valid_rec:.2f}. Saving model!")
+    #     checkpoint_type = "best-rate-distortion"
+    #     best_valid_rate = mean_valid_rate
+    #     best_valid_rec = mean_valid_rec
+    #
+    # # Better ELBO
+    # elif mean_valid_loss < best_valid_loss:
+    #     print(f"Found better model in terms of ELBO on this device: {mean_valid_loss:.2f}. Saving model!")
+    #     checkpoint_type = "best-elbo"
+    #     best_valid_loss = mean_valid_loss
+    #
+    # else:
+    #     checkpoint_type = "no-checkpoint"
+    #
+    # return checkpoint_type, best_valid_loss, best_valid_rate, best_valid_rec
 
 
 def save_checkpoint_model(vae_model, run_name, code_dir_path, global_step,
-                          best_valid_loss, epoch, config, checkpoint_type="best"):
+                          current_epoch, config, efficient_epochs, epoch_pareto_effiency_dict):
     """
     Save checkpoint for later use.
     """
 
-    # Put in the name that it is a 'best' model
-    if checkpoint_type != "last":
-        global_step = checkpoint_type
+    # Check which checkpoints are saved, but no longer Pareto efficient
+    rmv_ckpts = []
+    epochs = []
+    for ckpt in os.listdir('{}/Runs/{}'.format(code_dir_path, run_name)):
+        # format: name = "checkpoint-epoch-02-step-1000-iw-ll-100.pth"
+        e = int(ckpt.split('-')[2])
+        epochs.append(e)
+        rmv_ckpts.append(e)
 
-    # If just a regular checkpoint, remove the previous checkpoint
-    if checkpoint_type == "last":
-        for ckpt in os.listdir('{}/Runs/{}'.format(code_dir_path, run_name)):
-            if ('best' not in ckpt) and ('checkpoint' in ckpt):
-                print("Removing previously saved checkpoint: 'Runs/{}/{}'".format(run_name, ckpt))
-                os.remove('{}/Runs/{}/{}'.format(code_dir_path, run_name, ckpt))
+    # Remove the checkpoints that are no longer Pareto efficient
+    for c in rmv_ckpts:
+        print(f"Removing {c}, no longer Pareto efficient.")
+        os.remove(f"{code_dir_path}/Runs/{run_name}/{c}")
 
-    print(
-        "Saving checkpoint at '{}/Runs/{}/checkpoint-{}.pth'...".format(code_dir_path, run_name, global_step))
+    # If new efficient checkpoint is found, save it as such
+    if current_epoch in efficient_epochs:
+        min_iw_ll = abs(int(epoch_pareto_effiency_dict["iw_ll_mean"][-1]))
+        ckpt_name = f"checkpoint-epoch-{current_epoch:03d}-step-{global_step}-iw-ll_{min_iw_ll:3d}.pth"
+        ckpt_path = '{}/Runs/{}/'.format(code_dir_path, run_name, ckpt_name)
+        print(f"Saving checkpoint at {ckpt_path}")
 
-    # TODO: save scaler, scheduler, optimisers for continue training
-    checkpoint = {
-        'VAE_model_state_dict': vae_model.state_dict(),
-        "config": config,
-        # 'optimizer_state_dict': optimizer.state_dict(),
-        'global_step': global_step,
-        # 'scheduler_state_dict': scheduler.state_dict(),
-        # 'scaler_state_dict': scaler.state_dict(),
-        'best_valid_loss': best_valid_loss,
-        'epoch': epoch,
-    }
+        # TODO: save scaler, scheduler, optimisers for continue training
+        checkpoint = {
+            'VAE_model_state_dict': vae_model.state_dict(),
+            "epoch_pareto_effiency_dict": {"efficient_epochs": efficient_epochs, **epoch_pareto_effiency_dict},
+            "config": config,
+            # 'optimizer_state_dict': optimizer.state_dict(),
+            'global_step': global_step,
+            # 'scheduler_state_dict': scheduler.state_dict(),
+            # 'scaler_state_dict': scaler.state_dict(),
+            'epoch': current_epoch,
+        }
 
-    torch.save(checkpoint, '{}/Runs/{}/checkpoint-{}.pth'.format(code_dir_path, run_name, global_step))
+        torch.save(checkpoint, ckpt_path)
 
 
 def add_remove_module_from_state_dict(state_dict, remove=True):
@@ -649,9 +727,17 @@ def log_stats_epoch(stats, epoch, global_step, global_grad_step, atts_to_latent,
         logs["Epoch std (validation) std_attention_to_latent"] = np.std(stats_masked)
 
     for phase, phase_stats in stats[epoch].items():
+        print("phase", phase)
         for stat_name, stat in phase_stats.items():
-            log_name = "Epoch mean ({}) {}".format(phase, stat_name)
-            logs[log_name] = np.mean(stat)
+            #print(stat_name)
+            if stat_name not in ["iw_ll_x_gen", "iw_ll", "iw_ll_p_w", "iw_ll_x_gen_p_w", "lens", "lens_x_gen"]:
+                log_name = "Epoch mean ({}) {}".format(phase, stat_name)
+                logs[log_name] = np.mean(stat)
+
+            else:
+                # for iw_ll, and iw_ll_x_gen make a histogram (already list type)
+                print("log epoch stats", stat_name, len(stat), stat)
+                logs[stat_name] = wandb.Histogram(stat)
 
     logs['epoch'] = epoch
     logs['global step'] = global_step
@@ -679,8 +765,15 @@ def log_losses_step(losses, phase, epoch, log_every_n_steps, global_step, global
         beta: float
     """
 
-    logs = {"Step log ({}) {}".format(phase, stat_name, log_every_n_steps): v for stat_name, v in
-            losses.items()}
+    # logs = {"Step log ({}) {}".format(phase, stat_name, log_every_n_steps): v for stat_name, v in
+    #         losses.items() if stat_name is not in ["iw_ll"]}
+
+    logs = {}
+    for stat_name, v in losses.items():
+        # Those are only interesting to plot as histograms at the end of an epoch
+        if stat_name not in ["iw_ll", "iw_ll_x_gen", "iw_ll_p_w", "iw_ll_x_gen_p_w", "lens", "lens_x_gen"]:
+            logs["Step log ({}) {}".format(phase, stat_name, log_every_n_steps)] = v
+
     logs["epoch"] = epoch
     logs["global step"] = global_step
     logs["global gradient step"] = global_grad_step
@@ -709,8 +802,11 @@ def insert_stats(stats, new_stats, epoch, phase):
         # Make a list to save values to if first iteration of epoch
         if type(stats[epoch][phase][stat_name]) != list:
             stats[epoch][phase][stat_name] = []
+
         if torch.is_tensor(value):
-            if value.dim() > 0:
+            if stat_name in ["iw_ll", "iw_ll_x_gen", "iw_ll_p_w", "iw_ll_x_gen_p_w", "lens", "lens_x_gen"]:
+                stats[epoch][phase][stat_name].extend(value.cpu().tolist())
+            elif value.dim() > 0:
                 stats[epoch][phase][stat_name].append(value.cpu().mean().item())
             else:
                 stats[epoch][phase][stat_name].append(value.cpu().item())
@@ -781,10 +877,14 @@ def print_stats(stats, epoch, phase, global_step, max_global_train_steps,
     stat_dict = stats[epoch][phase]
     for s, v in stat_dict.items():
         if s != "LR":
-            print_string += " | {}: {:8.2f}".format(s, v[-1])
+            try:
+                print_string += " | {}: {:8.2f}".format(s, v[-1])
+            except:
+                print("print error: ", s, v)
         else:
             if type(v[-1]) == float:
                 print_string += " | {}: {:8.2f}".format(s, v[-1])
+
     # for s, v in stat_dict.items():
     #     if s not in ["alpha_MI", "beta_TC", "gamma_dim_KL", "alpha", "beta",
     #                  "gamma", "beta_KL", "KL", "TC", "MI", "dim_KL", "beta_marg_KL", 'marginal K']:

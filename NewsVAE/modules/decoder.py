@@ -68,6 +68,7 @@ class DecoderNewsVAE(torch.nn.Module):
                 return_logits=False,
                 return_cross_entropy=False,
                 return_reconstruction_loss=True,  # <-- standard for train
+                reduce_batch_reconstruction_loss=True,
                 return_log_probs=False,
                 reduce_seq_dim_exact_match="mean",
                 reduce_batch_dim_exact_match="mean",
@@ -138,6 +139,7 @@ class DecoderNewsVAE(torch.nn.Module):
                                   return_logits=return_logits,
                                   return_cross_entropy=return_cross_entropy,
                                   return_reconstruction_loss=return_reconstruction_loss,
+                                  reduce_batch_reconstruction_loss=reduce_batch_reconstruction_loss,
                                   return_log_probs=return_log_probs,
                                   reduce_seq_dim_ce=reduce_seq_dim_ce,
                                   reduce_seq_dim_exact_match=reduce_seq_dim_exact_match,

@@ -251,28 +251,9 @@ class NewsVAE(torch.nn.Module):
 
         if return_posterior_stats and enc_out is not None:
             if enc_out["mu"] is not None:
-                mu, std = enc_out["mu"], torch.sqrt(enc_out["logvar"].exp())
 
-                mean_z_mu = mu.mean(dim=1).mean()
-                std_z_mu = torch.std(mu, dim=1).mean()
-
-                mean_z_std = std.mean(dim=1).mean()
-                std_z_std = torch.std(std, dim=1).mean()
-
-                mean_x_mu = mu.mean(dim=0).mean()
-                std_x_mu = torch.std(mu, dim=0).mean()
-
-                mean_x_std = std.mean(dim=0).mean()
-                std_x_std = torch.std(std, dim=0).mean()
-
-                loss_dict["mean_z_mu"] = mean_z_mu.item()
-                loss_dict["std_z_mu"] = std_z_mu.item()
-                loss_dict["mean_z_std"] = mean_z_std.item()
-                loss_dict["std_z_std"] = std_z_std.item()
-                loss_dict["mean_x_mu"] = mean_x_mu.item()
-                loss_dict["std_x_mu"] = std_x_mu.item()
-                loss_dict["mean_x_std"] = mean_x_std.item()
-                loss_dict["std_x_std"] = std_x_std.item()
+                posterior_stats = self.calc_posterior_stats(enc_out["mu"], enc_out["logvar"])
+                loss_dict = {**loss_dict, **posterior_stats}
 
         # Merge all the outputs together
         vae_outputs = {**loss_dict, **dec_out}
@@ -284,6 +265,34 @@ class NewsVAE(torch.nn.Module):
                 del vae_outputs[k]
 
         return vae_outputs
+
+    @staticmethod
+    def calc_posterior_stats(mu, logvar):
+        stats_dict = {}
+        std = torch.sqrt(logvar.exp())
+
+        mean_z_mu = mu.mean(dim=1).mean()
+        std_z_mu = torch.std(mu, dim=1).mean()
+
+        mean_z_std = std.mean(dim=1).mean()
+        std_z_std = torch.std(std, dim=1).mean()
+
+        mean_x_mu = mu.mean(dim=0).mean()
+        std_x_mu = torch.std(mu, dim=0).mean()
+
+        mean_x_std = std.mean(dim=0).mean()
+        std_x_std = torch.std(std, dim=0).mean()
+
+        stats_dict["mean_z_mu"] = mean_z_mu.item()
+        stats_dict["std_z_mu"] = std_z_mu.item()
+        stats_dict["mean_z_std"] = mean_z_std.item()
+        stats_dict["std_z_std"] = std_z_std.item()
+        stats_dict["mean_x_mu"] = mean_x_mu.item()
+        stats_dict["std_x_mu"] = std_x_mu.item()
+        stats_dict["mean_x_std"] = mean_x_std.item()
+        stats_dict["std_x_std"] = std_x_std.item()
+
+        return stats_dict
 
     @staticmethod
     def calculate_embedding_space_loss(input_ids, in_w_emb, out_w_emb,

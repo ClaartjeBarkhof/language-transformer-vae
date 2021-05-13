@@ -1203,6 +1203,7 @@ class VaeDecoderRobertaForCausalLM(RobertaPreTrainedModel):
             return_exact_match=False,
             return_cross_entropy=True,
             return_reconstruction_loss=True,
+            reduce_batch_reconstruction_loss=True,
 
             reduce_seq_dim_exact_match="mean",
             reduce_batch_dim_exact_match="mean",
@@ -1327,7 +1328,9 @@ class VaeDecoderRobertaForCausalLM(RobertaPreTrainedModel):
             cross_entropy = torch.nn.functional.cross_entropy(logits, labels, reduction='none')
             cross_entropy = cross_entropy.reshape(batch_size, seq_len)  # bring back the sequence dimension
             cross_entropy = cross_entropy * label_mask
-            reconstruction_loss = cross_entropy.sum(dim=-1).mean()
+            reconstruction_loss = cross_entropy.sum(dim=-1)
+            if reduce_batch_reconstruction_loss:
+                reconstruction_loss = reconstruction_loss.mean()
 
         # ALSO PREDICT (at inference or validation time)
         elif return_predictions or return_probabilities or return_exact_match or nucleus_sampling or return_log_probs:
@@ -1336,7 +1339,10 @@ class VaeDecoderRobertaForCausalLM(RobertaPreTrainedModel):
                 # do cross entropy with normal logits, not filtered logits
                 cross_entropy = torch.nn.functional.cross_entropy(logits, labels, reduction='none')
                 cross_entropy = cross_entropy.reshape(batch_size, seq_len)  # bring back the sequence dimension
-                reconstruction_loss = (cross_entropy * label_mask).sum(dim=-1).mean()
+
+                reconstruction_loss = (cross_entropy * label_mask).sum(dim=-1)
+                if reduce_batch_reconstruction_loss:
+                    reconstruction_loss = reconstruction_loss.mean()
 
             if nucleus_sampling:
                 # logits are overwritten now

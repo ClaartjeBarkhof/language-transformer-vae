@@ -10,7 +10,8 @@ from loss_and_optimisation import ParameterScheduler, LossTermManager
 import numpy as np
 
 
-def do_valid_step(loss_term_manager, batch, device_name="cuda:0", ddp=False, decoder_only=False):
+def do_valid_step(loss_term_manager, batch, device_name="cuda:0", ddp=False, decoder_only=False, iw_ll_n_samples=50,
+                  eval_iw_ll_x_gen=True, max_seq_len_x_gen=64):
     """
     Perform a validation step.
     """
@@ -22,25 +23,15 @@ def do_valid_step(loss_term_manager, batch, device_name="cuda:0", ddp=False, dec
     with torch.set_grad_enabled(False):
         vae_outputs = loss_term_manager(input_ids=batch['input_ids'],
                                         attention_mask=batch['attention_mask'],
-
-                                        return_reconstruction_loss=True,  # ce summed, averaged
-
-                                        return_attention_to_latent=True,
-
-                                        return_cross_entropy=True,  # ce per word
-                                        reduce_seq_dim_ce="mean",
-                                        reduce_batch_dim_ce="mean",
-
-                                        return_posterior_stats=True,
-
                                         return_exact_match=True,  # interpretable to track with validation
-                                        reduce_seq_dim_exact_match="mean",
-                                        reduce_batch_dim_exact_match="mean",
-
                                         decoder_only=decoder_only,
-
-                                        device_name=device_name)
-
+                                        eval_iw_ll_x_gen=eval_iw_ll_x_gen,
+                                        return_posterior_stats=True,
+                                        device_name=device_name,
+                                        iw_ll_n_samples=iw_ll_n_samples,
+                                        return_attention_to_latent=True,
+                                        train=True,  # not returning posteriors and latents etc.
+                                        max_seq_len_x_gen=max_seq_len_x_gen)
         # Detach as no update being done
         vae_outputs['total_loss'] = vae_outputs['total_loss'].item()
 
@@ -78,12 +69,12 @@ def do_train_step(loss_term_manager, batch, global_step, use_amp=False, accumula
             losses = loss_term_manager(input_ids=batch['input_ids'],
                                        attention_mask=batch['attention_mask'],
                                        return_exact_match=True,
-                                       return_cross_entropy=True,  # ce per word
-                                       reduce_seq_dim_ce="mean",
-                                       reduce_batch_dim_ce="mean",
-                                       return_reconstruction_loss=True,
                                        return_posterior_stats=True,
+                                       eval_iw_ll_x_gen=False,
+                                       iw_ll_n_samples=1,
+                                       train=True,
                                        decoder_only=decoder_only,
+                                       max_seq_len_x_gen=1,  # no effect if eval_iw_ll_x_gen is False
                                        return_attention_to_latent=False,
                                        device_name=device_name)
 
@@ -149,6 +140,8 @@ def do_train_step(loss_term_manager, batch, global_step, use_amp=False, accumula
 
 
 def train(device_rank, config, run_name):
+    print("**** DEVICE: ", device_rank)
+
     # Device
     device_name = utils_train.set_device(device_rank)
 
@@ -207,6 +200,7 @@ def train(device_rank, config, run_name):
     finished_training = False
 
     epoch, global_step, global_grad_step, not_improved_epochs = 0, 0, 0, 0
+    epoch_pareto_effiency_dict = {"rate": [], "-distortion": [], "iw_ll_mean": [], "iw_ll_x_gen_mean": [], "-D_ks": []}
     best_valid_loss, best_valid_rate, best_valid_rec = 1000, -1000, 1000
 
     # These are actual steps, not gradient steps, so they work in combination with global step
@@ -254,7 +248,9 @@ def train(device_rank, config, run_name):
                         ddp=config.ddp)
                 else:
                     losses = do_valid_step(loss_term_manager, batch,
-                                           device_name=device_name, ddp=config.ddp, decoder_only=config.decoder_only)
+                                           device_name=device_name, ddp=config.ddp, decoder_only=config.decoder_only,
+                                           iw_ll_n_samples=config.iw_ll_n_samples, eval_iw_ll_x_gen=config.eval_iw_ll_x_gen,
+                                           max_seq_len_x_gen=config.max_seq_len_x_gen)
                     if "attention_to_latent" in losses:
                         atts_to_latent.append(losses["attention_to_latent"].cpu())
                         masks.append(batch["attention_mask"][:, 1:].cpu())
@@ -283,11 +279,11 @@ def train(device_rank, config, run_name):
 
 
                 # CHECKPOINT
-                if (global_step % config.checkpoint_every_n_steps == 0) and phase == 'train' \
-                        and config.checkpoint and device_rank == 0:
-                    vae_model = loss_term_manager.vae_model if config.ddp is False else loss_term_manager.module.vae_model
-                    utils_train.save_checkpoint_model(vae_model, run_name, config.code_dir_path, global_step,
-                                                      best_valid_loss, epoch, config, checkpoint_type="last")
+                # if (global_step % config.checkpoint_every_n_steps == 0) and phase == 'train' \
+                #         and config.checkpoint and device_rank == 0:
+                #     vae_model = loss_term_manager.vae_model if config.ddp is False else loss_term_manager.module.vae_model
+                #     utils_train.save_checkpoint_model(vae_model, run_name, config.code_dir_path, global_step,
+                #                                       best_valid_loss, epoch, config, checkpoint_type="last")
 
                 # ----------------------------------------------------------------------------------------------------
                 # KEEP TRACK OF STEPS (IN PHASE AND GLOBALLY)
@@ -310,26 +306,15 @@ def train(device_rank, config, run_name):
             # BEST MODEL CHECKPOINT
             if phase == 'validation' and world_master:
                 val_epoch_stats = stats[epoch]['validation']
-                checkpoint_type, best_valid_loss, best_valid_rate, best_valid_rec = utils_train.determine_checkpoint(
-                    val_epoch_stats, best_valid_loss, best_valid_rate, best_valid_rec)
 
-                if checkpoint_type == "no-checkpoint":
-                    not_improved_epochs += 1
-                else:
-                    not_improved_epochs = 0
+                epoch_pareto_effiency_dict, efficient_epochs = utils_train.determine_checkpoint(val_epoch_stats,
+                                                                                                epoch_pareto_effiency_dict,
+                                                                                                epoch)
 
-                # Early stopping
-                if (not_improved_epochs > config.early_stop_epochs) and config.early_stopping:
-                    print("*" * 50);
-                    print("EARLY STOPPING!");
-                    print("*" * 50)
-                    finished_training = True
-
-                if config.checkpoint and checkpoint_type != "no-checkpoint":
+                if config.checkpoint:
                     vae_model = loss_term_manager.vae_model if config.ddp is False else loss_term_manager.module.vae_model
                     utils_train.save_checkpoint_model(vae_model, run_name, config.code_dir_path, global_step,
-                                                      best_valid_loss, epoch, config, checkpoint_type=checkpoint_type)
-            # TODO: evaluation loop
+                                                      epoch, config, efficient_epochs, epoch_pareto_effiency_dict)
 
         # ----------------------------------------------------------------------------------------------------
         # END OF EPOCH
@@ -361,6 +346,7 @@ def main(config):
     elif not config.ddp and config.n_gpus > 0:
         print(f"*** Not using DDP, only using device: {torch.cuda.current_device()}")
         train(torch.cuda.current_device(), config, run_name)
+        # train(2, config, run_name)
 
     # CPU
     else:
