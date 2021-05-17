@@ -116,10 +116,11 @@ def make_batch_from_model_samples(predictions, eos_token_id=2, pad_token_id=1, b
         [a.index(eos_token_id) if eos_token_id in a else len(a) for a in predictions.tolist()]).unsqueeze(1)
 
     # Mask everything after the eos_token_id (set to 0.0)
-    mask = (ind > lens)
+    # so where < lens, should be true, all after should be 0.0
+    mask = (ind <= lens)
 
     # Pad the predictions (setting all tokens after </s> to <pad>)
-    predictions[mask] = pad_token_id
+    predictions[~mask] = pad_token_id
 
     return predictions, mask, lens.flatten()
 

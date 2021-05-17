@@ -193,6 +193,7 @@ def dist_iw_log_likelihood_x_obs_x_gen(device_rank, run_name, model_path, max_ba
             lens_gen=lens_gen.cpu()
         )
 
+
         # Dump the results for this device
         pickle.dump(results, open(result_file, "wb"))
 

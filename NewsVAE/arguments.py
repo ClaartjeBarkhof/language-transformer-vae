@@ -20,7 +20,11 @@ def preprare_parser(jupyter=False, print_settings=True):
     parser.add_argument("--max_global_train_steps", default=50000, type=int,
                         help="Maximum number of train steps in total. Careful this is NOT the "
                              "number of gradient steps performed. That will be / accumulate_n_batches_grad."
-                             "So to account for that multiply max_global_train_steps by accumulate_n_batches_grad.")
+                             "So to account for that multiply max_global_train_steps by accumulate_n_batches_grad. If "
+                             "set to -1, there is no max, max_epochs might be used if set. Else the job time is the "
+                             "only limiting factor.")
+    parser.add_argument("--max_epochs", default=-1, type=int,
+                        help="Maximum number of epochs, if -1 no maximum number of epochs is set.")
 
     # GRADIENT ACCUMULATION
     parser.add_argument("--accumulate_n_batches_grad", default=2, type=int,
@@ -235,7 +239,9 @@ def preprare_parser(jupyter=False, print_settings=True):
                         help="What kind of 'annealing' is used for beta in beta-vae objective mode, options:"
                              "  - constant"
                              "  - linear"
-                             "  - lagrangian")
+                             "  - lagrangian"
+                             "  - cyclical")
+    # -> if cyclical is used, the cycles are synced with epochs and n_cycles will be n_epochs
 
     # If a schedule is used (constant or linear ramp)
     parser.add_argument("--b_vae_beta", default=1.0, type=float,

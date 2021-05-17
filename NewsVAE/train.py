@@ -189,7 +189,7 @@ def train(device_rank, config, run_name):
         # https://discuss.pytorch.org/t/multiple-modules-with-distributed-data-parallel/115621
         loss_term_manager = torch.nn.parallel.DistributedDataParallel(loss_term_manager,
                                                                       device_ids=[device_rank],
-                                                                      find_unused_parameters=True)
+                                                                      find_unused_parameters=False) # not needed to check
         print(f"-> Turned on DDP for device rank {device_rank}")
 
     # Zero grads TODO: fix this
@@ -200,13 +200,15 @@ def train(device_rank, config, run_name):
     finished_training = False
 
     epoch, global_step, global_grad_step, not_improved_epochs = 0, 0, 0, 0
+    # NB, I am not using D_ks for pareto checkpointing anymore.
     epoch_pareto_effiency_dict = {"rate": [], "-distortion": [], "iw_ll_mean": [], "iw_ll_x_gen_mean": [], "-D_ks": []}
-    best_valid_loss, best_valid_rate, best_valid_rec = 1000, -1000, 1000
+    current_efficient_epochs = []
 
     # These are actual steps, not gradient steps, so they work in combination with global step
     max_train_steps_epoch_per_rank, max_valid_steps_epoch_per_rank = utils_train.determine_max_epoch_steps_per_rank(
         config.max_train_steps_epoch_per_rank, config.max_valid_steps_epoch_per_rank, data.datasets,
         config.batch_size, world_size=world_size, world_master=world_master)
+    max_epochs = config.max_epochs if config.max_epochs > 0 else 100
 
     if world_master: print("Start or resume training!")
 
@@ -227,6 +229,7 @@ def train(device_rank, config, run_name):
 
             max_steps = max_train_steps_epoch_per_rank if phase == 'train' else max_valid_steps_epoch_per_rank
             atts_to_latent, masks = [], []
+
             for batch_i, batch in enumerate(data_loaders[phase]):
                 # ----------------------------------------------------------------------------------------------------
                 # TRAIN / VALIDATION STEPS
@@ -278,13 +281,6 @@ def train(device_rank, config, run_name):
                                                 global_grad_step)
 
 
-                # CHECKPOINT
-                # if (global_step % config.checkpoint_every_n_steps == 0) and phase == 'train' \
-                #         and config.checkpoint and device_rank == 0:
-                #     vae_model = loss_term_manager.vae_model if config.ddp is False else loss_term_manager.module.vae_model
-                #     utils_train.save_checkpoint_model(vae_model, run_name, config.code_dir_path, global_step,
-                #                                       best_valid_loss, epoch, config, checkpoint_type="last")
-
                 # ----------------------------------------------------------------------------------------------------
                 # KEEP TRACK OF STEPS (IN PHASE AND GLOBALLY)
                 # ----------------------------------------------------------------------------------------------------
@@ -297,7 +293,7 @@ def train(device_rank, config, run_name):
 
                 # CHECK IF EPOCH PHASE IS OVER (after advancing one)
                 if batch_i >= max_steps: break
-                if global_step >= global_max_steps: finished_training = True; break
+                if global_step >= global_max_steps or epoch >= max_epochs: finished_training = True; break
 
             # ----------------------------------------------------------------------------------------------------
             # END OF TRAIN / VALID PHASE
@@ -307,10 +303,26 @@ def train(device_rank, config, run_name):
             if phase == 'validation' and world_master:
                 val_epoch_stats = stats[epoch]['validation']
 
-                epoch_pareto_effiency_dict, efficient_epochs = utils_train.determine_checkpoint(val_epoch_stats,
-                                                                                                epoch_pareto_effiency_dict,
-                                                                                                epoch)
+                # Update the epoch_pareto_effiency_dict and determine efficient_epochs
+                epoch_pareto_effiency_dict, efficient_epochs = utils_train.determine_pareto_checkpoint(
+                    val_epoch_stats, epoch_pareto_effiency_dict, epoch, logging=config.logging)
 
+                # Check if anything changed, if not keep count of not improved epochs
+                if efficient_epochs == current_efficient_epochs:
+                    not_improved_epochs += 1
+                else:
+                    not_improved_epochs = 0
+
+                current_efficient_epochs = efficient_epochs
+
+                # Early stopping
+                if (not_improved_epochs >= config.early_stop_epochs) and config.early_stopping:
+                    print("*" * 50)
+                    print("EARLY STOPPING!")
+                    print("*" * 50)
+                    finished_training = True
+
+                # Checkpoint according to efficient_epochs, save the data
                 if config.checkpoint:
                     vae_model = loss_term_manager.vae_model if config.ddp is False else loss_term_manager.module.vae_model
                     utils_train.save_checkpoint_model(vae_model, run_name, config.code_dir_path, global_step,

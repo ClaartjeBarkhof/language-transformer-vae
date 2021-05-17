@@ -429,7 +429,7 @@ def is_pareto_efficient_simple(costs):
     return is_efficient
 
 
-def determine_checkpoint(val_epoch_stats, epoch_pareto_effiency_dict, epoch):
+def determine_pareto_checkpoint(val_epoch_stats, epoch_pareto_effiency_dict, epoch, logging=True):
     """
 
     Args:
@@ -463,59 +463,33 @@ def determine_checkpoint(val_epoch_stats, epoch_pareto_effiency_dict, epoch):
     epoch_pareto_effiency_dict["iw_ll_mean"].append(iw_ll_mean)
     epoch_pareto_effiency_dict["iw_ll_x_gen_mean"].append(iw_ll_x_gen_mean)
 
+    if logging:
+        wandb.log({"pareto epoch": epoch,
+                   "pareto rate": rate_mean,
+                   "pareto -distortion": min_distortion_mean,
+                   "pareto -D_ks": min_d_ks,
+                   "pareto iw_ll_mean": iw_ll_mean,
+                   "pareto iw_ll_x_gen_mean": iw_ll_x_gen_mean})
+
     # Change the dict to a set of array of multi dimensional points
+    # multi_dim_points = np.asarray([[
+    #     epoch_pareto_effiency_dict["rate"][i],
+    #     epoch_pareto_effiency_dict["-distortion"][i],
+    #     epoch_pareto_effiency_dict["-D_ks"][i],
+    #     epoch_pareto_effiency_dict["iw_ll_mean"][i],
+    #     epoch_pareto_effiency_dict["iw_ll_x_gen_mean"][i]] for i in range(epoch+1)])
+
+    # without rate and distortion...
     multi_dim_points = np.asarray([[
-        epoch_pareto_effiency_dict["rate"][i],
-        epoch_pareto_effiency_dict["-distortion"][i],
         epoch_pareto_effiency_dict["-D_ks"][i],
         epoch_pareto_effiency_dict["iw_ll_mean"][i],
-        epoch_pareto_effiency_dict["iw_ll_x_gen_mean"][i]] for i in range(epoch+1)])
+        epoch_pareto_effiency_dict["iw_ll_x_gen_mean"][i]] for i in range(epoch + 1)])
 
     efficient_epochs = is_pareto_efficient_simple(multi_dim_points)
     efficient_epochs = np.where(efficient_epochs)[0].tolist() # convert boolean array to list with epoch indices
+    print("Efficient epochs:", efficient_epochs)
 
     return epoch_pareto_effiency_dict, efficient_epochs
-
-    # print("iw_ll mean", iw_ll_mean)
-    # print("iw_ll x_gen mean", iw_ll_x_gen_mean)
-    # print("ks statistic, pvalue:", ks_statistic, pval)
-    # quit()
-
-    # if 'elbo' in val_epoch_stats:
-    #     mean_valid_loss = - np.mean(val_epoch_stats['elbo'])  # <- select - ELBO
-    # else:
-    #     mean_valid_loss = np.mean(val_epoch_stats['total_loss'])  # <- select on total loss
-    #
-    # mean_valid_rate = np.mean(val_epoch_stats["kl_analytical"])
-    # mean_valid_rec = np.mean(val_epoch_stats["reconstruction_loss"])
-    #
-    # # Better ELBO, lower rec and higher rate
-    # if mean_valid_rec < best_valid_rec and mean_valid_rate > best_valid_rate and mean_valid_loss < best_valid_loss:
-    #     print(f"Found a better model in terms of ELBO and in terms of rate / distortion (non-collapsed model) on this device: "
-    #           f"elbo: {mean_valid_loss:.2f} rate: {mean_valid_rate:.2f}, {mean_valid_rec:.2f}. Saving model!")
-    #     checkpoint_type = "best-elbo-rate-distortion"
-    #     best_valid_rate = mean_valid_rate
-    #     best_valid_rec = mean_valid_rec
-    #     best_valid_loss = mean_valid_loss
-    #
-    # # Lower rec, higher rate
-    # elif mean_valid_rec < best_valid_rec and mean_valid_rate > best_valid_rate:
-    #     print(f"Found a better model in terms of rate / distortion (non-collapsed model) on this device: "
-    #           f"rate: {mean_valid_rate:.2f}, {mean_valid_rec:.2f}. Saving model!")
-    #     checkpoint_type = "best-rate-distortion"
-    #     best_valid_rate = mean_valid_rate
-    #     best_valid_rec = mean_valid_rec
-    #
-    # # Better ELBO
-    # elif mean_valid_loss < best_valid_loss:
-    #     print(f"Found better model in terms of ELBO on this device: {mean_valid_loss:.2f}. Saving model!")
-    #     checkpoint_type = "best-elbo"
-    #     best_valid_loss = mean_valid_loss
-    #
-    # else:
-    #     checkpoint_type = "no-checkpoint"
-    #
-    # return checkpoint_type, best_valid_loss, best_valid_rate, best_valid_rec
 
 
 def save_checkpoint_model(vae_model, run_name, code_dir_path, global_step,
@@ -529,9 +503,12 @@ def save_checkpoint_model(vae_model, run_name, code_dir_path, global_step,
     epochs = []
     for ckpt in os.listdir('{}/Runs/{}'.format(code_dir_path, run_name)):
         # format: name = "checkpoint-epoch-02-step-1000-iw-ll-100.pth"
+        if not "checkpoint" in ckpt:
+            continue
         e = int(ckpt.split('-')[2])
         epochs.append(e)
-        rmv_ckpts.append(e)
+        if e not in efficient_epochs:
+            rmv_ckpts.append(ckpt)
 
     # Remove the checkpoints that are no longer Pareto efficient
     for c in rmv_ckpts:
@@ -541,8 +518,8 @@ def save_checkpoint_model(vae_model, run_name, code_dir_path, global_step,
     # If new efficient checkpoint is found, save it as such
     if current_epoch in efficient_epochs:
         min_iw_ll = abs(int(epoch_pareto_effiency_dict["iw_ll_mean"][-1]))
-        ckpt_name = f"checkpoint-epoch-{current_epoch:03d}-step-{global_step}-iw-ll_{min_iw_ll:3d}.pth"
-        ckpt_path = '{}/Runs/{}/'.format(code_dir_path, run_name, ckpt_name)
+        ckpt_name = f"checkpoint-epoch-{current_epoch:03d}-step-{global_step}-iw-ll_{min_iw_ll:03d}.pth"
+        ckpt_path = f"{code_dir_path}/Runs/{run_name}/{ckpt_name}"
         print(f"Saving checkpoint at {ckpt_path}")
 
         # TODO: save scaler, scheduler, optimisers for continue training

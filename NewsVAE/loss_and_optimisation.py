@@ -246,18 +246,19 @@ class LossTermManager(torch.nn.Module):
 
         if self.objective == "beta-vae" or self.objective == "free-bits-beta-vae":
             # beta * KL term
-            if config.b_vae_beta_constant_linear_lagrangian in ["constant", "linear"]:
+            if config.b_vae_beta_constant_linear_lagrangian in ["constant", "linear", "cyclical"]:
                 print(f"Setting parameter schedule for beta-vae KL term, schedule: "
                       f"{config.b_vae_beta_constant_linear_lagrangian}, ramp length: "
                       f"{config.b_vae_beta_ramp_len_grad_steps}, beta value: {config.b_vae_beta}")
                 self.manager["beta_KL"] = ParameterScheduler(
+                    n_cycles=config.max_epochs if config.max_epochs > 0 else 50,
+                    cycle_len=config.max_train_steps_epoch_per_rank if config.max_train_steps_epoch_per_rank > 0 else 10e3,
                     cyc_lin_con=config.b_vae_beta_constant_linear_lagrangian,
                     ramp_len_grad_steps=config.b_vae_beta_ramp_len_grad_steps,
                     warmup_len_grad_steps=0,
                     decrease_increase="increase",
                     value=config.b_vae_beta,
                     name="beta")
-
             elif config.b_vae_beta_constant_linear_lagrangian == "lagrangian":
                 target_kl = config.b_vae_kl_lagrangian_target_pd * config.latent_size
                 constraint = Constraint(target_kl, "ge", alpha=config.b_vae_kl_lagrangian_alpha)
@@ -468,10 +469,11 @@ class LossTermManager(torch.nn.Module):
             [a.index(eos_token_id) if eos_token_id in a else len(a) for a in predictions.tolist()]).unsqueeze(1)
 
         # Mask everything after the eos_token_id (set to 0.0)
-        mask = (ind > lens)
+        # so where < lens, should be true, all after should be 0.0
+        mask = (ind <= lens)
 
         # Pad the predictions (setting all tokens after </s> to <pad>)
-        predictions[mask] = pad_token_id
+        predictions[~mask] = pad_token_id
 
         return predictions, mask, lens.flatten()
 
@@ -876,7 +878,8 @@ def get_scheduler(optimizer, warmup_updates=4000, lr_scheduler=True,
 class ParameterScheduler:
     """
     This class implements a simple Parameter Scheduder, that follows:
-      1. Cyclical: a (linear) cyclical schedule with a saw tooth behaviour
+      1. Cyclical: a cyclical schedule with:
+         -> half cycle flat, quarter cycle increase/decrease, half cycle flat
       2. Linear: a linear schedule with linear warmup
       3. Constant: a constant schedule
 
@@ -889,6 +892,7 @@ class ParameterScheduler:
     def __init__(self,
                  cyc_lin_con="cyclical",  # cyclical, linear, constant
                  n_cycles=5,
+                 cycle_len=10,
                  ramp_len_grad_steps=10,
                  warmup_len_grad_steps=100,
                  decrease_increase="increase",
@@ -900,6 +904,8 @@ class ParameterScheduler:
 
         self.name = name
         self.cyc_lin_con = cyc_lin_con
+        self.cycle_len = cycle_len
+        self.n_cycles = n_cycles
         self.ramp_len_grad_steps = ramp_len_grad_steps
         self.decrease_increase = decrease_increase
 
@@ -908,13 +914,7 @@ class ParameterScheduler:
         self.cycle_i = 0
         self.grad_step_i = 0
 
-        # Linear is a special case of cyclical with 1 cycle
-        if self.cyc_lin_con == "linear":
-            self.n_cycles = 1
-        else:
-            self.n_cycles = n_cycles
-
-        # Cyclical is linear with 0 warmup
+        # Cyclical -> no warmup
         if self.cyc_lin_con == "cyclical":
             self.warmup_len_grad_steps = 0
         else:
@@ -925,7 +925,7 @@ class ParameterScheduler:
         if self.cyc_lin_con == "constant":
             current_val = self.value
 
-        else:
+        elif self.cyc_lin_con == "linear":
             # Warm-up linear decrease / increase
             if self.grad_step_i < self.warmup_len_grad_steps:
                 # For decrease, the warm-up should be increase
@@ -945,6 +945,7 @@ class ParameterScheduler:
                 if self.decrease_increase == "decrease":
                     current_val = ((self.ramp_len_grad_steps - (
                             self.grad_step_i - self.warmup_len_grad_steps)) / self.ramp_len_grad_steps) * self.value
+
                 # For increase, the main part should be increase
                 else:
                     if self.grad_step_i == 0:
@@ -952,6 +953,29 @@ class ParameterScheduler:
                     else:
                         current_val = ((self.grad_step_i - self.warmup_len_grad_steps)
                                        / self.ramp_len_grad_steps) * self.value
+        # Cyclical
+        else:
+            half_cycle = int(self.cycle_len / 2)
+            quarter_cycle = int(self.cycle_len / 4)
+            where = self.grad_step_i - (self.cycle_i * self.cycle_len - 1)
+
+            # Increase, half cycle at max, then increase for quarter cycle, then at max for quarter
+            if self.decrease_increase == "increase":
+                if where < half_cycle:
+                    current_val = 0.0
+                elif where > (half_cycle + quarter_cycle):
+                    current_val = self.value
+                else:
+                    current_val = ((where - half_cycle) / quarter_cycle) * self.value
+
+            # Decrease, half cycle at max, then decrease for quarter cycle, then at min for quarter
+            else:
+                if where < half_cycle:
+                    current_val = self.value
+                elif where > (half_cycle + quarter_cycle):
+                    current_val = 0.0
+                else:
+                    current_val = ((quarter_cycle - (where - half_cycle)) / quarter_cycle) * self.value
 
         return current_val
 
@@ -960,15 +984,14 @@ class ParameterScheduler:
 
         # Cyclical check if done with cycle and in total
         if self.cyc_lin_con == "cyclical":
-            if self.grad_step_i > self.ramp_len_grad_steps:
-                self.grad_step_i = 0
+            if self.grad_step_i % self.cycle_len == 0:
                 self.cycle_i += 1
 
-                # If done with all the cycles, reduces to a constant schedule afterwards
-                if self.cycle_i == self.n_cycles:
-                    self.cyc_lin_con = "constant"
-                    if self.decrease_increase == "decrease":
-                        self.value = 0.0
+            # If done with all the cycles, reduces to a constant schedule afterwards
+            if self.cycle_i == self.n_cycles:
+                self.cyc_lin_con = "constant"
+                if self.decrease_increase == "decrease":
+                    self.value = 0.0
 
         # Linear check if done, reduces to a constant schedule afterwards
         elif self.cyc_lin_con == "linear":
