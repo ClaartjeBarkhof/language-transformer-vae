@@ -13,6 +13,7 @@ def kl_divergence(mu, logvar, hinge_kl_loss_lambda=0.5, average_batch=True, sum_
     kl_loss = 0.5 * (mu.pow(2) + logvar.exp() - logvar - 1)
 
     if hinge_kl_loss_lambda > 0.0:
+
         # Ignore the dimensions of which the KL-div is already under the
         # threshold, avoiding driving it down even further. Those values do
         # not have to be replaced by the threshold because that would not mean
@@ -241,15 +242,27 @@ class LossTermManager(torch.nn.Module):
 
         self.manager = dict()
         self.free_bits_pd = config.fb_b_vae_free_bits_pd
+
+        print("*"*80)
+        print("Free bits pd", config.fb_b_vae_free_bits_pd)
+        print("*"*80)
+
         # Automatic Mixed Precision scaler
         self.scaler = GradScaler(enabled=config.use_amp)
 
         if self.objective == "beta-vae" or self.objective == "free-bits-beta-vae":
             # beta * KL term
             if config.b_vae_beta_constant_linear_lagrangian in ["constant", "linear", "cyclical"]:
-                print(f"Setting parameter schedule for beta-vae KL term, schedule: "
-                      f"{config.b_vae_beta_constant_linear_lagrangian}, ramp length: "
-                      f"{config.b_vae_beta_ramp_len_grad_steps}, beta value: {config.b_vae_beta}")
+                if config.b_vae_beta_constant_linear_lagrangian == "linear":
+                    print(f"Setting parameter schedule for beta-vae KL term, schedule: "
+                          f"{config.b_vae_beta_constant_linear_lagrangian}, ramp length: "
+                          f"{config.b_vae_beta_ramp_len_grad_steps}, beta value: {config.b_vae_beta}")
+                elif config.b_vae_beta_constant_linear_lagrangian == "cyclical":
+                    print(f"Cyclical KL annealing: "
+                          f"n_cycles: {config.max_epochs if config.max_epochs > 0 else 50}"
+                          f"clycle_len: {config.max_train_steps_epoch_per_rank if config.max_train_steps_epoch_per_rank > 0 else 10e3}"
+                          f"decrease_increase: increase"
+                          f"value: {config.b_vae_beta}")
                 self.manager["beta_KL"] = ParameterScheduler(
                     n_cycles=config.max_epochs if config.max_epochs > 0 else 50,
                     cycle_len=config.max_train_steps_epoch_per_rank if config.max_train_steps_epoch_per_rank > 0 else 10e3,
@@ -259,6 +272,7 @@ class LossTermManager(torch.nn.Module):
                     decrease_increase="increase",
                     value=config.b_vae_beta,
                     name="beta")
+
             elif config.b_vae_beta_constant_linear_lagrangian == "lagrangian":
                 target_kl = config.b_vae_kl_lagrangian_target_pd * config.latent_size
                 constraint = Constraint(target_kl, "ge", alpha=config.b_vae_kl_lagrangian_alpha)
@@ -658,6 +672,9 @@ class LossTermManager(torch.nn.Module):
         elif self.objective == "beta-vae" or self.objective == "free-bits-beta-vae":
 
             if self.objective == "free-bits-beta-vae":
+
+
+
                 kl_loss = fb_kl_analytical
             else:
                 kl_loss = kl_analytical

@@ -137,7 +137,7 @@ def preprare_parser(jupyter=False, print_settings=True):
                              "encoder is now 32 x 2 (first and last token). The last projection should be 2 x the "
                              "size of the latent space, because it contains mean and logvar with"
                              "both the dimensionality of the space.")
-    parser.add_argument("--add_latent_via_memory", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
+    parser.add_argument("--add_latent_via_memory", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Add the latent to the decoding process by the memory mechanism"
                              "as descrbed in the Optimus paper (default: True)")
     parser.add_argument("--add_latent_via_embeddings", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
@@ -150,7 +150,7 @@ def preprare_parser(jupyter=False, print_settings=True):
                         type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Add the latent to the decoding process using a gating mechanism based on "
                              "self-attention scores. (default: True)")
-    parser.add_argument("--add_latent_w_matrix_influence", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
+    parser.add_argument("--add_latent_w_matrix_influence", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Activate the mechanism to influence the weight matrices in the decoder as"
                              "a function of the latent (default: False)")
     parser.add_argument("--do_tie_weights", default=True, type=lambda x: bool(distutils.util.strtobool(x)),

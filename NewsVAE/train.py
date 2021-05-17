@@ -173,6 +173,18 @@ def train(device_rank, config, run_name):
                                                               device_name=device_name, world_master=world_master,
                                                               gpu_rank=device_rank)
 
+    # These are actual steps, not gradient steps, so they work in combination with global step
+    max_train_steps_epoch_per_rank, max_valid_steps_epoch_per_rank = utils_train.determine_max_epoch_steps_per_rank(
+        config.max_train_steps_epoch_per_rank, config.max_valid_steps_epoch_per_rank, data.datasets,
+        config.batch_size, world_size=world_size, world_master=world_master)
+    max_epochs = config.max_epochs if config.max_epochs > 0 else 100
+    config.max_train_steps_epoch_per_rank = max_train_steps_epoch_per_rank  # overwrite this
+    config.max_valid_steps_epoch_per_rank = max_valid_steps_epoch_per_rank  # overwrite this
+
+    print("*"*80)
+    print("config.max_train_steps_epoch_per_rank", config.max_train_steps_epoch_per_rank)
+    print("*" * 80)
+
     # Get model and loss term manager
     dataset_size = data.datasets['train'].shape[0]
     loss_term_manager = vae.get_loss_term_manager_with_model(config, world_master=world_master,
@@ -204,11 +216,7 @@ def train(device_rank, config, run_name):
     epoch_pareto_effiency_dict = {"rate": [], "-distortion": [], "iw_ll_mean": [], "iw_ll_x_gen_mean": [], "-D_ks": []}
     current_efficient_epochs = []
 
-    # These are actual steps, not gradient steps, so they work in combination with global step
-    max_train_steps_epoch_per_rank, max_valid_steps_epoch_per_rank = utils_train.determine_max_epoch_steps_per_rank(
-        config.max_train_steps_epoch_per_rank, config.max_valid_steps_epoch_per_rank, data.datasets,
-        config.batch_size, world_size=world_size, world_master=world_master)
-    max_epochs = config.max_epochs if config.max_epochs > 0 else 100
+
 
     if world_master: print("Start or resume training!")
 
