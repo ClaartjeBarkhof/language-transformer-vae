@@ -7,7 +7,7 @@ from constraintoptim.constraint import *
 import utils_train
 import modules.vae as vae
 from loss_and_optimisation import ParameterScheduler, LossTermManager
-import numpy as np
+import pickle
 
 
 def do_valid_step(loss_term_manager, batch, device_name="cuda:0", ddp=False, decoder_only=False, iw_ll_n_samples=50,
@@ -213,7 +213,9 @@ def train(device_rank, config, run_name):
 
     epoch, global_step, global_grad_step, not_improved_epochs = 0, 0, 0, 0
     # NB, I am not using D_ks for pareto checkpointing anymore.
-    epoch_pareto_effiency_dict = {"rate": [], "-distortion": [], "iw_ll_mean": [], "iw_ll_x_gen_mean": [], "-D_ks": []}
+
+    epoch_pareto_effiency_dict = {"rate": [], "-distortion": [], "iw_ll_mean": [], "iw_ll_p_w_mean": [],
+                                  "iw_ll_x_gen_p_w_mean": [], "iw_ll_x_gen_mean": [], "-D_ks": []}
     current_efficient_epochs = []
 
 
@@ -225,7 +227,7 @@ def train(device_rank, config, run_name):
     # ----------------------------------------------------------------------------------------------------
     while not finished_training:
         # TRAIN, VALID
-
+        print("FINISHED TRAINING BOOL:", finished_training)
         for phase in data_loaders.keys():
 
             if finished_training:
@@ -309,6 +311,8 @@ def train(device_rank, config, run_name):
 
             # BEST MODEL CHECKPOINT
             if phase == 'validation' and world_master:
+                print("CHECK FOR CHECKPOINTING")
+
                 val_epoch_stats = stats[epoch]['validation']
 
                 # Update the epoch_pareto_effiency_dict and determine efficient_epochs
@@ -342,9 +346,16 @@ def train(device_rank, config, run_name):
 
         # LOG EPOCH STATS (if world master)
         if config.logging and world_master:
+            print("LOG EPOCH STATS")
+
             utils_train.log_stats_epoch(stats, epoch, global_step, global_grad_step, atts_to_latent, masks)
 
         epoch += 1
+
+    # Dump train stats and pareto stats
+    path = config.code_dir_path + "/" + run_name
+    pickle.dump(stats, open(path + "/stats.pickle", "wb"))
+    pickle.dump(epoch_pareto_effiency_dict, open(path + "/pareto_dict.pickle", "wb"))
 
 
 def main(config):

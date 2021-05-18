@@ -448,18 +448,23 @@ def determine_pareto_checkpoint(val_epoch_stats, epoch_pareto_effiency_dict, epo
 
     """
 
-    iw_ll, iw_ll_x_gen = val_epoch_stats["iw_ll_p_w"], val_epoch_stats["iw_ll_x_gen_p_w"]
-    ks_statistic, pval = stats.ks_2samp(iw_ll, iw_ll_x_gen)
+    iw_ll_p_w, iw_ll_x_gen_p_w = val_epoch_stats["iw_ll_p_w"], val_epoch_stats["iw_ll_x_gen_p_w"]
 
-    iw_ll_mean = np.mean(iw_ll)
-    iw_ll_x_gen_mean = np.mean(iw_ll_x_gen)
+    ks_statistic, pval = stats.ks_2samp(iw_ll_p_w, iw_ll_x_gen_p_w)
+
+    iw_ll_p_w_mean = np.mean(iw_ll_p_w)
+    iw_ll_x_gen_p_w_mean = np.mean(iw_ll_x_gen_p_w)
     rate_mean = np.mean(val_epoch_stats["kl_analytical"])
     min_distortion_mean = - np.mean(val_epoch_stats["reconstruction_loss"])
     min_d_ks = - ks_statistic
 
+    iw_ll_mean, iw_ll_x_gen_mean = np.mean(val_epoch_stats["iw_ll"]), np.mean(val_epoch_stats["iw_ll_x_gen"])
+
     epoch_pareto_effiency_dict["rate"].append(rate_mean)
     epoch_pareto_effiency_dict["-distortion"].append(min_distortion_mean)
     epoch_pareto_effiency_dict["-D_ks"].append(min_d_ks)
+    epoch_pareto_effiency_dict["iw_ll_p_w_mean"].append(iw_ll_p_w_mean)
+    epoch_pareto_effiency_dict["iw_ll_x_gen_p_w_mean"].append(iw_ll_x_gen_p_w_mean)
     epoch_pareto_effiency_dict["iw_ll_mean"].append(iw_ll_mean)
     epoch_pareto_effiency_dict["iw_ll_x_gen_mean"].append(iw_ll_x_gen_mean)
 
@@ -468,6 +473,8 @@ def determine_pareto_checkpoint(val_epoch_stats, epoch_pareto_effiency_dict, epo
                    "pareto rate": rate_mean,
                    "pareto -distortion": min_distortion_mean,
                    "pareto -D_ks": min_d_ks,
+                   "pareto iw_ll_p_w_mean": iw_ll_p_w_mean,
+                   "pareto iw_ll_x_gen_p_w_mean": iw_ll_x_gen_p_w_mean,
                    "pareto iw_ll_mean": iw_ll_mean,
                    "pareto iw_ll_x_gen_mean": iw_ll_x_gen_mean})
 
@@ -479,11 +486,12 @@ def determine_pareto_checkpoint(val_epoch_stats, epoch_pareto_effiency_dict, epo
     #     epoch_pareto_effiency_dict["iw_ll_mean"][i],
     #     epoch_pareto_effiency_dict["iw_ll_x_gen_mean"][i]] for i in range(epoch+1)])
 
+    # Here the actual pareto efficiency happens
     # without rate and distortion...
     multi_dim_points = np.asarray([[
         epoch_pareto_effiency_dict["-D_ks"][i],
-        epoch_pareto_effiency_dict["iw_ll_mean"][i],
-        epoch_pareto_effiency_dict["iw_ll_x_gen_mean"][i]] for i in range(epoch + 1)])
+        epoch_pareto_effiency_dict["iw_ll_p_w_mean"][i],
+        epoch_pareto_effiency_dict["iw_ll_x_gen_p_w_mean"][i]] for i in range(epoch + 1)])
 
     efficient_epochs = is_pareto_efficient_simple(multi_dim_points)
     efficient_epochs = np.where(efficient_epochs)[0].tolist() # convert boolean array to list with epoch indices
@@ -713,7 +721,7 @@ def log_stats_epoch(stats, epoch, global_step, global_grad_step, atts_to_latent,
 
             else:
                 # for iw_ll, and iw_ll_x_gen make a histogram (already list type)
-                print("log epoch stats", stat_name, len(stat), stat)
+                # print("log epoch stats", stat_name, len(stat), stat)
                 logs[stat_name] = wandb.Histogram(stat)
 
     logs['epoch'] = epoch

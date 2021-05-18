@@ -114,7 +114,7 @@ class NewsData:
                                  pin_memory=self.pin_memory)
         return test_loader
 
-    def collate_fn(self, examples: List[Dict[str, List[int]]]) -> Dict[str, torch.Tensor]:
+    def collate_fn(self, examples):
         """
         A function that assembles a batch. This is where padding is done, since it depends on
         the maximum sequence length in the batch.
@@ -123,8 +123,13 @@ class NewsData:
         :return: padded_batch (batch x max_seq_len)
         """
 
+        # Get rid of text and label data, just
+        examples = [{"attention_mask": e["attention_mask"], "input_ids":e["input_ids"]} for e in examples]
+
         # Combine the tensors into a padded batch
-        padded_batch: Dict[str, torch.Tensor] = self.tokenizer.pad(examples, return_tensors='pt')
+        padded_batch = self.tokenizer.pad(examples, return_tensors='pt', padding=True,
+                                          max_length=self.max_seq_len,
+                                          return_attention_mask=True)
 
         return padded_batch
 
@@ -146,6 +151,8 @@ class NewsData:
         else:
             key = "sentence"
 
+
+        print("convert to features")
         encoded_batch = self.tokenizer(data_batch[key], truncation=True, max_length=self.max_seq_len)
 
         return encoded_batch
