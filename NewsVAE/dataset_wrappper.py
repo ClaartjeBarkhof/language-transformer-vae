@@ -23,7 +23,7 @@ class NewsData:
                  device="cuda:0"):
 
         # DATA DIRECTORY
-        dataset_list = ["cnn_dailymail", "ptb_text_only", "tom_ptb", "wikipedia", "yelp"]
+        dataset_list = ["cnn_dailymail", "ptb_text_only", "tom_ptb", "wikipedia", "yelp", "optimus_yelp"]
         assert dataset_name in dataset_list, f"Make sure the data set exists, choices: {dataset_list}"
 
         self.device = device
@@ -80,6 +80,20 @@ class NewsData:
                 s = ["train"] + [ReadInstruction('test', from_=splits[i], to=splits[i + 1], unit='%') for i in range(2)]
                 datasets = load_dataset("yelp_review_full", split=s)
                 self.datasets = {"train": datasets[0], "validation": datasets[1], "test": datasets[2]}
+            elif dataset_name == "optimus_yelp":
+                if os.path.isfile("/home/cbarkhof/code-thesis/NewsVAE/NewsData/optimus_yelp/train.csv"):
+                    self.datasets = load_dataset("csv", data_files=dict(
+                        train=f"/home/cbarkhof/code-thesis/NewsVAE/NewsData/optimus_yelp/train.csv",
+                        validation=f"/home/cbarkhof/code-thesis/NewsVAE/NewsData/optimus_yelp/valid.csv",
+                        test=f"/home/cbarkhof/code-thesis/NewsVAE/NewsData/optimus_yelp/test.csv",
+                    ))
+                else:
+                    # /Users/claartje/Dropbox/Studie/Master AI/Thesis/code-thesis/NewsVAE/NewsData
+                    self.datasets = load_dataset("csv", data_files=dict(
+                        train=f"/Users/claartje/Dropbox/Studie/Master AI/Thesis/code-thesis/NewsVAE/NewsData/optimus_yelp/train.csv",
+                        validation=f"/Users/claartje/Dropbox/Studie/Master AI/Thesis/code-thesis/NewsVAE/NewsData/optimus_yelp/valid.csv",
+                        test=f"/Users/claartje/Dropbox/Studie/Master AI/Thesis/code-thesis/NewsVAE/NewsData/optimus_yelp/test.csv",
+                    ))
             for split in ['train', 'validation', 'test']:
                 self.datasets[split] = self.datasets[split].map(self.convert_to_features, batched=True)
                 columns = ['attention_mask', 'input_ids']
@@ -146,7 +160,8 @@ class NewsData:
 
         if self.dataset_name == "cnn_dailymail":
             key = "article"
-        elif self.dataset_name == "tom_ptb" or self.dataset_name == "wikipedia" or self.dataset_name == "yelp":
+        elif self.dataset_name == "tom_ptb" or self.dataset_name == "wikipedia" \
+                or self.dataset_name == "yelp" or self.dataset_name == "optimus_yelp":
             key = "text"
         else:
             key = "sentence"
@@ -160,7 +175,7 @@ class NewsData:
 
 if __name__ == "__main__":
     print("-> Begin!")
-    data = NewsData('yelp', 'roberta', max_seq_len=64)
+    data = NewsData('optimus_yelp', 'roberta', max_seq_len=64)
     print("-> End!")
 
     print(data.datasets['train'].shape)

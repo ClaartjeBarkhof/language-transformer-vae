@@ -150,7 +150,7 @@ def preprare_parser(jupyter=False, print_settings=True):
                         type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Add the latent to the decoding process using a gating mechanism based on "
                              "self-attention scores. (default: True)")
-    parser.add_argument("--add_latent_w_matrix_influence", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
+    parser.add_argument("--add_latent_w_matrix_influence", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Activate the mechanism to influence the weight matrices in the decoder as"
                              "a function of the latent (default: False)")
     parser.add_argument("--do_tie_weights", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
