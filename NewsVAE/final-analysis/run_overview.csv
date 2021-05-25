@@ -1,0 +1,32 @@
+,run_name,clean_name,dataset,optimisation,drop,target_rate,matrix,emb,mem
+0,2021-05-24-PTB | CYC-FB-0.5 | matrix-memory-run-19:12:45,PTB | CYC-FB-0.5 | matrix-mem,PTB,CYC-FB-0.5,0.0,0.5,True,False,True
+1,2021-05-21-PTB | VAE | memory-run-05:50:37,PTB | VAE | mem,PTB,VAE,0.0,0.0,False,False,True
+2,2021-05-21-PTB | VAE | memory | DROP 40-run-05:54:09,PTB | VAE | mem | DROP 40,PTB,VAE,0.4,0.0,False,False,True
+3,2021-05-21-PTB | VAE | memory-embeddings-run-06:42:33,PTB | VAE | mem-emb,PTB,VAE,0.0,0.0,False,True,True
+4,2021-05-21-PTB | VAE | memory-embeddings | DROP 40-run-14:35:15,PTB | VAE | mem-emb | DROP 40,PTB,VAE,0.4,0.0,False,True,True
+5,2021-05-25-PTB | MDR-0.5 | matrix-memory-run-07:49:50,PTB | MDR-0.5 | matrix-mem,PTB,MDR-0.5,0.0,0.5,True,False,True
+6,2021-05-22-PTB | CYC-FB-0.5 | memory-run-02:03:27,PTB | CYC-FB-0.5 | mem,PTB,CYC-FB-0.5,0.0,0.5,False,False,True
+7,2021-05-22-PTB | CYC-FB-0.5 | memory | DROP 40-run-04:00:13,PTB | CYC-FB-0.5 | mem | DROP 40,PTB,CYC-FB-0.5,0.4,0.5,False,False,True
+8,2021-05-22-PTB | CYC-FB-0.5 | memory-embeddings-run-07:04:27,PTB | CYC-FB-0.5 | mem-emb,PTB,CYC-FB-0.5,0.0,0.5,False,True,True
+9,2021-05-22-PTB | CYC-FB-0.5 | memory-embeddings | DROP 40-run-09:00:45,PTB | CYC-FB-0.5 | mem-emb | DROP 40,PTB,CYC-FB-0.5,0.4,0.5,False,True,True
+10,2021-05-24-PTB | CYC-FB-0.5 | matrix-memory | DROP 40-run-19:30:07,PTB | CYC-FB-0.5 | matrix-mem | DROP 40,PTB,CYC-FB-0.5,0.4,0.5,True,False,True
+11,2021-05-22-PTB | MDR-0.5 | memory-run-14:01:39,PTB | MDR-0.5 | mem,PTB,MDR-0.5,0.0,0.5,False,False,True
+12,2021-05-22-PTB | MDR-0.5 | memory | DROP 40-run-20:01:49,PTB | MDR-0.5 | mem | DROP 40,PTB,MDR-0.5,0.4,0.5,False,False,True
+13,2021-05-22-PTB | MDR-0.5 | memory-embeddings-run-20:03:20,PTB | MDR-0.5 | mem-emb,PTB,MDR-0.5,0.0,0.5,False,True,True
+14,2021-05-22-PTB | MDR-0.5 | memory-embeddings | DROP 40-run-20:58:03,PTB | MDR-0.5 | mem-emb | DROP 40,PTB,MDR-0.5,0.4,0.5,False,True,True
+15,2021-05-24-PTB | MDR-0.5 | matrix-run-20:53:36,PTB | MDR-0.5 | matrix,PTB,MDR-0.5,0.0,0.5,True,False,False
+16,2021-05-22-YELP | VAE | memory-run-23:33:15,YELP | VAE | mem,YELP,VAE,0.0,0.0,False,False,True
+17,2021-05-23-YELP | VAE | memory | DROP 40-run-06:24:30,YELP | VAE | mem | DROP 40,YELP,VAE,0.4,0.0,False,False,True
+18,2021-05-23-YELP | VAE | memory-embeddings-run-07:33:28,YELP | VAE | mem-emb,YELP,VAE,0.0,0.0,False,True,True
+19,2021-05-23-YELP | VAE | memory-embeddings | DROP 40-run-09:15:07,YELP | VAE | mem-emb | DROP 40,YELP,VAE,0.4,0.0,False,True,True
+20,2021-05-24-PTB | MDR-0.5 | matrix | DROP 40-run-21:32:54,PTB | MDR-0.5 | matrix | DROP 40,PTB,MDR-0.5,0.4,0.5,True,False,False
+21,2021-05-23-YELP | CYC-FB-0.5 | memory-run-10:56:31,YELP | CYC-FB-0.5 | mem,YELP,CYC-FB-0.5,0.0,0.5,False,False,True
+22,2021-05-23-YELP | CYC-FB-0.5 | memory | DROP 40-run-17:15:59,YELP | CYC-FB-0.5 | mem | DROP 40,YELP,CYC-FB-0.5,0.4,0.5,False,False,True
+23,2021-05-23-YELP | CYC-FB-0.5 | memory-embeddings-run-18:19:10,YELP | CYC-FB-0.5 | mem-emb,YELP,CYC-FB-0.5,0.0,0.5,False,True,True
+24,2021-05-23-YELP | CYC-FB-0.5 | memory-embeddings | DROP 40-run-18:57:08,YELP | CYC-FB-0.5 | mem-emb | DROP 40,YELP,CYC-FB-0.5,0.4,0.5,False,True,True
+25,2021-05-23-YELP | MDR-0.5 | memory-run-19:38:13,YELP | MDR-0.5 | mem,YELP,MDR-0.5,0.0,0.5,False,False,True
+26,2021-05-23-YELP | MDR-0.5 | memory | DROP 40-run-20:10:35,YELP | MDR-0.5 | mem | DROP 40,YELP,MDR-0.5,0.4,0.5,False,False,True
+27,2021-05-23-YELP | MDR-0.5 | memory-embeddings-run-20:52:29,YELP | MDR-0.5 | mem-emb,YELP,MDR-0.5,0.0,0.5,False,True,True
+28,2021-05-24-PTB | VAE | matrix-run-11:05:20,PTB | VAE | matrix,PTB,VAE,0.0,0.0,True,False,False
+29,2021-05-24-PTB | VAE | matrix | DROP 40-run-12:08:05,PTB | VAE | matrix | DROP 40,PTB,VAE,0.4,0.0,True,False,False
+30,2021-05-24-PTB | VAE | matrix-memory | DROP 40-run-15:34:33,PTB | VAE | matrix-mem | DROP 40,PTB,VAE,0.4,0.0,True,False,True
