@@ -131,7 +131,7 @@ def approximate_total_correlation(mu, logvar, latent_z, method="chen", dataset_s
     return total_correlation
 
 
-def approximate_log_q_z(mu, logvar, latent_z, method="chen", dataset_size=42068, prod_marginals=False):
+def approximate_log_q_z(mu, logvar, latent_z, method="chen", dataset_size=42068, prod_marginals=False, reduce_mean=True):
     """
     Approximate E_q(z) [ log q (z) ]. This evaluates all samples x->z under q(z), which on itself
     relies on all data points. The "ideal" estimator would be:
@@ -208,7 +208,11 @@ def approximate_log_q_z(mu, logvar, latent_z, method="chen", dataset_size=42068,
 
         log_q_z = log_q_z - math.log(x_batch)
 
-    return log_q_z.mean(), log_q_z_prod_marg.mean()
+    if reduce_mean:
+        log_q_z = log_q_z.mean()
+        log_q_z_prod_marg = log_q_z_prod_marg.mean()
+
+    return log_q_z, log_q_z_prod_marg
 
 
 class LossTermManager(torch.nn.Module):
@@ -463,7 +467,7 @@ class LossTermManager(torch.nn.Module):
 
         iw_ll_p_w = iw_ll_not_zero / lens_not_zero
 
-        vae_out = {**enc_out, **dec_out, "log_p_x_z": log_p_x_z.mean().cpu().item(),
+        vae_out = {**enc_out, **dec_out, "log_p_x_z": log_p_x_z,
                    "lens": lens.float(), "iw_ll": iw_ll_not_zero, "iw_ll_mean": iw_ll_not_zero.mean().cpu().item(),
                    "iw_ll_p_w": iw_ll_p_w, "iw_ll_p_w_mean": iw_ll_p_w.mean().cpu().item()}
 

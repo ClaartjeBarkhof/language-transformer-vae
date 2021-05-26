@@ -1,3 +1,6 @@
 [submodule "NewsVAE/constraintoptim"]
 	path = NewsVAE/constraintoptim
 	url = https://github.com/EelcovdW/pytorch-constrained-opt.git
+[submodule "torch-two-sample"]
+	path = NewsVAE/torch-two-sample
+	url = https://github.com/josipd/torch-two-sample

@@ -20,6 +20,7 @@ import modules.vae as vae
 
 from dataset_wrappper import NewsData
 
+
 # ----------------------------------------------------------------------------------------------------
 # INITIALISATION STUFF
 # ----------------------------------------------------------------------------------------------------
@@ -181,6 +182,7 @@ def determine_max_epoch_steps_per_rank(max_train_steps_epoch_per_rank, max_valid
 
     return max_train_steps_epoch_per_rank, max_valid_steps_epoch_per_rank
 
+
 # ----------------------------------------------------------------------------------------------------
 # DATA LOADERS
 # ----------------------------------------------------------------------------------------------------
@@ -269,7 +271,7 @@ def fix_query_key_value_layer_name(state_dict):
             if "self.query" in k:
 
                 new_name = k.replace("self.query", "self.query_module.layer")
-                #print(f"replacing {k} with {new_name}")
+                # print(f"replacing {k} with {new_name}")
                 new_state_dict[new_name] = v
             elif "self.key" in k:
                 new_name = k.replace("self.key", "self.key_module.layer")
@@ -349,10 +351,11 @@ def load_from_checkpoint(path, world_master=True, ddp=False, device_name="cuda:0
 
     if return_loss_term_manager:
         loss_term_manager = vae.get_loss_term_manager_with_model(config, world_master=True,
-                                            dataset_size=dataset_size, device_name=device_name)
+                                                                 dataset_size=dataset_size, device_name=device_name)
         vae_model = loss_term_manager.vae_model
     else:
-        vae_model = vae.get_model_on_device(config, dataset_size=dataset_size, device_name=device_name, world_master=True)
+        vae_model = vae.get_model_on_device(config, dataset_size=dataset_size, device_name=device_name,
+                                            world_master=True)
 
     # Bring to CPU, as state_dict loading needs to happen in CPU (strange memory errors occur otherwise)
     vae_model = vae_model.cpu()
@@ -360,10 +363,9 @@ def load_from_checkpoint(path, world_master=True, ddp=False, device_name="cuda:0
     # DDP vs no DDP
     parameter_state_dict = checkpoint["VAE_model_state_dict"]
 
-
     # if config.add_latent_w_matrix_influence is True:
     #     print("TEST")
-    parameter_state_dict = fix_query_key_value_layer_name(parameter_state_dict)
+    #parameter_state_dict = fix_query_key_value_layer_name(parameter_state_dict)
 
     # MODEL
     if "module." in list(checkpoint["VAE_model_state_dict"].keys())[0] and not ddp:
@@ -374,18 +376,14 @@ def load_from_checkpoint(path, world_master=True, ddp=False, device_name="cuda:0
         print("Adding module string to state dict from checkpoint")
         parameter_state_dict = add_remove_module_from_state_dict(parameter_state_dict, remove=False)
 
-    # in place procedure
     vae_model.load_state_dict(parameter_state_dict)
     vae_model = vae_model.to(device_name)
 
     # GLOBAL STEP, EPOCH, BEST VALIDATION LOSS
     global_step = checkpoint["global_step"]
     epoch = checkpoint["epoch"]
-    best_valid_loss = checkpoint["best_valid_loss"]
 
-    print("Checkpoint global_step: {}, epoch: {}, best_valid_loss: {}".format(global_step,
-                                                                              epoch,
-                                                                              best_valid_loss))
+    print(f"Checkpoint global_step: {global_step}, epoch: {epoch}")
 
     # Do this again after loading checkpoint, because I am not sure if that is saved correctly
     # Weight tying / sharing between encoder and decoder RoBERTa part
@@ -409,6 +407,7 @@ def load_from_checkpoint(path, world_master=True, ddp=False, device_name="cuda:0
     else:
         return vae_model
 
+
 # Code for the fn below is taken from: https://stackoverflow.com/questions/32791911/fast-calculation-of-pareto-front-in-python
 # Fairly fast for many datapoints, less fast for many costs, somewhat readable
 def is_pareto_efficient_simple(costs):
@@ -420,7 +419,7 @@ def is_pareto_efficient_simple(costs):
     :param costs: An (n_points, n_costs) array
     :return: A (n_points, ) boolean array, indicating whether each point is Pareto efficient
     """
-    is_efficient = np.ones(costs.shape[0], dtype = bool)
+    is_efficient = np.ones(costs.shape[0], dtype=bool)
     for i, c in enumerate(costs):
         if is_efficient[i]:
             # Keep any point with a lower cost (changed to greater than, for gain)
@@ -494,7 +493,7 @@ def determine_pareto_checkpoint(val_epoch_stats, epoch_pareto_effiency_dict, epo
         epoch_pareto_effiency_dict["iw_ll_x_gen_p_w_mean"][i]] for i in range(epoch + 1)])
 
     efficient_epochs = is_pareto_efficient_simple(multi_dim_points)
-    efficient_epochs = np.where(efficient_epochs)[0].tolist() # convert boolean array to list with epoch indices
+    efficient_epochs = np.where(efficient_epochs)[0].tolist()  # convert boolean array to list with epoch indices
     print("Efficient epochs:", efficient_epochs)
 
     return epoch_pareto_effiency_dict, efficient_epochs
@@ -630,8 +629,10 @@ def add_matrix_influence_weight_to_loss(loss_term_manager, global_step, global_g
 
     wandb.log(gate_weights)
 
+
 def stats_over_sequence(list_of_stat_batches, list_of_mask_batches, with_relative_positions=True, N_bins=-1):
-    assert list_of_stat_batches[0].shape == list_of_mask_batches[0].shape, "stats blocks and mask blocks need to be of equal size"
+    assert list_of_stat_batches[0].shape == list_of_mask_batches[
+        0].shape, "stats blocks and mask blocks need to be of equal size"
 
     acc_stats = cat_pad_uneven(list_of_stat_batches, pad_value=0)
     masks = cat_pad_uneven(list_of_mask_batches, pad_value=0)
@@ -657,7 +658,6 @@ def stats_over_sequence(list_of_stat_batches, list_of_mask_batches, with_relativ
         bin_means, bin_edges, bin_ids = stats.binned_statistic(positions,
                                                                stats_masked,
                                                                statistic='mean', bins=N_bins)
-
 
     return bin_means, bin_edges, bin_ids, stats_masked, positions
 
@@ -703,18 +703,20 @@ def log_stats_epoch(stats, epoch, global_step, global_grad_step, atts_to_latent,
         data = [[x, y] for (x, y) in zip(bin_edges, bin_means)]
         table = wandb.Table(data=data, columns=["relative_positions", "avg_att_to_latent"])
         wandb.log({f"attention_to_latent_epoch_{epoch}": wandb.plot.line(table,
-                  "relative_positions", "avg_att_to_latent", title="Avg attention to latent with relative positions")})
+                                                                         "relative_positions", "avg_att_to_latent",
+                                                                         title="Avg attention to latent with relative positions")})
 
         logs["Epoch mean (validation) avg_attention_to_latent"] = np.mean(stats_masked)
         logs["Epoch mean (validation) FIRST_three_bins avg_attention_to_latent"] = avg_first_three_bins
         logs["Epoch mean (validation) LAST_three_bins avg_attention_to_latent"] = avg_last_three_bins
-        logs["Epoch mean (validation) DIFF FIRST LAST three_bins avg_attention_to_latent"] = avg_first_three_bins - avg_last_three_bins
+        logs[
+            "Epoch mean (validation) DIFF FIRST LAST three_bins avg_attention_to_latent"] = avg_first_three_bins - avg_last_three_bins
         logs["Epoch std (validation) std_attention_to_latent"] = np.std(stats_masked)
 
     for phase, phase_stats in stats[epoch].items():
         print("phase", phase)
         for stat_name, stat in phase_stats.items():
-            #print(stat_name)
+            # print(stat_name)
             if stat_name not in ["iw_ll_x_gen", "iw_ll", "iw_ll_p_w", "iw_ll_x_gen_p_w", "lens", "lens_x_gen"]:
                 log_name = "Epoch mean ({}) {}".format(phase, stat_name)
                 logs[log_name] = np.mean(stat)
