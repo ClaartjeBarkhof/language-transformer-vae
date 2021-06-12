@@ -8,10 +8,11 @@ import utils_train
 import modules.vae as vae
 from loss_and_optimisation import ParameterScheduler, LossTermManager
 import pickle
+import os
 
 
 def do_valid_step(loss_term_manager, batch, device_name="cuda:0", ddp=False, decoder_only=False, iw_ll_n_samples=50,
-                  eval_iw_ll_x_gen=True, max_seq_len_x_gen=64):
+                  eval_iw_ll_x_gen=True, max_seq_len_x_gen=64, save_latents=False):
     """
     Perform a validation step.
     """
@@ -30,6 +31,7 @@ def do_valid_step(loss_term_manager, batch, device_name="cuda:0", ddp=False, dec
                                         device_name=device_name,
                                         iw_ll_n_samples=iw_ll_n_samples,
                                         return_attention_to_latent=True,
+                                        save_latents=save_latents,
                                         train=True,  # not returning posteriors and latents etc.
                                         max_seq_len_x_gen=max_seq_len_x_gen)
         # Detach as no update being done
@@ -43,7 +45,6 @@ def do_train_step(loss_term_manager, batch, global_step, use_amp=False, accumula
     """
     Perform a train step with mixed precision auto cast, gradients enabled and gradient accumulated backward.
     """
-
     # ---------------------------------------------------------------
     # TOTAL LOSS, VAE NETWORK PARAMETERS
     # ---------------------------------------------------------------
@@ -187,8 +188,20 @@ def train(device_rank, config, run_name):
 
     # Get model and loss term manager
     dataset_size = data.datasets['train'].shape[0]
-    loss_term_manager = vae.get_loss_term_manager_with_model(config, world_master=world_master,
-                                                             dataset_size=dataset_size, device_name=device_name)
+    if config.load_from_checkpoint:
+        assert os.path.isfile(config.checkpoint_file), f"checkpoint file does not exists: {config.checkpoint_file}"
+        loss_term_manager = utils_train.load_from_checkpoint(config.checkpoint_file, world_master=world_master,
+                                                             ddp=config.ddp, device_name=device_name,
+                                                             evaluation=False, return_loss_term_manager=True,
+                                                             loss_term_manager_config=config)
+    else:
+        loss_term_manager = vae.get_loss_term_manager_with_model(config, world_master=world_master,
+                                                                 dataset_size=dataset_size, device_name=device_name)
+
+    autoencoder = False
+    if config.objective == "beta-vae" and config.b_vae_beta_constant_linear_lagrangian == "constant" and config.b_vae_beta == 0.0:
+        print("** AUTO ENCODER OBJECTIVE!!")
+        autoencoder = True
 
     # Initialise logging
     if config.logging and world_master:
@@ -214,11 +227,8 @@ def train(device_rank, config, run_name):
     epoch, global_step, global_grad_step, not_improved_epochs = 0, 0, 0, 0
     # NB, I am not using D_ks for pareto checkpointing anymore.
 
-    epoch_pareto_effiency_dict = {"rate": [], "-distortion": [], "iw_ll_mean": [], "iw_ll_p_w_mean": [],
-                                  "iw_ll_x_gen_p_w_mean": [], "iw_ll_x_gen_mean": [], "-D_ks": []}
+    epoch_pareto_effiency_dict = utils_train.prepare_pareto_dict(config=config)
     current_efficient_epochs = []
-
-
 
     if world_master: print("Start or resume training!")
 
@@ -226,8 +236,10 @@ def train(device_rank, config, run_name):
     # TRAINING!
     # ----------------------------------------------------------------------------------------------------
     while not finished_training:
+
+        print("finished_training", finished_training)
+
         # TRAIN, VALID
-        print("FINISHED TRAINING BOOL:", finished_training)
         for phase in data_loaders.keys():
 
             if finished_training:
@@ -238,7 +250,7 @@ def train(device_rank, config, run_name):
                 samplers[phase].set_epoch(epoch)  # needed to explicitly shuffle
 
             max_steps = max_train_steps_epoch_per_rank if phase == 'train' else max_valid_steps_epoch_per_rank
-            atts_to_latent, masks = [], []
+            atts_to_latent, masks, latents = [], [], []
 
             for batch_i, batch in enumerate(data_loaders[phase]):
                 # ----------------------------------------------------------------------------------------------------
@@ -263,7 +275,11 @@ def train(device_rank, config, run_name):
                     losses = do_valid_step(loss_term_manager, batch,
                                            device_name=device_name, ddp=config.ddp, decoder_only=config.decoder_only,
                                            iw_ll_n_samples=config.iw_ll_n_samples, eval_iw_ll_x_gen=config.eval_iw_ll_x_gen,
-                                           max_seq_len_x_gen=config.max_seq_len_x_gen)
+                                           max_seq_len_x_gen=config.max_seq_len_x_gen, save_latents=config.save_latents)
+                    if "latent_z" in losses:
+                        latents.append(losses["latent_z"])
+                        del losses["latent_z"]
+
                     if "attention_to_latent" in losses:
                         atts_to_latent.append(losses["attention_to_latent"].cpu())
                         masks.append(batch["attention_mask"][:, 1:].cpu())
@@ -311,13 +327,15 @@ def train(device_rank, config, run_name):
 
             # BEST MODEL CHECKPOINT
             if phase == 'validation' and world_master:
-                print("CHECK FOR CHECKPOINTING")
-
                 val_epoch_stats = stats[epoch]['validation']
+
+                if len(latents) > 0:
+                    utils_train.save_latents(latents, global_step, epoch, run_name, config.code_dir_path)
 
                 # Update the epoch_pareto_effiency_dict and determine efficient_epochs
                 epoch_pareto_effiency_dict, efficient_epochs = utils_train.determine_pareto_checkpoint(
-                    val_epoch_stats, epoch_pareto_effiency_dict, epoch, logging=config.logging)
+                    val_epoch_stats, epoch_pareto_effiency_dict, epoch, logging=config.logging,
+                    decoder_only=config.decoder_only or autoencoder) # if AE, also evaluate based on -D
 
                 # Check if anything changed, if not keep count of not improved epochs
                 if efficient_epochs == current_efficient_epochs:

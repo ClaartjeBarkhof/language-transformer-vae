@@ -95,14 +95,17 @@ def preprare_parser(jupyter=False, print_settings=True):
                         help="Whether or not to checkpoint (save) the model. (default: False).")
     parser.add_argument("--checkpoint_every_n_steps", default=10, type=int,
                         help="Every how many (training) steps to checkpoint (default: 1000).")
+    parser.add_argument("--save_latents", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
+                        help="Whether or not to save latents in the validation loop (as much batches as are set with "
+                             "--batch_size x --max_valid_steps_epoch_per_rank. (default: False).")
     parser.add_argument("--early_stop_epochs", default=3, type=int,
                         help="After how many epochs of non-improving model the script should early stop (default: 3).")
     parser.add_argument("--early_stopping", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to apply early stopping after <early_stop_epochs> epochs of no improvement. (default: True).")
-    # parser.add_argument("--load_from_checkpoint", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
-    #                     help="Load from checkpoint given by checkpoint_file (default: False).")
-    # parser.add_argument("--checkpoint_file", default="", type=str,
-    #                     help="File name of a checkpoint to load in (default: '').")
+    parser.add_argument("--load_from_checkpoint", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
+                        help="Load from checkpoint given by checkpoint_file (default: False).")
+    parser.add_argument("--f", default="", type=str,
+                        help="File name of a checkpoint to load in (default: '').")
     # parser.add_argument("--continue_train_after_checkpoint_loading", default=True,
     #                     type=lambda x: bool(distutils.util.strtobool(x)),
     #                     help="If false, the epoch and best validation etc. are set to "
@@ -167,6 +170,43 @@ def preprare_parser(jupyter=False, print_settings=True):
                         type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to run decoder_only mode (not a VAE). This is meant as a baseline mode.")
 
+    # PARETO EFFICIENT CHECKPOINTING CRITERIA
+    # DEFAULT: rate, iw_ll_p_w, iw_ll_x_gen_p_w, D_ks
+    # ALTERNATIVE: rate, distortion, tts_mmd, elbo
+    parser.add_argument("--pareto_check_use_rate", default=True,
+                        type=lambda x: bool(distutils.util.strtobool(x)),
+                        help="Whether or not to use Rate as one of the Pareto efficient checkpointing criteria "
+                             "(default: True).")
+    parser.add_argument("--pareto_check_use_iw_ll_p_w", default=True,
+                        type=lambda x: bool(distutils.util.strtobool(x)),
+                        help="Whether or not to use importance weighted perplexity per token as one of the Pareto "
+                             "efficient checkpointing criteria. Number of samples is set with '--iw_ll_n_samples' "
+                             "option. (default: True)")
+    parser.add_argument("--pareto_check_use_iw_ll_x_gen_p_w", default=True,
+                        type=lambda x: bool(distutils.util.strtobool(x)),
+                        help="Whether or not to use importance weighted perplexity per GENERATED (x_gen) token as "
+                             "one of the Pareto efficient checkpointing criteria. Number of samples is set with "
+                             "'--iw_ll_n_samples' option. To use this option you must also set "
+                             "--eval_iw_ll_x_gen=True. (default: True)")
+    parser.add_argument("--pareto_check_use_D_ks", default=True,
+                        type=lambda x: bool(distutils.util.strtobool(x)),
+                        help="Whether or not to use histogram overlap between iw_ll_p_w and iw_ll_x_gen_p_w as one"
+                             "of the Pareto checkpointing criteria. To use this option you must also set "
+                             "--eval_iw_ll_x_gen=True. (default: True)")
+    parser.add_argument("--pareto_check_use_distortion", default=False,
+                        type=lambda x: bool(distutils.util.strtobool(x)),
+                        help="Whether or not to use Distortion as one"
+                             "of the Pareto checkpointing criteria. (default: False)")
+    parser.add_argument("--pareto_check_use_tts_mmd", default=False,
+                        type=lambda x: bool(distutils.util.strtobool(x)),
+                        help="Whether or not to use Torch Two Sample MMD as one of the Pareto checkpointing "
+                             "criteria. (default: False)")
+    parser.add_argument("--pareto_check_use_elbo", default=False,
+                        type=lambda x: bool(distutils.util.strtobool(x)),
+                        help="Whether or not to use ELBO as one of the Pareto checkpointing "
+                             "criteria. (default: False)")
+
+
     # NOISY TEACHER-FORCED
     parser.add_argument("--drop_inputs_decoder", default=False,
                         type=lambda x: bool(distutils.util.strtobool(x)),
@@ -226,7 +266,8 @@ def preprare_parser(jupyter=False, print_settings=True):
                              "  - 5. free-bits-beta-vae (fb_b_vae)"
                              "  - 6. beta-tc-vae (b_tc_vae)"
                              "  - 7. mmd-vae (mmd_vae)"
-                             "  - 8. hoffman (hoffman_vae)")
+                             "  - 8. hoffman (hoffman_vae)"
+                             "  - 9. distortion-constraint-optim")
 
     # ---------------------
     # BETA - VAE          #
@@ -268,6 +309,35 @@ def preprare_parser(jupyter=False, print_settings=True):
     # free-bits-beta-vae (extends beta_vae parameters), can not be used in combination with Lagrangian optimisation
     parser.add_argument("--fb_b_vae_free_bits_pd", default=0.0, type=float,
                         help="The KL loss per dimension below this value is not taken into account.")
+
+    # -----------------------------------
+    # MIN DISTORTION, s.t. ELBO and MMD or distortion-constraint-optim
+    # -----------------------------------
+
+    # ELBO constraint
+    parser.add_argument("--elbo_constraint_value", default=-100.0, type=float,
+                        help="The ELBO constraint value. The ELBO should be above this level.")
+    parser.add_argument("--elbo_constraint_alpha", default=0.5, type=float,
+                        help="The ELBO constraint alpha.")
+    parser.add_argument("--elbo_constraint_lr", default=0.001, type=float,
+                        help="The learning rate for ELBO constraint optimiser.")
+
+    # MMD constraint
+    parser.add_argument("--mmd_constraint_value", default=0.01, type=float,
+                        help="The ELBO constraint value. The ELBO should be above this level.")
+    parser.add_argument("--mmd_constraint_alpha", default=0.5, type=float,
+                        help="The ELBO constraint alpha.")
+    parser.add_argument("--mmd_constraint_lr", default=0.001, type=float,
+                        help="The learning rate for ELBO constraint optimiser.")
+
+    # Rate
+    parser.add_argument("--rate_constraint_value", default=16, type=float,
+                        help="The rate constraint value. The ELBO should be above this level.")
+    parser.add_argument("--rate_constraint_alpha", default=0.5, type=float,
+                        help="The rate constraint alpha.")
+    parser.add_argument("--rate_constraint_lr", default=0.001, type=float,
+                        help="The learning rate for ELBO constraint optimiser.")
+
 
     # ---------------------
     # BETA - TC - VAE     #
@@ -453,7 +523,12 @@ def preprare_parser(jupyter=False, print_settings=True):
     #           - lambda constant
 
     assert args.objective in ["evaluation", "autoencoder", "vae", "beta-vae", "hoffman",
-                              "free-bits-beta-vae", "beta-tc-vae", "mmd-vae"], "Invalid objective, see options. Quit!"
+                              "free-bits-beta-vae", "beta-tc-vae", "mmd-vae", "distortion-constraint-optim"],\
+        "Invalid objective, see options. Quit!"
+
+    if args.pareto_check_use_iw_ll_x_gen_p_w or args.pareto_check_use_D_ks:
+        assert args.eval_iw_ll_x_gen, "if pareto_check_use_iw_ll_x_gen_p_w or pareto_check_use_D_ks is set to True, " \
+                                      "you must set eval_iw_ll_x_gen to True as well"
 
     # PRINT SOME SETTINGS
     if print_settings:

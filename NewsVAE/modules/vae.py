@@ -174,6 +174,8 @@ class NewsVAE(torch.nn.Module):
                                           return_log_q_z=True,
                                           return_embeddings=False)
             latent_z = enc_out["latent_z"]
+            if latent_z.dim() == 3:
+                latent_z = latent_z.squeeze(1)
 
         # Parallel predictions with teacher forcing (during training)
         if auto_regressive is False:
@@ -360,6 +362,14 @@ def get_loss_term_manager_with_model(config, world_master=True,
         if config.hoffman_vae_beta_constant_linear_lagrangian == "lagrangian":
             loss_term_manager.manager["beta_marg_KL"]["constraint"] = \
                 loss_term_manager.manager["beta_marg_KL"]["constraint"].to(device_name)
+
+    if config.objective == "distortion-constraint-optim":
+        loss_term_manager.manager["alpha_elbo"]["constraint"] = \
+            loss_term_manager.manager["alpha_elbo"]["constraint"].to(device_name)
+        loss_term_manager.manager["beta_mmd"]["constraint"] = \
+            loss_term_manager.manager["beta_mmd"]["constraint"].to(device_name)
+        loss_term_manager.manager["gamma_rate"]["constraint"] = \
+            loss_term_manager.manager["gamma_rate"]["constraint"].to(device_name)
 
     return loss_term_manager
 

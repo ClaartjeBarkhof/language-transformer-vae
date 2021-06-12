@@ -7,6 +7,11 @@ from scipy import stats
 import sys
 import pickle
 
+if os.path.exists("/home/cbarkhof"):
+    user = "cbarkhof"
+else:
+    user = "ec2-user"
+
 # ----------------------------------------------------------------------------------------------------
 # PRIOR POSTERIOR PERFORMANCE DROP
 # ----------------------------------------------------------------------------------------------------
@@ -367,8 +372,8 @@ def dump_pickle(o, f):
     pickle.dump(o, open(f, "wb"))
 
 
-def get_wandb_run_id(run_name, RUNS_DIR = "/home/cbarkhof/code-thesis/NewsVAE/Runs"):
-    path = f"{RUNS_DIR}/{run_name}/wandb/wandb"
+def get_wandb_run_id(run_name, run_dir=f"/home/{user}/code-thesis/NewsVAE/Runs"):
+    path = f"{run_dir}/{run_name}/wandb/wandb"
     run_id = None
     for f in os.listdir(path):
         if "run-" in f:

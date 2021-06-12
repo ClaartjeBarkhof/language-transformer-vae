@@ -1,0 +1,5 @@
+,clean_name,run_name,drop,dataset,optimisation,mem,emb,matrix,run_id,efficient_epochs,max pareto logged epoch,n_checkpoints,checkpoints
+0,YELP | CYC+FB-0.5 | mem,2021-05-17-17-MAY-yelp-cyclical-free-bits-0.5-run-11:45:29,0.0,YELP,CYC+FB-0.5,True,False,False,hipgfat1,,,3,"['checkpoint-epoch-002-step-15237-iw-ll_003.pth', 'checkpoint-epoch-005-step-30474-iw-ll_003.pth', 'checkpoint-epoch-006-step-35553-iw-ll_003.pth']"
+1,YELP | CYC | mem,2021-05-18-18-MAY-yelp-cyclical-only-run-11:39:28,0.0,YELP,CYC,True,False,False,37i1yj5a,,,4,"['checkpoint-epoch-006-step-35553-iw-ll_178.pth', 'checkpoint-epoch-008-step-45711-iw-ll_179.pth', 'checkpoint-epoch-009-step-50790-iw-ll_174.pth', 'checkpoint-epoch-011-step-60948-iw-ll_176.pth']"
+2,YELP | FB-0.5 | mem,2021-05-19-18-MAY-yelp-free-bits-0.5-only-run-03:00:33,0.0,YELP,FB-0.5,True,False,False,te0690el,,,1,['checkpoint-epoch-011-step-60948-iw-ll_174.pth']
+3,YELP | MDR-0.5 | mem,2021-05-19-18-MAY-yelp-mem-mdr-0.5-run-03:39:45,0.0,YELP,MDR-0.5,True,False,False,o7p17tc8,,,3,"['checkpoint-epoch-009-step-50790-iw-ll_172.pth', 'checkpoint-epoch-010-step-55869-iw-ll_179.pth', 'checkpoint-epoch-011-step-60948-iw-ll_173.pth']"

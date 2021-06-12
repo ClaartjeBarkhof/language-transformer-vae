@@ -290,7 +290,7 @@ def load_from_checkpoint(path, world_master=True, ddp=False, device_name="cuda:0
                          add_latent_via_gating=False, add_latent_via_cross_attention=False,
                          add_latent_via_embeddings=False, do_tie_embedding_spaces=True, dataset_size=3370,
                          add_decoder_output_embedding_bias=False, objective="evaluation", evaluation=True,
-                         return_loss_term_manager=False):
+                         return_loss_term_manager=False, loss_term_manager_config=None):
     # DETERMINE / CHECK PATH
     assert os.path.isfile(path), f"-> checkpoint file path ({path}) must exist for it to be loaded!"
     if world_master: print("Loading model from checkpoint: {}".format(path))
@@ -350,7 +350,9 @@ def load_from_checkpoint(path, world_master=True, ddp=False, device_name="cuda:0
             config.add_decoder_output_embedding_bias = add_decoder_output_embedding_bias
 
     if return_loss_term_manager:
-        loss_term_manager = vae.get_loss_term_manager_with_model(config, world_master=True,
+        if loss_term_manager_config is None:
+            loss_term_manager_config = config
+        loss_term_manager = vae.get_loss_term_manager_with_model(loss_term_manager_config, world_master=True,
                                                                  dataset_size=dataset_size, device_name=device_name)
         vae_model = loss_term_manager.vae_model
     else:
@@ -368,13 +370,13 @@ def load_from_checkpoint(path, world_master=True, ddp=False, device_name="cuda:0
     #parameter_state_dict = fix_query_key_value_layer_name(parameter_state_dict)
 
     # MODEL
-    if "module." in list(checkpoint["VAE_model_state_dict"].keys())[0] and not ddp:
+    if "module." in list(checkpoint["VAE_model_state_dict"].keys())[0]: #and not ddp
         print("Removing module string from state dict from checkpoint")
         parameter_state_dict = add_remove_module_from_state_dict(parameter_state_dict, remove=True)
 
-    elif "module." not in list(checkpoint["VAE_model_state_dict"].keys())[0] and ddp:
-        print("Adding module string to state dict from checkpoint")
-        parameter_state_dict = add_remove_module_from_state_dict(parameter_state_dict, remove=False)
+    # elif "module." not in list(checkpoint["VAE_model_state_dict"].keys())[0] and ddp:
+    #     print("Adding module string to state dict from checkpoint")
+    #     parameter_state_dict = add_remove_module_from_state_dict(parameter_state_dict, remove=False)
 
     vae_model.load_state_dict(parameter_state_dict)
     vae_model = vae_model.to(device_name)
@@ -428,7 +430,37 @@ def is_pareto_efficient_simple(costs):
     return is_efficient
 
 
-def determine_pareto_checkpoint(val_epoch_stats, epoch_pareto_effiency_dict, epoch, logging=True):
+def prepare_pareto_dict(config):
+    """
+    This function prepares a dictionary to collect stats that are used for Pareto efficient checkpointing,
+    based on the provided settings in config.
+    """
+
+    pareto_dict = dict()
+
+    if config.pareto_check_use_rate:
+        pareto_dict["kl_analytical"] = []
+    if config.pareto_check_use_iw_ll_p_w:
+        pareto_dict["iw_ll_p_w"] = []
+    if config.pareto_check_use_iw_ll_x_gen_p_w:
+        pareto_dict["iw_ll_x_gen_p_w"] = []
+    if config.pareto_check_use_D_ks:
+        pareto_dict["-D_ks"] = []
+    if config.pareto_check_use_distortion:
+        pareto_dict["-distortion"] = []
+    if config.pareto_check_use_tts_mmd:
+        pareto_dict["-tts_mmd"] = []
+    if config.pareto_check_use_elbo:
+        pareto_dict["elbo"] = []
+
+    print("Keys in Pareto dict:")
+    for i, k in enumerate(list(pareto_dict.keys())):
+        print(i, k)
+
+    return pareto_dict
+
+
+def determine_pareto_checkpoint(val_epoch_stats, epoch_pareto_effiency_dict, epoch, logging=True, decoder_only=False):
     """
 
     Args:
@@ -446,57 +478,50 @@ def determine_pareto_checkpoint(val_epoch_stats, epoch_pareto_effiency_dict, epo
 
 
     """
+    pareto_metrics = list(epoch_pareto_effiency_dict.keys())
 
-    iw_ll_p_w, iw_ll_x_gen_p_w = val_epoch_stats["iw_ll_p_w"], val_epoch_stats["iw_ll_x_gen_p_w"]
-
-    ks_statistic, pval = stats.ks_2samp(iw_ll_p_w, iw_ll_x_gen_p_w)
-
-    iw_ll_p_w_mean = np.mean(iw_ll_p_w)
-    iw_ll_x_gen_p_w_mean = np.mean(iw_ll_x_gen_p_w)
-    rate_mean = np.mean(val_epoch_stats["kl_analytical"])
-    min_distortion_mean = - np.mean(val_epoch_stats["reconstruction_loss"])
-    min_d_ks = - ks_statistic
-
-    iw_ll_mean, iw_ll_x_gen_mean = np.mean(val_epoch_stats["iw_ll"]), np.mean(val_epoch_stats["iw_ll_x_gen"])
-
-    epoch_pareto_effiency_dict["rate"].append(rate_mean)
-    epoch_pareto_effiency_dict["-distortion"].append(min_distortion_mean)
-    epoch_pareto_effiency_dict["-D_ks"].append(min_d_ks)
-    epoch_pareto_effiency_dict["iw_ll_p_w_mean"].append(iw_ll_p_w_mean)
-    epoch_pareto_effiency_dict["iw_ll_x_gen_p_w_mean"].append(iw_ll_x_gen_p_w_mean)
-    epoch_pareto_effiency_dict["iw_ll_mean"].append(iw_ll_mean)
-    epoch_pareto_effiency_dict["iw_ll_x_gen_mean"].append(iw_ll_x_gen_mean)
-
-    if logging:
-        wandb.log({"pareto epoch": epoch,
-                   "pareto rate": rate_mean,
-                   "pareto -distortion": min_distortion_mean,
-                   "pareto -D_ks": min_d_ks,
-                   "pareto iw_ll_p_w_mean": iw_ll_p_w_mean,
-                   "pareto iw_ll_x_gen_p_w_mean": iw_ll_x_gen_p_w_mean,
-                   "pareto iw_ll_mean": iw_ll_mean,
-                   "pareto iw_ll_x_gen_mean": iw_ll_x_gen_mean})
-
-    # Change the dict to a set of array of multi dimensional points
-    # multi_dim_points = np.asarray([[
-    #     epoch_pareto_effiency_dict["rate"][i],
-    #     epoch_pareto_effiency_dict["-distortion"][i],
-    #     epoch_pareto_effiency_dict["-D_ks"][i],
-    #     epoch_pareto_effiency_dict["iw_ll_mean"][i],
-    #     epoch_pareto_effiency_dict["iw_ll_x_gen_mean"][i]] for i in range(epoch+1)])
+    for metric in pareto_metrics:
+        # All metrics you want to increase
+        if metric in ["kl_analytical", "iw_ll_p_w", "iw_ll_x_gen_p_w", "elbo"]:
+            epoch_pareto_effiency_dict[metric].append(np.mean(val_epoch_stats[metric]))
+        # You want distortion to go down, so take negative
+        elif metric == "-distortion":
+            epoch_pareto_effiency_dict[metric].append(-np.mean(val_epoch_stats["reconstruction_loss"]))
+        # You want MMD to go down, so take negative
+        elif metric == "-tts_mmd":
+            epoch_pareto_effiency_dict[metric].append(-np.mean(val_epoch_stats["tts_mmd_loss"]))
+        # You want D_Ks to go down, so calculate and take negative
+        elif metric == "-D_ks":
+            ks_statistic, pval = stats.ks_2samp(val_epoch_stats["iw_ll_p_w"],
+                                                val_epoch_stats["iw_ll_x_gen_p_w"])
+            min_d_ks = - ks_statistic
+            epoch_pareto_effiency_dict[metric] = min_d_ks
 
     # Here the actual pareto efficiency happens
-    # without rate and distortion...
-    multi_dim_points = np.asarray([[
-        epoch_pareto_effiency_dict["-D_ks"][i],
-        epoch_pareto_effiency_dict["iw_ll_p_w_mean"][i],
-        epoch_pareto_effiency_dict["iw_ll_x_gen_p_w_mean"][i]] for i in range(epoch + 1)])
-
+    multi_dim_points = np.asarray([[epoch_pareto_effiency_dict[metric][i]
+                                    for metric in pareto_metrics] for i in range(epoch+1)])
+    # returns boolean array
     efficient_epochs = is_pareto_efficient_simple(multi_dim_points)
-    efficient_epochs = np.where(efficient_epochs)[0].tolist()  # convert boolean array to list with epoch indices
+    # convert boolean array to list with epoch indices
+    efficient_epochs = np.where(efficient_epochs)[0].tolist()
     print("Efficient epochs:", efficient_epochs)
 
+    if logging:
+        wandb_log = {"pareto epoch": epoch}
+        for m in pareto_metrics:
+            wandb_log[f"pareto {m}"] = epoch_pareto_effiency_dict[m][-1]
+        wandb.log(wandb_log)
+
     return epoch_pareto_effiency_dict, efficient_epochs
+
+
+def save_latents(latents, global_step, epoch, run_name, code_dir_path):
+    latents = torch.cat(latents, dim=0).cpu()
+    d = f'{code_dir_path}/Runs/{run_name}/latents'
+    os.makedirs(d, exist_ok=True)
+    p = f'{d}/latents-epoch-{epoch}-global-step-{global_step}.pt'
+    print("Saving latents:", p)
+    torch.save(latents, p)
 
 
 def save_checkpoint_model(vae_model, run_name, code_dir_path, global_step,
@@ -524,8 +549,7 @@ def save_checkpoint_model(vae_model, run_name, code_dir_path, global_step,
 
     # If new efficient checkpoint is found, save it as such
     if current_epoch in efficient_epochs:
-        min_iw_ll = abs(int(epoch_pareto_effiency_dict["iw_ll_mean"][-1]))
-        ckpt_name = f"checkpoint-epoch-{current_epoch:03d}-step-{global_step}-iw-ll_{min_iw_ll:03d}.pth"
+        ckpt_name = f"checkpoint-epoch-{current_epoch:03d}-step-{global_step}.pth"
         ckpt_path = f"{code_dir_path}/Runs/{run_name}/{ckpt_name}"
         print(f"Saving checkpoint at {ckpt_path}")
 
@@ -714,7 +738,7 @@ def log_stats_epoch(stats, epoch, global_step, global_grad_step, atts_to_latent,
         logs["Epoch std (validation) std_attention_to_latent"] = np.std(stats_masked)
 
     for phase, phase_stats in stats[epoch].items():
-        print("phase", phase)
+        #print("phase", phase)
         for stat_name, stat in phase_stats.items():
             # print(stat_name)
             if stat_name not in ["iw_ll_x_gen", "iw_ll", "iw_ll_p_w", "iw_ll_x_gen_p_w", "lens", "lens_x_gen"]:

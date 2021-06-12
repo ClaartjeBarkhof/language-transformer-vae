@@ -5,38 +5,62 @@ import torch
 import pickle
 import pandas as pd
 import re
-import sys; sys.path.append("../")
+import sys;
+
+sys.path.append("../")
+from utils_evaluation import get_wandb_run_id, dump_pickle, load_pickle
+import wandb
 
 # Plotting
 # %matplotlib inline
 import seaborn as sns
+
 sns.set()
 import matplotlib.pyplot as plt
 
+if os.path.exists("/home/cbarkhof"):
+    user = "cbarkhof"
+else:
+    user = "ec2-user"
+
 # Globals
 RUN_DIRS = {
-    "Runs": "/home/cbarkhof/code-thesis/NewsVAE/Runs",
-    "Runs-ablation": "/home/cbarkhof/code-thesis/NewsVAE/Runs-ablation",
-    "Runs-target-rate": "/home/cbarkhof/code-thesis/NewsVAE/Runs-target-rate"
+    "Runs": f"/home/{user}/code-thesis/NewsVAE/Runs",
+    "Runs-ablation": f"/home/{user}/code-thesis/NewsVAE/Runs-ablation",
+    "Runs-target-rate": f"/home/{user}/code-thesis/NewsVAE/Runs-target-rate-seed-0" if user is "ec2-user" else f"/home/{user}/code-thesis/NewsVAE/Runs-target-rate",
+    "Runs-pretrain": f"/home/{user}/code-thesis/NewsVAE/Runs-pretrain",
 }
 
-RES_FILE_DIR = "/home/cbarkhof/code-thesis/NewsVAE/final-analysis/result-files"
-ANALYSIS_DIR = "/home/cbarkhof/code-thesis/NewsVAE/final-analysis"
+RES_FILE_DIR = f"/home/{user}/code-thesis/NewsVAE/final-analysis/result-files"
+ANALYSIS_DIR = f"/home/{user}/code-thesis/NewsVAE/final-analysis"
 
 
-def update():
+def update(recompute=False):
+    if recompute:
+        print("Deleting all parato related files and recomputing.")
+        delete_all_pareto_related_files()
+
+    else:
+        print("Not deleting all pareto related files, if you want to recompute, run: update(recompute=True)")
+
     for exp_name, run_dir in RUN_DIRS.items():
 
-        print(f"Making run overview, based on dir: {run_dir}")
-        run_overview = make_run_overview_csv(run_dir, exp_name)
+        if os.path.exists(run_dir):
 
-        print("Reading last checkpoint and extracting pareto dict and saving it to a pickle.")
-        save_last_pareto_dict_to_pickle(run_overview, run_dir, exp_name)
+            print(f"Making run overview, based on dir: {run_dir}")
+            run_overview = make_run_overview_csv(run_dir, exp_name)
 
-        print("Reading all pareto dicts and calculating best checkpoint, saving it to a csv")
-        calc_weighted_pareto_best_checkpoint(run_overview, exp_name)
+            print("Reading last checkpoint and extracting pareto dict and saving it to a pickle.")
+            save_last_pareto_dict_to_pickle(run_overview, run_dir, exp_name)
+            save_full_wandb_pareto_dict_to_pickle(run_overview, exp_name)
 
-        print("-" * 50)
+            print("Reading all pareto dicts and calculating best checkpoint, saving it to a csv")
+            calc_weighted_pareto_best_checkpoint_all(run_overview, exp_name)
+
+            print("-" * 50)
+
+        else:
+            print(f"This experiment is not found on this machine: {exp_name}")
 
 
 def make_run_overview_csv(run_dir, exp_name):
@@ -47,12 +71,100 @@ def make_run_overview_csv(run_dir, exp_name):
     overview_rows = []
     for run_name in os.listdir(run_dir):
         row = parse_run_name(run_name, exp_name)
+        try:
+            run_id = get_wandb_run_id(run_name, run_dir=RUN_DIRS[exp_name])
+            row['run_id'] = run_id
+        except:
+            print(f"Could not find run_id for: {run_name}")
+            row['run_id'] = None
+
+        # Check efficient epochs if already saved
+        if os.path.exists(f"{RES_FILE_DIR}/{exp_name}/{run_name}/last_pareto_dict.p"):
+            par_dict = load_pickle(f"{RES_FILE_DIR}/{exp_name}/{run_name}/last_pareto_dict.p")
+            row["efficient_epochs"] = par_dict["efficient_epochs"]
+        else:
+            row["efficient_epochs"] = None
+
+        # Check efficient epochs if already saved
+        if os.path.exists(f"{RES_FILE_DIR}/{exp_name}/{run_name}/full_wandb_pareto_dict.p"):
+            full_par_dict = load_pickle(f"{RES_FILE_DIR}/{exp_name}/{run_name}/full_wandb_pareto_dict.p")
+            if "pareto epoch" in full_par_dict:
+                row["max pareto logged epoch"] = np.max(list(full_par_dict["pareto epoch"].values()))
+            else:
+                print(f"pareto epoch not in full_par_dict for run: {run_name}")
+                row["max pareto logged epoch"] = None
+        else:
+            row["max pareto logged epoch"] = None
+
+        ckpts = [f for f in os.listdir(f"{run_dir}/{run_name}") if "checkpoint" in f]
+        row["n_checkpoints"] = len(ckpts)
+        if len(ckpts) == 0:
+            print(f"No checkpoints for: {run_name}")
+        row["checkpoints"] = ckpts
         overview_rows.append(row)
 
     run_overview = pd.DataFrame(overview_rows)
     run_overview.to_csv(overview_csv_file)
 
     return run_overview
+
+
+def delete_all_pareto_related_files():
+    # Delete all pareto related data
+    for exp_name in RUN_DIRS:
+        for run_name in os.listdir(f"{RES_FILE_DIR}/{exp_name}"):
+            for f in os.listdir(f"{RES_FILE_DIR}/{exp_name}/{run_name}"):
+                if "pareto" in f:
+                    #                 print(f"{RES_FILE_DIR}/{exp_name}/{run_name}/{f}")
+                    p_path = f"{RES_FILE_DIR}/{exp_name}/{run_name}/{f}"
+                    os.remove(p_path)
+
+
+def check_if_running(run_name, exp_name):
+    api = wandb.Api()
+
+    run_id = get_wandb_run_id(run_name, run_dir=RUN_DIRS[exp_name])
+    wandb_exp = "thesis-test" if exp_name == "Runs-ablation" else "thesis-May"
+
+    run = api.run(f"claartjebarkhof/{wandb_exp}/{run_id}")
+
+    if run.state == "running":
+        print(f"STILL RUNNING WARNING: skipping {run_name}, still running")
+        return True
+    else:
+        return False
+
+
+def save_full_wandb_pareto_dict_to_pickle(run_df, exp_name):
+    api = wandb.Api()
+
+    pareto_keys = ["pareto rate", "pareto -D_ks", "pareto -distortion", "pareto iw_ll_x_gen_mean",
+                   "pareto iw_ll_mean", "pareto epoch"]
+
+    for row_i, row in run_df.iterrows():
+        run_name = row['run_name']
+        run_id = row['run_id']
+
+        # print(run_name)
+
+        wandb_exp = "thesis-test" if exp_name == "Runs-ablation" else "thesis-May"
+
+        # Check if already done
+        result_pickle = f"{RES_FILE_DIR}/{exp_name}/{run_name}/full_wandb_pareto_dict.p"
+
+        if os.path.isfile(result_pickle):  # uncomment this when everything is done running
+            continue
+
+        try:
+            run = api.run(f"claartjebarkhof/{wandb_exp}/{run_id}")
+
+            if run.state != "running":
+                full_pareto_dict = run.history(keys=pareto_keys).to_dict()
+
+                dump_pickle(full_pareto_dict, result_pickle)
+
+        except Exception as e:
+            print(f"** ERROR save_full_wandb_pareto_dict_to_pickle for run {run_name}:", e)
 
 
 def save_last_pareto_dict_to_pickle(run_overview, run_dir, exp_name):
@@ -62,7 +174,9 @@ def save_last_pareto_dict_to_pickle(run_overview, run_dir, exp_name):
             # Check if already done
             result_pickle = f"{RES_FILE_DIR}/{exp_name}/{run_name}/last_pareto_dict.p"
 
-            if os.path.isfile(result_pickle): # uncomment this when everything is done running
+            os.makedirs(f"{RES_FILE_DIR}/{exp_name}/{run_name}", exist_ok=True)
+
+            if os.path.isfile(result_pickle):  # uncomment this when everything is done running
                 continue
 
             # Get the last checkpoint saved
@@ -72,7 +186,7 @@ def save_last_pareto_dict_to_pickle(run_overview, run_dir, exp_name):
             path = f"{run_dir}/{run_name}/{last_checkpoint}"
 
             # Load the checkpoint
-            c = torch.load(path)
+            c = torch.load(path, map_location='cpu')
             last_pareto_dict = c["epoch_pareto_effiency_dict"]
 
             # Make a folder for the run name if it does not exist already
@@ -105,6 +219,12 @@ def parse_run_name(run_name, exp_name):
         elif "CYC" in run_name:
             opt = "CYC-FB-0.5"
             tr = 0.5
+        elif "AE" in run_name:
+            opt = "AE"
+            tr = -0.0
+        elif "decoder" in run_name.lower():
+            opt = "DEC-ONLY"
+            tr = -0.0
         else:
             opt = "MDR-0.5"
             tr = 0.5
@@ -113,6 +233,12 @@ def parse_run_name(run_name, exp_name):
         if "DROP 40" in run_name:
             drop_str = " | DROP 40"
             drop = 0.4
+        elif "DROP 60" in run_name:
+            drop_str = " | DROP 60"
+            drop = 0.6
+        elif "DROP 80" in run_name:
+            drop_str = " | DROP 80"
+            drop = 0.8
         else:
             drop_str = ""
             drop = 0.0
@@ -151,8 +277,23 @@ def parse_run_name(run_name, exp_name):
             "mem": mem}
 
     elif exp_name == "Runs-target-rate":
-        target_rate = run_name.split("-")[6]
-        clean_name = f"PTB | FB | mem+emb | Target rate: {target_rate}"
+        if "mdr" in run_name:
+            optimisation = "MDR"
+        elif "cyc-fb" in run_name:
+            optimisation = "CYC-FB"
+        elif "fb" in run_name:
+            optimisation = "FB"
+        else:
+            optimisation = "CYC"
+
+        if optimisation in ["FB", "MDR"]:
+            target_rate = float(run_name.split("-")[6])
+        elif optimisation == "CYC-FB":
+            target_rate = float(run_name.split("-")[7])
+        else:
+            target_rate = 0.0
+
+        clean_name = f"PTB | {optimisation} | mem+emb | Target rate: {target_rate}"
 
         parsed_run_name = {
             "run_name": run_name,
@@ -161,8 +302,8 @@ def parse_run_name(run_name, exp_name):
             "dataset": "PTB",
             "clean_name": clean_name,
             "target_rate": target_rate,
-            "optimisation":"FB-0.5",
-            "drop":0.0,
+            "optimisation": optimisation,
+            "drop": 0.0,
             "mem": True,
             "emb": True,
             "matrix": False
@@ -182,11 +323,32 @@ def parse_run_name(run_name, exp_name):
         parsed_run_name = {
             "clean_name": clean_name,
             "run_name": run_name,
-            "drop":0.0,
+            "drop": 0.0,
             "dataset": "YELP",
             "optimisation": opt_string,
             "mem": True,
             "emb": False,
+            "matrix": False
+        }
+
+    elif exp_name == "Runs-pretrain":
+        if "embeddings" in run_name:
+            emb =  True
+            mech_string = "mem-emb"
+        else:
+            emb = False
+            mech_string = "mem"
+
+        clean_name = f"PTB | CYC-FB-0.5 | {mech_string} | (YELP pre-trained)"
+
+        parsed_run_name = {
+            "clean_name": clean_name,
+            "run_name": run_name,
+            "drop": 0.0,
+            "dataset": "PTB",
+            "optimisation": "CYC-FB-0.5",
+            "mem": True,
+            "emb": emb,
             "matrix": False
         }
 
@@ -203,11 +365,18 @@ def remove_least_efficient_checkpoints(exp_name="Runs", max_n_checkpoints=5):
         run_name = row["run_name"]
         print(row["clean_name"])
 
+        if "decoder" in run_name.lower():
+            print(f"Not removing checkpoints from: {run_name}")
+            continue
+
+        if check_if_running(run_name, exp_name):
+            continue
+
         least_efficient_epochs = []
         for f in os.listdir(f"result-files/{exp_name}/{run_name}"):
             if "weighted" in f:
                 mini_df = pd.read_csv(f"result-files/{exp_name}/{run_name}/{f}", index_col=0)
-                #display(mini_df)
+                # display(mini_df)
 
                 if len(mini_df) > max_n_checkpoints:
                     least_efficient_epochs = mini_df.iloc[5:]["efficient_epochs"].values
@@ -227,8 +396,9 @@ def remove_least_efficient_checkpoints(exp_name="Runs", max_n_checkpoints=5):
                         os.remove(p)
 
 
-def get_sum_stats_run(run_name, exp_name="Runs", val_batches=10):
-    return pickle.load(open(f"{RES_FILE_DIR}/{exp_name}/{run_name}/validation_results_{val_batches}_batches.p", "rb"))
+def get_sum_stats_run(run_name, exp_name="Runs", val_batches=10, iw_samples=200, batch_size=64):
+    p = f"{RES_FILE_DIR}/{exp_name}/{run_name}/validation_results_{val_batches}_batches_{iw_samples}_samples_BS_{batch_size}.p"
+    return pickle.load(open(p, "rb"))
 
 
 def calc_runs_missing(run_overview=None):
@@ -237,11 +407,11 @@ def calc_runs_missing(run_overview=None):
 
     big_exp = {}
     i = 0
-    for dataset in ["YELP", "OPTIMUS YELP", "PTB"]:
+    for dataset in ["YELP", "PTB"]:  # "OPTIMUS YELP",
         for drop_out in [0.0, 0.4]:
             drop_str = " | DROP 40" if drop_out == 0.4 else ""
-            for optimisation in ["CYC-FB-0.5", "MDR-0.5", "VAE"]:
-                for mech in ["matrix", "matrix-mem", "mem", "mem-emb"]:
+            for optimisation in ["CYC-FB-0.5", "MDR-0.5", "VAE", "AE"]:
+                for mech in ["matrix", "matrix+mem", "mem", "mem+emb"]:
                     big_exp[i] = {
                         "optimisation": optimisation,
                         "drop_out": drop_out,
@@ -264,49 +434,68 @@ def min_max_scaling(df, pareto_stats, scale_affix):
     # apply min-max scaling
     for column in pareto_stats:
         df[column + scale_affix] = (df[column] - df[column].min()) / (df[column].max() - df[column].min())
+    # if all values of a stat are the same for all epoch, the resulting scaled score becomes nan
+    # in that case, replace with lowest score not to effect anythin (0.0)
+    for column in pareto_stats:
+        df[column + scale_affix] = df[column + scale_affix].fillna(0.0)
     return df
 
 
-def calc_weighted_pareto_best_checkpoint(run_overview, exp_name):
-    pareto_stats_weights = {
-        "iw_ll_mean": 4,
-        "iw_ll_x_gen_mean": 3,
-        "-D_ks": 1
-    }
+def calc_weighted_pareto_best_checkpoint(run_name, exp_name, save=True):
+    if "dec" in run_name.lower() or " ae " in run_name.lower():
+        pareto_stats_weights = {"-distortion": 1}
+    else:
+        pareto_stats_weights = {
+            "iw_ll_mean": 4,
+            "iw_ll_x_gen_mean": 3,
+            "-D_ks": 1,
+            "rate": 4  # for non-collapsed model selection
+        }
 
     scale_affix = "_minmax_norm"
 
+    for f in os.listdir(f"{RES_FILE_DIR}/{exp_name}/{run_name}/"):
+        if "weighted_score" in f:
+            continue
+
+    pareto_efficient_dict = get_pareto_efficient_dict(run_name, exp_name=exp_name)
+
+    mini_df = pd.DataFrame(pareto_efficient_dict)
+
+    if len(mini_df) == 1:
+        for column in pareto_stats_weights.keys():
+            mini_df[column + scale_affix] = 1.0
+    else:
+        mini_df = min_max_scaling(mini_df, list(pareto_stats_weights.keys()), scale_affix)
+
+    mini_df["combined_weighted_score"] = 0.0
+    for k, w in pareto_stats_weights.items():
+        mini_df["combined_weighted_score"] += w * mini_df[k + scale_affix]
+
+    mini_df = mini_df.sort_values("combined_weighted_score", ascending=False)
+    # display(mini_df)
+
+    best_epoch = \
+        mini_df[mini_df["combined_weighted_score"] == mini_df["combined_weighted_score"].max()][
+            "efficient_epochs"].values[
+            0]
+
+    # print("Best epoch", best_epoch)
+
+    path = f"{RES_FILE_DIR}/{exp_name}/{run_name}/weighted_pareto_optimal_point_best[{best_epoch}].csv"
+    if save:
+        mini_df.to_csv(path)
+    else:
+        return mini_df
+
+
+def calc_weighted_pareto_best_checkpoint_all(run_overview, exp_name):
     for row_i, row in run_overview.iterrows():
         run_name = row["run_name"]
 
         try:
+            calc_weighted_pareto_best_checkpoint(run_name, exp_name, save=True)
 
-            for f in os.listdir(f"{RES_FILE_DIR}/{exp_name}/{run_name}/"):
-                if "weighted_score" in f:
-                    continue
-
-            mini_df = pd.DataFrame(get_pareto_efficient_dict(row["run_name"], exp_name=exp_name))
-
-            if len(mini_df) == 1:
-                for column in pareto_stats_weights.keys():
-                    mini_df[column + scale_affix] = 1.0
-            else:
-                mini_df = min_max_scaling(mini_df, list(pareto_stats_weights.keys()), scale_affix)
-
-            mini_df["combined_weighted_score"] = 0.0
-            for k, w in pareto_stats_weights.items():
-                mini_df["combined_weighted_score"] += w * mini_df[k + scale_affix]
-
-            mini_df = mini_df.sort_values("combined_weighted_score", ascending=False)
-
-            best_epoch = \
-                mini_df[mini_df["combined_weighted_score"] == mini_df["combined_weighted_score"].max()][
-                    "efficient_epochs"].values[
-                    0]
-
-            path = f"{RES_FILE_DIR}/{exp_name}/{run_name}/weighted_pareto_optimal_point_best[{best_epoch}].csv"
-
-            mini_df.to_csv(path)
 
         except Exception as e:
             print("error in calc_weighted_pareto_best_checkpoint", e)
@@ -334,16 +523,21 @@ def get_best_checkpoint(run_name, exp_name="Runs"):
 
     # Get best epoch
     if os.path.isdir(f"{RES_FILE_DIR}/{exp_name}/{run_name}"):
+        best_epoch = None
+
         for f in os.listdir(f"{RES_FILE_DIR}/{exp_name}/{run_name}"):
             if "weighted_pareto" in f:
                 best_epoch = int(re.split('\[|\]', f)[-2])
 
         path = None
 
-        # Get checkpoint belonging to that epoch
-        for f in os.listdir(f"{run_dir}/{run_name}"):
-            if f"epoch-{best_epoch:03d}" in f:
-                path = f"{run_dir}/{run_name}/{f}"
+        if best_epoch is not None:
+            # Get checkpoint belonging to that epoch
+            for f in os.listdir(f"{run_dir}/{run_name}"):
+                if f"epoch-{best_epoch:03d}" in f:
+                    path = f"{run_dir}/{run_name}/{f}"
+
+        # print(f"get_best_checkpoint best epoch: {best_epoch}, path: {path}, run_name: {run_name}")
 
         return path, best_epoch
 
@@ -353,16 +547,17 @@ def get_best_checkpoint(run_name, exp_name="Runs"):
 
 
 def get_pareto_efficient_dict(run_name, exp_name="Runs"):
-    pareto_pickle = f"result-files/{exp_name}/{run_name}/last_pareto_dict.p"
+    pareto_pickle = f"{RES_FILE_DIR}/{exp_name}/{run_name}/last_pareto_dict.p"
 
     if not os.path.isfile(pareto_pickle):
+        print(pareto_pickle)
         print("get_pareto_efficient_dict: Could not find pareto pickle, try running update().")
         return None
 
     pareto_dict = pickle.load(open(pareto_pickle, "rb"))
     pareto_eff_dict = {"efficient_epochs": pareto_dict["efficient_epochs"]}
 
-    for i, name in enumerate(["iw_ll_mean", "iw_ll_x_gen_mean", "-D_ks"]):
+    for i, name in enumerate(["iw_ll_mean", "iw_ll_x_gen_mean", "-D_ks", "rate", "-distortion"]):
         pareto_eff_dict[name] = []
         for e in pareto_dict["efficient_epochs"]:
             pareto_eff_dict[name].append(pareto_dict[name][e])
@@ -371,34 +566,60 @@ def get_pareto_efficient_dict(run_name, exp_name="Runs"):
 
 
 def plot_pareto_stats(run_name, clean_name=None, best_epoch=None, exp_name="Runs"):
-    pareto_pickle = f"result-files/{exp_name}/{run_name}/last_pareto_dict.p"
+    last_pareto_pickle = f"{RES_FILE_DIR}/{exp_name}/{run_name}/last_pareto_dict.p"
 
-    if not os.path.isfile(pareto_pickle):
-        print("plot_pareto_stats: Could not find pareto pickle, try running update().")
+    full_pareto_pickle = f"{RES_FILE_DIR}/{exp_name}/{run_name}/full_wandb_pareto_dict.p"
+
+    if not os.path.isfile(full_pareto_pickle) or not os.path.isfile(last_pareto_pickle):
+        print("plot_pareto_stats: Could not find full or last pareto pickle, try running update().")
         return None
 
     if best_epoch is None:
         _, best_epoch = get_best_checkpoint(run_name=run_name, exp_name=exp_name)
 
-    pareto_dict = pickle.load(open(pareto_pickle, "rb"))
+    full_pareto_dict = pickle.load(open(full_pareto_pickle, "rb"))
+    last_pareto_dict = pickle.load(open(last_pareto_pickle, "rb"))
 
-    fig, axs = plt.subplots(nrows=1, ncols=3, figsize=(12, 3))
+    # print(f"keys in last pareto_dict {last_pareto_dict.keys()}")
+    # print(f"keys in full pareto dict")
+
+    fig, axs = plt.subplots(nrows=2, ncols=3, figsize=(12, 4.5))
 
     if clean_name is None:
         clean_name = run_name
 
     fig.suptitle(clean_name, y=1.05, size=12)
 
-    for i, name in enumerate(["iw_ll_mean", "iw_ll_x_gen_mean", "-D_ks"]):
-        axs[i].plot(pareto_dict[name])
-        axs[i].set_title(name)
+    for i, name in enumerate(["pareto iw_ll_mean", "pareto iw_ll_x_gen_mean", "pareto -D_ks"]):
+        axs[0, i].plot(list(full_pareto_dict[name].values()))
+        axs[0, i].set_title(name)
 
-        for e in pareto_dict["efficient_epochs"]:
-            axs[i].scatter(e, pareto_dict[name][e], color='r')
+        for e in last_pareto_dict["efficient_epochs"]:
+            key = name.split("pareto ")[-1]
+            axs[0, i].scatter(e, last_pareto_dict[key][e], color='r')
 
         if best_epoch is not None:
-            axs[i].scatter(best_epoch, pareto_dict[name][best_epoch], color='g')
+            axs[0, i].scatter(best_epoch, full_pareto_dict[name][best_epoch], color='g')
 
+
+        else:
+            print(f"XXXX no best epoch for : {clean_name}")
+
+    for i, name in enumerate(["pareto rate", "pareto -distortion"]):
+        axs[1, i].plot(list(full_pareto_dict[name].values()))
+        axs[1, i].set_title(name)
+
+        for e in last_pareto_dict["efficient_epochs"]:
+            key = name.split("pareto ")[-1]
+            axs[1, i].scatter(e, last_pareto_dict[key][e], color='r')
+
+        if best_epoch is not None:
+            axs[1, i].scatter(best_epoch, full_pareto_dict[name][best_epoch], color='g')
+            if "rate" in name and full_pareto_dict[name][best_epoch] < 1.0 and not "VAE" in run_name:
+                print(f"YYYY collapsed model warning for: {clean_name}")
+
+    plt.delaxes(ax=axs[1, 2])
+    plt.tight_layout()
     plt.show()
 
 

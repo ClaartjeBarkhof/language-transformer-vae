@@ -442,6 +442,7 @@ class LatentToDecoderNewsVAE(nn.Module):
                   "latent_to_cross": None,
                   "latent_matrix_proj": None}
 
+
         if self.add_latent_via_memory or self.add_latent_via_gating:
             latent_to_memory = self.latent_to_memory_projection(latent_z)
             # Makes tuple of equally sized tensors of (batch x 1 x hidden_size)

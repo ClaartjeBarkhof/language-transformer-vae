@@ -5,6 +5,8 @@ import torch
 import numpy as np
 import math
 import copy
+import torch_two_sample
+
 
 def kl_divergence(mu, logvar, hinge_kl_loss_lambda=0.5, average_batch=True, sum_latent=True):
     """
@@ -419,8 +421,47 @@ class LossTermManager(torch.nn.Module):
                     f"alpha = {config.hoffman_vae_marg_KL_lagrangian_alpha}"
                     f"and lr = {config.hoffman_vae_marg_KL_lagrangian_lr}")
 
+        elif self.objective == "distortion-constraint-optim":
+            # ELBO constraint
+            elbo_constraint = Constraint(config.elbo_constraint_value,
+                                         'ge', alpha=config.elbo_constraint_alpha)
+            elbo_optimiser = ConstraintOptimizer(torch.optim.RMSprop, elbo_constraint.parameters(),
+                                                config.elbo_constraint_lr)
+            self.manager["alpha_elbo"] = {
+                "constraint": elbo_constraint,
+                "optimiser": elbo_optimiser
+            }
+
+            # MMD constraint (for marginal KL)
+            mmd_constraint = Constraint(config.mmd_constraint_value,
+                                        'le', alpha=config.mmd_constraint_alpha)
+            mmd_optimiser = ConstraintOptimizer(torch.optim.RMSprop, mmd_constraint.parameters(),
+                                                config.mmd_constraint_lr)
+            self.manager["beta_mmd"] = {
+                "constraint": mmd_constraint,
+                "optimiser": mmd_optimiser
+            }
+
+            # Rate constraint
+            rate_constraint = Constraint(config.rate_constraint_value,
+                                         'ge', alpha=config.rate_constraint_alpha)
+            rate_optimiser = ConstraintOptimizer(torch.optim.RMSprop, rate_constraint.parameters(),
+                                                 config.rate_constraint_lr)
+
+            self.manager["gamma_rate"] = {
+                "constraint": rate_constraint,
+                "optimiser": rate_optimiser
+            }
+
+            print(f"Setting Lagrangian for ELBO (>= relation), MMD (<= relation), Rate (>= relation):"
+                  f"\nELBO: target val: {config.elbo_constraint_value}, alpha: {config.elbo_constraint_alpha}, lr: {config.elbo_constraint_lr}"
+                  f"\nMMD:  target val: {config.mmd_constraint_value}, alpha: {config.mmd_constraint_alpha}, lr: {config.mmd_constraint_lr}"
+                  f"\nRate:  target val: {config.rate_constraint_value}, alpha: {config.rate_constraint_alpha}, lr: {config.rate_constraint_lr}")
+
+
     def multi_sample_vae_forward(self, input_ids, attention_mask, return_exact_match=False,
                                  n_samples=100, return_attention_to_latent=False):
+
 
         # Encode these input ids and sample <n_samples> for each x
         enc_out = self.vae_model.encoder.encode(input_ids, attention_mask,
@@ -495,10 +536,39 @@ class LossTermManager(torch.nn.Module):
 
         return predictions, mask, lens.flatten()
 
+    def get_tts_mmmd(self, latent_z):
+        latent_z = latent_z.squeeze(1)
+        prior_sample = torch.randn(latent_z.shape).to(latent_z.device)
+        alphas = [0.1 * i for i in range(15)]
+
+        """
+        torch two samples talks about alpha, while this paper talks about estimating kernel width (is that gamma?)
+        paper: https://papers.nips.cc/paper/2012/file/dbe272bab69f8e13f14b405e038deb64-Paper.pdf
+        kernel width might be
+
+        from torch_two_sample import util
+
+        sample_12 = torch.cat((latents_1, latents_2), 0)
+        distances = util.pdist(sample_12, sample_12, norm=2)
+        plt.hist(distances.flatten().numpy(), bins=30)
+        gamma = median_distance = torch.median(distances).item()
+        alpha = 1 / (2 * gamma**2)
+        print(alpha)
+        """
+
+        #print(prior_sample.shape, latent_z.shape)
+
+        n_1, n_2 = len(latent_z), len(prior_sample)
+        MMD_stat = torch_two_sample.statistics_diff.MMDStatistic(n_1, n_2)
+        tts_mmd = MMD_stat(latent_z, prior_sample, alphas, ret_matrix=False)
+
+        #print("**** TORCH TWO SAMPLE MMD", tts_mmd)
+
+        return tts_mmd
 
     def forward(self, input_ids, attention_mask, return_exact_match=False, decoder_only=False, eval_iw_ll_x_gen=False,
                 return_posterior_stats=True, device_name="cuda:0", iw_ll_n_samples=10,
-                return_attention_to_latent=False, train=True, max_seq_len_x_gen=64):
+                return_attention_to_latent=False, train=True, max_seq_len_x_gen=64, save_latents=False):
         """
         This forward implements the forward of the VAE in train or validation mode and then assembles
         the loss / stats that are relevant for training. This is separate from the normal VAE forward as it is focused
@@ -524,6 +594,11 @@ class LossTermManager(torch.nn.Module):
                                                     return_exact_match=return_exact_match, n_samples=iw_ll_n_samples,
                                                     return_attention_to_latent=return_attention_to_latent)
 
+            if self.objective == "distortion-constraint-optim":
+                tts_mmd = self.get_tts_mmmd(vae_out["latent_z"])
+            else:
+                tts_mmd = None
+
             if return_posterior_stats:
                 post_stats = self.vae_model.calc_posterior_stats(mu=vae_out["mu"], logvar=vae_out["logvar"])
                 vae_out = {**vae_out, **post_stats}
@@ -536,6 +611,7 @@ class LossTermManager(torch.nn.Module):
                                            log_p_z=vae_out["log_p_z"].mean(),
                                            log_q_z_x=vae_out["log_q_z_x"].mean(),
                                            log_q_z=vae_out["log_q_z"],
+                                           tts_mmd=tts_mmd,
                                            log_q_z_prod_marg=vae_out["log_q_z_prod_marg"],
                                            mmd=None)
 
@@ -546,11 +622,17 @@ class LossTermManager(torch.nn.Module):
                 # these are not tracked with train
                 del vae_out["mu"]
                 del vae_out["logvar"]
-                del vae_out["latent_z"]
-                del vae_out["cross_entropy"] # spurious
+
+                if not save_latents:
+                    del vae_out["latent_z"]
+                else:
+                    vae_out["latent_z"] = vae_out["latent_z"].detach()
+
+                del vae_out["cross_entropy"]  # spurious
 
                 for k in list(vae_out.keys()):
-                    if torch.is_tensor(vae_out[k]) and k != "total_loss" and k not in ["iw_ll", "iw_ll_p_w", "lens"]:
+                    if torch.is_tensor(vae_out[k]) and k != "total_loss" \
+                            and k not in ["iw_ll", "iw_ll_p_w", "lens", "latent_z"]:
                         vae_out[k] = vae_out[k].mean().cpu().item()
                     elif vae_out[k] is None:
                         del vae_out[k]
@@ -635,7 +717,7 @@ class LossTermManager(torch.nn.Module):
 
 
     def assemble_loss(self, reconstruction_loss, mu, logvar,
-                      log_p_z=None, log_q_z_x=None,
+                      log_p_z=None, log_q_z_x=None, tts_mmd=None,
                       log_q_z=None, log_q_z_prod_marg=None, mmd=None):
         """
         # log_p_x_z, log_q_z_x, log_p_z = [batch, n_samples]
@@ -672,13 +754,39 @@ class LossTermManager(torch.nn.Module):
         elif self.objective == "vae":
             total_loss = -elbo
 
+        elif self.objective == "distortion-constraint-optim":
+
+            # print("elbo", elbo)
+            # print("tts_mmd", tts_mmd)
+            # print("reconstruction loss", reconstruction_loss)
+            # print("rate", kl_analytical)
+
+            elbo_multiplier = self.manager["alpha_elbo"]["constraint"].multiplier
+            elbo_lagrange_loss = self.manager["alpha_elbo"]["constraint"](elbo)
+
+            mmd_multiplier = self.manager["beta_mmd"]["constraint"].multiplier
+            mmd_lagrange_loss = self.manager["beta_mmd"]["constraint"](tts_mmd)
+
+            rate_multiplier = self.manager["gamma_rate"]["constraint"].multiplier
+            rate_lagrange_loss = self.manager["gamma_rate"]["constraint"](kl_analytical)
+
+            # putting it together
+            total_loss = reconstruction_loss + elbo_lagrange_loss + mmd_lagrange_loss + rate_lagrange_loss
+
+            loss_dict["elbo_multiplier"] = elbo_multiplier
+            loss_dict["mmd_multiplier"] = mmd_multiplier
+            loss_dict["rate_multiplier"] = rate_multiplier
+
+            loss_dict["elbo_lagrange_loss"] = elbo_lagrange_loss
+            loss_dict["mmd_lagrange_loss"] = mmd_lagrange_loss
+            loss_dict["rate_lagrange_loss"] = rate_lagrange_loss
+
+            loss_dict["tts_mmd_loss"] = tts_mmd.item()
+
         # (Free bits) Beta-VAE
         elif self.objective == "beta-vae" or self.objective == "free-bits-beta-vae":
 
             if self.objective == "free-bits-beta-vae":
-
-
-
                 kl_loss = fb_kl_analytical
             else:
                 kl_loss = kl_analytical
