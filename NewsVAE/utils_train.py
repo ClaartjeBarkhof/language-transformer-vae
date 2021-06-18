@@ -76,7 +76,7 @@ def get_run_name(run_name_prefix=""):
     return run_name
 
 
-def prepare_folders(run_name, code_path):
+def prepare_folders(run_name, code_path, run_dir_name):
     """
     Make folders to save stuff in.
 
@@ -86,8 +86,8 @@ def prepare_folders(run_name, code_path):
             The path to the NewsVAE code directory (dependent on the machine)
     """
 
-    os.makedirs('{}/Runs/{}'.format(code_path, run_name), exist_ok=True)
-    os.makedirs('{}/Runs/{}/wandb'.format(code_path, run_name), exist_ok=True)
+    os.makedirs('{}/{}/{}'.format(code_path, run_dir_name, run_name), exist_ok=True)
+    os.makedirs('{}/{}/{}/wandb'.format(code_path, run_dir_name, run_name), exist_ok=True)
 
 
 def determine_global_max_steps(max_global_train_steps, batch_size, world_size, accumulate_n_batches_grad):
@@ -515,9 +515,9 @@ def determine_pareto_checkpoint(val_epoch_stats, epoch_pareto_effiency_dict, epo
     return epoch_pareto_effiency_dict, efficient_epochs
 
 
-def save_latents(latents, global_step, epoch, run_name, code_dir_path):
+def save_latents(latents, global_step, epoch, run_name, code_dir_path, run_dir_name):
     latents = torch.cat(latents, dim=0).cpu()
-    d = f'{code_dir_path}/Runs/{run_name}/latents'
+    d = f'{code_dir_path}/{run_dir_name}/{run_name}/latents'
     os.makedirs(d, exist_ok=True)
     p = f'{d}/latents-epoch-{epoch}-global-step-{global_step}.pt'
     print("Saving latents:", p)
@@ -525,7 +525,7 @@ def save_latents(latents, global_step, epoch, run_name, code_dir_path):
 
 
 def save_checkpoint_model(vae_model, run_name, code_dir_path, global_step,
-                          current_epoch, config, efficient_epochs, epoch_pareto_effiency_dict):
+                          current_epoch, config, efficient_epochs, epoch_pareto_effiency_dict, run_dir_name):
     """
     Save checkpoint for later use.
     """
@@ -533,7 +533,7 @@ def save_checkpoint_model(vae_model, run_name, code_dir_path, global_step,
     # Check which checkpoints are saved, but no longer Pareto efficient
     rmv_ckpts = []
     epochs = []
-    for ckpt in os.listdir('{}/Runs/{}'.format(code_dir_path, run_name)):
+    for ckpt in os.listdir('{}/{}/{}'.format(code_dir_path, run_name, run_dir_name)):
         # format: name = "checkpoint-epoch-02-step-1000-iw-ll-100.pth"
         if not "checkpoint" in ckpt:
             continue
@@ -545,12 +545,12 @@ def save_checkpoint_model(vae_model, run_name, code_dir_path, global_step,
     # Remove the checkpoints that are no longer Pareto efficient
     for c in rmv_ckpts:
         print(f"Removing {c}, no longer Pareto efficient.")
-        os.remove(f"{code_dir_path}/Runs/{run_name}/{c}")
+        os.remove(f"{code_dir_path}/{run_dir_name}/{run_name}/{c}")
 
     # If new efficient checkpoint is found, save it as such
     if current_epoch in efficient_epochs:
         ckpt_name = f"checkpoint-epoch-{current_epoch:03d}-step-{global_step}.pth"
-        ckpt_path = f"{code_dir_path}/Runs/{run_name}/{ckpt_name}"
+        ckpt_path = f"{code_dir_path}/{run_dir_name}/{run_name}/{ckpt_name}"
         print(f"Saving checkpoint at {ckpt_path}")
 
         # TODO: save scaler, scheduler, optimisers for continue training
@@ -686,7 +686,7 @@ def stats_over_sequence(list_of_stat_batches, list_of_mask_batches, with_relativ
     return bin_means, bin_edges, bin_ids, stats_masked, positions
 
 
-def init_logging(vae_model, run_name, code_dir_path, wandb_project, config):
+def init_logging(vae_model, run_name, code_dir_path, wandb_project, config, run_dir_name):
     """
     Initialise W&B logging.
 
@@ -702,7 +702,7 @@ def init_logging(vae_model, run_name, code_dir_path, wandb_project, config):
 
     print("Initialising W&B logging...")
     wandb.init(name=run_name, project=wandb_project,
-               dir='{}/Runs/{}/wandb'.format(code_dir_path, run_name), config=config)
+               dir='{}/{}/{}/wandb'.format(code_dir_path, run_dir_name, run_name), config=config)
     wandb.watch(vae_model)
 
 

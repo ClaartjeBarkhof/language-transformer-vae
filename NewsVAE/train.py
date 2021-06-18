@@ -206,7 +206,7 @@ def train(device_rank, config, run_name):
     # Initialise logging
     if config.logging and world_master:
         utils_train.init_logging(loss_term_manager.vae_model, run_name, config.code_dir_path,
-                                 config.wandb_project, config)
+                                 config.wandb_project, config, config.run_dir_name)
 
     # Set-up DDP
     if config.ddp:
@@ -330,7 +330,8 @@ def train(device_rank, config, run_name):
                 val_epoch_stats = stats[epoch]['validation']
 
                 if len(latents) > 0:
-                    utils_train.save_latents(latents, global_step, epoch, run_name, config.code_dir_path)
+                    utils_train.save_latents(latents, global_step, epoch, run_name,
+                                             config.code_dir_path, config.run_dir_name)
 
                 # Update the epoch_pareto_effiency_dict and determine efficient_epochs
                 epoch_pareto_effiency_dict, efficient_epochs = utils_train.determine_pareto_checkpoint(
@@ -356,7 +357,8 @@ def train(device_rank, config, run_name):
                 if config.checkpoint:
                     vae_model = loss_term_manager.vae_model if config.ddp is False else loss_term_manager.module.vae_model
                     utils_train.save_checkpoint_model(vae_model, run_name, config.code_dir_path, global_step,
-                                                      epoch, config, efficient_epochs, epoch_pareto_effiency_dict)
+                                                      epoch, config, efficient_epochs, epoch_pareto_effiency_dict,
+                                                      config.run_dir_name)
 
         # ----------------------------------------------------------------------------------------------------
         # END OF EPOCH
@@ -379,7 +381,7 @@ def train(device_rank, config, run_name):
 def main(config):
     # Init folders & get unique run name
     run_name = utils_train.get_run_name(config.run_name_prefix)
-    utils_train.prepare_folders(run_name, config.code_dir_path)
+    utils_train.prepare_folders(run_name, config.code_dir_path, config.run_dir_name)
 
     print("-" * 71)
     print("-" * 30, "IN MAIN", "-" * 30)

@@ -350,6 +350,33 @@ def summary_statistics(path, run_name, data_loader, max_batches=-1,
     dump_pickle(results_cat, result_file)
 
 
+def calc_posterior_stats(mu, logvar):
+    stats_dict = {}
+    std = torch.sqrt(logvar.exp())
+
+    mean_z_mu = mu.mean(dim=1).mean()
+    std_z_mu = torch.std(mu, dim=1).mean()
+
+    mean_z_std = std.mean(dim=1).mean()
+    std_z_std = torch.std(std, dim=1).mean()
+
+    mean_x_mu = mu.mean(dim=0).mean()
+    std_x_mu = torch.std(mu, dim=0).mean()
+
+    mean_x_std = std.mean(dim=0).mean()
+    std_x_std = torch.std(std, dim=0).mean()
+
+    stats_dict["mean_mu"] = mean_z_mu.item()
+    stats_dict["std_z_mu"] = std_z_mu.item()
+    stats_dict["std_z_std"] = std_z_std.item()
+
+    stats_dict["mean_std"] = mean_z_std.item()
+
+    stats_dict["std_x_mu"] = std_x_mu.item()
+    stats_dict["std_x_std"] = std_x_std.item()
+
+    return stats_dict
+
 # ----------------------------------------------------------------------------------------------------
 # UTILS
 # ----------------------------------------------------------------------------------------------------

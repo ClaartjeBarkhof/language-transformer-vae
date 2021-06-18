@@ -218,6 +218,8 @@ def preprare_parser(jupyter=False, print_settings=True):
     code_dir_path = utils_train.get_code_dir()
     parser.add_argument("--code_dir_path", default=code_dir_path, type=str,
                         help="Path to NewsVAE folder (default: depends on machine).")
+    parser.add_argument("--run_dir_name", default="Runs", type=str,
+                        help="Name of the directory to save run data to (default: Runs).")
 
     #################################################
     # Per objective parameters                      #
@@ -267,7 +269,9 @@ def preprare_parser(jupyter=False, print_settings=True):
                              "  - 6. beta-tc-vae (b_tc_vae)"
                              "  - 7. mmd-vae (mmd_vae)"
                              "  - 8. hoffman (hoffman_vae)"
-                             "  - 9. distortion-constraint-optim")
+                             "  - 9. distortion-constraint-optim"
+                             "  - 10. mmd-distortion-rate"
+                             "  - 11. mmd-elbo-rate")
 
     # ---------------------
     # BETA - VAE          #
@@ -337,6 +341,26 @@ def preprare_parser(jupyter=False, print_settings=True):
                         help="The rate constraint alpha.")
     parser.add_argument("--rate_constraint_lr", default=0.001, type=float,
                         help="The learning rate for ELBO constraint optimiser.")
+
+    # -----------------------------------
+    # MIN MMD, s.t. Distortion and Rate constraints
+    # -----------------------------------
+
+    # Distortion constraint
+    parser.add_argument("--distortion_constraint_value", default=90, type=float,
+                        help="The Distortion constraint value. The Distortion should be below this level.")
+    parser.add_argument("--distortion_constraint_alpha", default=0.5, type=float,
+                        help="The Distortion constraint alpha.")
+    parser.add_argument("--distortion_constraint_lr", default=0.001, type=float,
+                        help="The learning rate for Distortion constraint optimiser.")
+
+    # Rate, is defined with the previous objective
+    # parser.add_argument("--rate_constraint_value", default=16, type=float,
+    #                     help="The rate constraint value. The ELBO should be above this level.")
+    # parser.add_argument("--rate_constraint_alpha", default=0.5, type=float,
+    #                     help="The rate constraint alpha.")
+    # parser.add_argument("--rate_constraint_lr", default=0.001, type=float,
+    #                     help="The learning rate for ELBO constraint optimiser.")
 
 
     # ---------------------
@@ -522,7 +546,8 @@ def preprare_parser(jupyter=False, print_settings=True):
     #        - lambda * mmd
     #           - lambda constant
 
-    assert args.objective in ["evaluation", "autoencoder", "vae", "beta-vae", "hoffman",
+    assert args.objective in ["evaluation", "autoencoder", "vae", "beta-vae", "hoffman", "mmd-distortion-rate",
+                              "mmd-elbo-rate",
                               "free-bits-beta-vae", "beta-tc-vae", "mmd-vae", "distortion-constraint-optim"],\
         "Invalid objective, see options. Quit!"
 

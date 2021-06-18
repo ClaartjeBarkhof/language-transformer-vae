@@ -27,7 +27,7 @@ else:
 RUN_DIRS = {
     "Runs": f"/home/{user}/code-thesis/NewsVAE/Runs",
     "Runs-ablation": f"/home/{user}/code-thesis/NewsVAE/Runs-ablation",
-    "Runs-target-rate": f"/home/{user}/code-thesis/NewsVAE/Runs-target-rate-seed-0" if user is "ec2-user" else f"/home/{user}/code-thesis/NewsVAE/Runs-target-rate",
+    "Runs-target-rate": f"/home/{user}/code-thesis/NewsVAE/Runs-target-rate",
     "Runs-pretrain": f"/home/{user}/code-thesis/NewsVAE/Runs-pretrain",
 }
 
@@ -112,12 +112,14 @@ def make_run_overview_csv(run_dir, exp_name):
 def delete_all_pareto_related_files():
     # Delete all pareto related data
     for exp_name in RUN_DIRS:
-        for run_name in os.listdir(f"{RES_FILE_DIR}/{exp_name}"):
-            for f in os.listdir(f"{RES_FILE_DIR}/{exp_name}/{run_name}"):
-                if "pareto" in f:
-                    #                 print(f"{RES_FILE_DIR}/{exp_name}/{run_name}/{f}")
-                    p_path = f"{RES_FILE_DIR}/{exp_name}/{run_name}/{f}"
-                    os.remove(p_path)
+        if os.path.exists(f"{RES_FILE_DIR}/{exp_name}"):
+            for run_name in os.listdir(f"{RES_FILE_DIR}/{exp_name}"):
+                if os.path.exists(f"{RES_FILE_DIR}/{exp_name}/{run_name}"):
+                    for f in os.listdir(f"{RES_FILE_DIR}/{exp_name}/{run_name}"):
+                        if "pareto" in f:
+                            #                 print(f"{RES_FILE_DIR}/{exp_name}/{run_name}/{f}")
+                            p_path = f"{RES_FILE_DIR}/{exp_name}/{run_name}/{f}"
+                            os.remove(p_path)
 
 
 def check_if_running(run_name, exp_name):
@@ -283,6 +285,10 @@ def parse_run_name(run_name, exp_name):
             optimisation = "CYC-FB"
         elif "fb" in run_name:
             optimisation = "FB"
+        elif "VAE" in run_name:
+            optimisation = "VAE"
+        elif "AE" in run_name:
+            optimisation = "AE"
         else:
             optimisation = "CYC"
 
@@ -373,9 +379,9 @@ def remove_least_efficient_checkpoints(exp_name="Runs", max_n_checkpoints=5):
             continue
 
         least_efficient_epochs = []
-        for f in os.listdir(f"result-files/{exp_name}/{run_name}"):
+        for f in os.listdir(f"{RES_FILE_DIR}/{exp_name}/{run_name}"):
             if "weighted" in f:
-                mini_df = pd.read_csv(f"result-files/{exp_name}/{run_name}/{f}", index_col=0)
+                mini_df = pd.read_csv(f"{RES_FILE_DIR}/{exp_name}/{run_name}/{f}", index_col=0)
                 # display(mini_df)
 
                 if len(mini_df) > max_n_checkpoints:
@@ -525,19 +531,34 @@ def get_best_checkpoint(run_name, exp_name="Runs"):
     if os.path.isdir(f"{RES_FILE_DIR}/{exp_name}/{run_name}"):
         best_epoch = None
 
+        efficient_epochs = []
         for f in os.listdir(f"{RES_FILE_DIR}/{exp_name}/{run_name}"):
             if "weighted_pareto" in f:
-                best_epoch = int(re.split('\[|\]', f)[-2])
+
+                df = pd.read_csv(f"{RES_FILE_DIR}/{exp_name}/{run_name}/{f}")
+                efficient_epochs = df.efficient_epochs.values
+
+        if len(efficient_epochs) == 0:
+            print("No efficient epochs found, probably no weighted_pareto file.")
+            return None, None
 
         path = None
 
-        if best_epoch is not None:
+        best_epoch = -1
+        for e in efficient_epochs:
+            # print("efficient epoch", e)
             # Get checkpoint belonging to that epoch
             for f in os.listdir(f"{run_dir}/{run_name}"):
-                if f"epoch-{best_epoch:03d}" in f:
+                # print(f)
+                if f"epoch-{e:03d}" in f:
                     path = f"{run_dir}/{run_name}/{f}"
+                    best_epoch = e
+                    break
 
-        # print(f"get_best_checkpoint best epoch: {best_epoch}, path: {path}, run_name: {run_name}")
+            if best_epoch != -1:
+                break
+
+        print(f"get_best_checkpoint best epoch: {best_epoch}, path: {path}, run_name: {run_name}")
 
         return path, best_epoch
 
@@ -579,9 +600,6 @@ def plot_pareto_stats(run_name, clean_name=None, best_epoch=None, exp_name="Runs
 
     full_pareto_dict = pickle.load(open(full_pareto_pickle, "rb"))
     last_pareto_dict = pickle.load(open(last_pareto_pickle, "rb"))
-
-    # print(f"keys in last pareto_dict {last_pareto_dict.keys()}")
-    # print(f"keys in full pareto dict")
 
     fig, axs = plt.subplots(nrows=2, ncols=3, figsize=(12, 4.5))
 

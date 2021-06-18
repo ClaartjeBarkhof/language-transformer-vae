@@ -371,6 +371,18 @@ def get_loss_term_manager_with_model(config, world_master=True,
         loss_term_manager.manager["gamma_rate"]["constraint"] = \
             loss_term_manager.manager["gamma_rate"]["constraint"].to(device_name)
 
+    if config.objective == "mmd-distortion-rate" or config.objective == "mmd-elbo-rate":
+
+        loss_term_manager.manager["beta_rate"]["constraint"] = \
+            loss_term_manager.manager["beta_rate"]["constraint"].to(device_name)
+
+        if config.objective == "mmd-distortion-rate":
+            loss_term_manager.manager["alpha_distortion"]["constraint"] = \
+                loss_term_manager.manager["alpha_distortion"]["constraint"].to(device_name)
+        if config.objective == "mmd-elbo-rate":
+            loss_term_manager.manager["alpha_elbo"]["constraint"] = \
+                loss_term_manager.manager["alpha_elbo"]["constraint"].to(device_name)
+
     return loss_term_manager
 
 
