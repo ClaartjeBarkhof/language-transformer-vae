@@ -250,7 +250,8 @@ def train(device_rank, config, run_name):
                 samplers[phase].set_epoch(epoch)  # needed to explicitly shuffle
 
             max_steps = max_train_steps_epoch_per_rank if phase == 'train' else max_valid_steps_epoch_per_rank
-            atts_to_latent, masks, latents = [], [], []
+            atts_to_latent, masks, = [], []
+            # latents = []
 
             for batch_i, batch in enumerate(data_loaders[phase]):
                 # ----------------------------------------------------------------------------------------------------
@@ -272,13 +273,14 @@ def train(device_rank, config, run_name):
                         decoder_only=config.decoder_only,
                         ddp=config.ddp)
                 else:
+                    # save_latents happens now outside the train loop
                     losses = do_valid_step(loss_term_manager, batch,
                                            device_name=device_name, ddp=config.ddp, decoder_only=config.decoder_only,
                                            iw_ll_n_samples=config.iw_ll_n_samples, eval_iw_ll_x_gen=config.eval_iw_ll_x_gen,
-                                           max_seq_len_x_gen=config.max_seq_len_x_gen, save_latents=config.save_latents)
-                    if "latent_z" in losses:
-                        latents.append(losses["latent_z"])
-                        del losses["latent_z"]
+                                           max_seq_len_x_gen=config.max_seq_len_x_gen, save_latents=False)
+                    # if "latent_z" in losses:
+                    #     latents.append(losses["latent_z"])
+                    #     del losses["latent_z"]
 
                     if "attention_to_latent" in losses:
                         atts_to_latent.append(losses["attention_to_latent"].cpu())
@@ -299,12 +301,18 @@ def train(device_rank, config, run_name):
                                             config.objective)
 
                 # LOG STEP (only if world master)
-                if batch_i % config.log_every_n_steps == 0 and config.logging and world_master:
+                if batch_i % config.log_every_n_steps == 0 and config.logging and world_master and phase == 'train':
                     if config.add_latent_w_matrix_influence:
                         utils_train.add_matrix_influence_weight_to_loss(loss_term_manager, global_step,
                                                                         global_grad_step, ddp=config.ddp)
                     utils_train.log_losses_step(losses, phase, epoch, config.log_every_n_steps, global_step,
                                                 global_grad_step)
+
+                # Analyse and save latents for runs with save_latents == True
+                if global_step % config.save_latents_every_x_steps == 0 and config.save_latents:
+                    utils_train.analyse_save_latents(data_loaders["validation"], loss_term_manager.vae_model, stats,
+                                                     config.code_dir_path, config.run_dir_name, run_name,
+                                                     global_step, epoch, device_name=device_name)
 
 
                 # ----------------------------------------------------------------------------------------------------
@@ -327,11 +335,11 @@ def train(device_rank, config, run_name):
 
             # BEST MODEL CHECKPOINT
             if phase == 'validation' and world_master:
-                val_epoch_stats = stats[epoch]['validation']
+                val_epoch_stats = stats[epoch]["validation"]
 
-                if len(latents) > 0:
-                    utils_train.save_latents(latents, global_step, epoch, run_name,
-                                             config.code_dir_path, config.run_dir_name)
+                # if len(latents) > 0:
+                #     utils_train.save_latents(latents, global_step, epoch, run_name,
+                #                              config.code_dir_path, config.run_dir_name)
 
                 # Update the epoch_pareto_effiency_dict and determine efficient_epochs
                 epoch_pareto_effiency_dict, efficient_epochs = utils_train.determine_pareto_checkpoint(

@@ -139,6 +139,8 @@ class NewsVAE(torch.nn.Module):
                 reduce_batch_dim_exact_match="mean",
                 reduce_batch_dim_ce="mean",
 
+                return_log_probs=False,
+
                 nucleus_sampling=False,
                 top_k=0,
                 top_p=1.0,
@@ -188,6 +190,7 @@ class NewsVAE(torch.nn.Module):
                                    return_probabilities=return_probabilities,
                                    return_last_hidden_state=return_last_hidden_state,
                                    return_output_embeddings=return_embedding_distance,
+                                   return_log_probs=return_log_probs,
                                    return_logits=return_logits,
                                    return_cross_entropy=return_cross_entropy,
                                    return_reconstruction_loss=return_reconstruction_loss,
@@ -208,6 +211,7 @@ class NewsVAE(torch.nn.Module):
                 max_seq_len=max_seq_len,
                 return_exact_match=return_exact_match,
                 return_cross_entropy=return_cross_entropy,
+                return_log_probs=return_log_probs,
                 return_reconstruction_loss=return_reconstruction_loss,
                 return_attention_probs=return_attention_probs,
                 return_attention_to_latent=return_attention_to_latent,
@@ -363,25 +367,11 @@ def get_loss_term_manager_with_model(config, world_master=True,
             loss_term_manager.manager["beta_marg_KL"]["constraint"] = \
                 loss_term_manager.manager["beta_marg_KL"]["constraint"].to(device_name)
 
-    if config.objective == "distortion-constraint-optim":
-        loss_term_manager.manager["alpha_elbo"]["constraint"] = \
-            loss_term_manager.manager["alpha_elbo"]["constraint"].to(device_name)
-        loss_term_manager.manager["beta_mmd"]["constraint"] = \
-            loss_term_manager.manager["beta_mmd"]["constraint"].to(device_name)
-        loss_term_manager.manager["gamma_rate"]["constraint"] = \
-            loss_term_manager.manager["gamma_rate"]["constraint"].to(device_name)
-
-    if config.objective == "mmd-distortion-rate" or config.objective == "mmd-elbo-rate":
-
-        loss_term_manager.manager["beta_rate"]["constraint"] = \
-            loss_term_manager.manager["beta_rate"]["constraint"].to(device_name)
-
-        if config.objective == "mmd-distortion-rate":
-            loss_term_manager.manager["alpha_distortion"]["constraint"] = \
-                loss_term_manager.manager["alpha_distortion"]["constraint"].to(device_name)
-        if config.objective == "mmd-elbo-rate":
-            loss_term_manager.manager["alpha_elbo"]["constraint"] = \
-                loss_term_manager.manager["alpha_elbo"]["constraint"].to(device_name)
+    if config.objective == "elbo-constraint-optim":
+        for constraint in list(loss_term_manager.manager.keys()):
+            print(f"Transferring {constraint} constraint to device: {device_name}")
+            loss_term_manager.manager[constraint]["constraint"] = \
+                loss_term_manager.manager[constraint]["constraint"].to(device_name)
 
     return loss_term_manager
 

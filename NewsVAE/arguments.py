@@ -1,33 +1,34 @@
 import argparse
 import distutils
 import utils_train
+import configargparse
 
 
 def preprare_parser(jupyter=False, print_settings=True):
-    parser = argparse.ArgumentParser()
+    parser = configargparse.ArgParser()
+    parser.add_argument('--config_file', required=False, is_config_file=True, help='config file path')
 
     # RUN NAME
-    parser.add_argument("--run_name_prefix", default='XXX', type=str,
-                        help="Prefix of the run name (to give it a marker or hparam settins) (default: '').")
+    parser.add_argument('--run_name_prefix', required=False, default="test mmd minimisation w elbo constraint", help='run name prefix')
 
     # TRAIN / VALIDATION
-    parser.add_argument("--batch_size", default=20, type=int,
+    parser.add_argument("--batch_size", default=32, type=int,
                         help="Batch size for data loading and training.")
-    parser.add_argument("--max_train_steps_epoch_per_rank", default=1, type=int,
+    parser.add_argument("--max_train_steps_epoch_per_rank", default=-1, type=int,
                         help="Maximum number of train steps (per epoch / phase) (for all set to -1).")  # max 192246
-    parser.add_argument("--max_valid_steps_epoch_per_rank", default=4, type=int,
+    parser.add_argument("--max_valid_steps_epoch_per_rank", default=-1, type=int,
                         help="Maximum number of validation steps (per epoch / phase) (for all set to -1).")  # max 1220
-    parser.add_argument("--max_global_train_steps", default=50000, type=int,
+    parser.add_argument("--max_global_train_steps", default=1000000, type=int,
                         help="Maximum number of train steps in total. Careful this is NOT the "
                              "number of gradient steps performed. That will be / accumulate_n_batches_grad."
                              "So to account for that multiply max_global_train_steps by accumulate_n_batches_grad. If "
                              "set to -1, there is no max, max_epochs might be used if set. Else the job time is the "
                              "only limiting factor.")
-    parser.add_argument("--max_epochs", default=-1, type=int,
+    parser.add_argument("--max_epochs", default=10, type=int,
                         help="Maximum number of epochs, if -1 no maximum number of epochs is set.")
 
     # GRADIENT ACCUMULATION
-    parser.add_argument("--accumulate_n_batches_grad", default=2, type=int,
+    parser.add_argument("--accumulate_n_batches_grad", default=3, type=int,
                         help="Number of batches to accumulate gradients over."
                              "Default is no accumulation: 1.")
 
@@ -67,11 +68,11 @@ def preprare_parser(jupyter=False, print_settings=True):
                              "(default: True if n_gpus > 1, else: False).")
 
     # LOGGING
-    parser.add_argument("--logging", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
+    parser.add_argument("--logging", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to log the process of the model (default: True).")
-    parser.add_argument("--log_every_n_steps", default=1, type=int,
+    parser.add_argument("--log_every_n_steps", default=10, type=int,
                         help="Every how many steps to log (default: 20).")
-    parser.add_argument("--wandb_project", default='thesis', type=str,
+    parser.add_argument("--wandb_project", default='marginal-kl-experiments', type=str,
                         help="The name of the W&B project to store runs to.")
 
     # DATA & TOKENISATION
@@ -79,15 +80,15 @@ def preprare_parser(jupyter=False, print_settings=True):
                         help="The name of the tokenizer, 'roberta' by default.")
     parser.add_argument("--dataset_name", default='ptb_text_only', type=str,
                         help="The name of the dataset, 'cnn_dailymail' by default, else: ptb_text_only.")
-    parser.add_argument("--num_workers", default=8, type=int,
+    parser.add_argument("--num_workers", default=6, type=int,
                         help="Num workers for data loading.")
     parser.add_argument("--max_seq_len", default=64, type=int,
                         help="What the maximum sequence length the model accepts is (default: 128).")
 
     # PRINTING
-    parser.add_argument("--print_stats", default=True, type=bool,
+    parser.add_argument("--print_stats", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not print stats.")
-    parser.add_argument("--print_every_n_steps", default=1, type=int,
+    parser.add_argument("--print_every_n_steps", default=10, type=int,
                         help="Every how many steps to print.")
 
     # CHECKPOINTING
@@ -96,15 +97,16 @@ def preprare_parser(jupyter=False, print_settings=True):
     parser.add_argument("--checkpoint_every_n_steps", default=10, type=int,
                         help="Every how many (training) steps to checkpoint (default: 1000).")
     parser.add_argument("--save_latents", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
-                        help="Whether or not to save latents in the validation loop (as much batches as are set with "
-                             "--batch_size x --max_valid_steps_epoch_per_rank. (default: False).")
+                        help="Whether or not to save latents <save_latents_every_x_steps>. (default: False).")
+    parser.add_argument("--save_latents_every_x_steps", default=200, type=int,
+                        help="Every how often to save latents, if save_latents is True (default: x).")
     parser.add_argument("--early_stop_epochs", default=3, type=int,
                         help="After how many epochs of non-improving model the script should early stop (default: 3).")
-    parser.add_argument("--early_stopping", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
+    parser.add_argument("--early_stopping", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to apply early stopping after <early_stop_epochs> epochs of no improvement. (default: True).")
     parser.add_argument("--load_from_checkpoint", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Load from checkpoint given by checkpoint_file (default: False).")
-    parser.add_argument("--f", default="", type=str,
+    parser.add_argument("--load_from_checkpoint_file", default="", type=str,
                         help="File name of a checkpoint to load in (default: '').")
     # parser.add_argument("--continue_train_after_checkpoint_loading", default=True,
     #                     type=lambda x: bool(distutils.util.strtobool(x)),
@@ -112,10 +114,10 @@ def preprare_parser(jupyter=False, print_settings=True):
     #                          "their initial values again. as if training from scratch.")
 
     # VALIDATION IW LL
-    parser.add_argument("--eval_iw_ll_x_gen", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
+    parser.add_argument("--eval_iw_ll_x_gen", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to evaluate the importance weighted LL of data generated by the model"
                              ". (default: True).")
-    parser.add_argument("--iw_ll_n_samples", default=100, type=int,
+    parser.add_argument("--iw_ll_n_samples", default=1, type=int,
                         help="How many posterior samples should be used for importance weighted LL eval (default: 300).")
     parser.add_argument("--max_seq_len_x_gen", default=64, type=int,
                         help="What the maximum length is for sequences sampled from the model (default: 64).")
@@ -143,7 +145,7 @@ def preprare_parser(jupyter=False, print_settings=True):
     parser.add_argument("--add_latent_via_memory", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Add the latent to the decoding process by the memory mechanism"
                              "as descrbed in the Optimus paper (default: True)")
-    parser.add_argument("--add_latent_via_embeddings", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
+    parser.add_argument("--add_latent_via_embeddings", default=True, type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Add the latent to the decoding process by adding it to the"
                              "embeddings (initial hidden states). (default: True)")
     parser.add_argument("--add_latent_via_cross_attention", default=False, type=lambda x: bool(distutils.util.strtobool(x)),
@@ -173,22 +175,22 @@ def preprare_parser(jupyter=False, print_settings=True):
     # PARETO EFFICIENT CHECKPOINTING CRITERIA
     # DEFAULT: rate, iw_ll_p_w, iw_ll_x_gen_p_w, D_ks
     # ALTERNATIVE: rate, distortion, tts_mmd, elbo
-    parser.add_argument("--pareto_check_use_rate", default=True,
+    parser.add_argument("--pareto_check_use_rate", default=False,
                         type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to use Rate as one of the Pareto efficient checkpointing criteria "
                              "(default: True).")
-    parser.add_argument("--pareto_check_use_iw_ll_p_w", default=True,
+    parser.add_argument("--pareto_check_use_iw_ll_p_w", default=False,
                         type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to use importance weighted perplexity per token as one of the Pareto "
                              "efficient checkpointing criteria. Number of samples is set with '--iw_ll_n_samples' "
                              "option. (default: True)")
-    parser.add_argument("--pareto_check_use_iw_ll_x_gen_p_w", default=True,
+    parser.add_argument("--pareto_check_use_iw_ll_x_gen_p_w", default=False,
                         type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to use importance weighted perplexity per GENERATED (x_gen) token as "
                              "one of the Pareto efficient checkpointing criteria. Number of samples is set with "
                              "'--iw_ll_n_samples' option. To use this option you must also set "
                              "--eval_iw_ll_x_gen=True. (default: True)")
-    parser.add_argument("--pareto_check_use_D_ks", default=True,
+    parser.add_argument("--pareto_check_use_D_ks", default=False,
                         type=lambda x: bool(distutils.util.strtobool(x)),
                         help="Whether or not to use histogram overlap between iw_ll_p_w and iw_ll_x_gen_p_w as one"
                              "of the Pareto checkpointing criteria. To use this option you must also set "
@@ -259,19 +261,18 @@ def preprare_parser(jupyter=False, print_settings=True):
     #        - lambda * mmd
     #           - lambda constant
 
-    parser.add_argument("--objective", default='vae', type=str,
+    parser.add_argument("--objective", default='evaluation', type=str,
                         help="Which objective to use, options:"
-                             "  - 1. evaluation (eval)"
-                             "  - 2. autoencoder (ae)"
-                             "  - 3. vae (vae)"
-                             "  - 4. beta-vae (b_vae)"
-                             "  - 5. free-bits-beta-vae (fb_b_vae)"
-                             "  - 6. beta-tc-vae (b_tc_vae)"
-                             "  - 7. mmd-vae (mmd_vae)"
-                             "  - 8. hoffman (hoffman_vae)"
-                             "  - 9. distortion-constraint-optim"
-                             "  - 10. mmd-distortion-rate"
-                             "  - 11. mmd-elbo-rate")
+                             "  - 1.  evaluation (eval)"
+                             "  - 2.  autoencoder (ae)"
+                             "  - 3.  vae (vae)"
+                             "  - 4.  beta-vae (b_vae)"
+                             "  - 5.  free-bits-beta-vae (fb_b_vae)"
+                             "  - 6.  beta-tc-vae (b_tc_vae)"
+                             "  - 7.  mmd-vae (mmd_vae)"
+                             "  - 8.  hoffman (hoffman_vae)"
+                             "  - 9.  elbo-constraint-optim"
+                             "  - 10. mmd-constraint-optim")
 
     # ---------------------
     # BETA - VAE          #
@@ -315,52 +316,73 @@ def preprare_parser(jupyter=False, print_settings=True):
                         help="The KL loss per dimension below this value is not taken into account.")
 
     # -----------------------------------
-    # MIN DISTORTION, s.t. ELBO and MMD or distortion-constraint-optim
+    # MIN ELBO or MMD, s.t. some constraint: ELBO, distortion, MMD, rate, KDE 1D
     # -----------------------------------
 
     # ELBO constraint
+    parser.add_argument("--use_elbo_constraint", default=True,
+                        type=lambda x: bool(distutils.util.strtobool(x)),
+                        help="Whether or not use ELBO as a constraint (default: False)")
     parser.add_argument("--elbo_constraint_value", default=-100.0, type=float,
-                        help="The ELBO constraint value. The ELBO should be above this level.")
+                        help="The ELBO constraint value.")
     parser.add_argument("--elbo_constraint_alpha", default=0.5, type=float,
                         help="The ELBO constraint alpha.")
     parser.add_argument("--elbo_constraint_lr", default=0.001, type=float,
                         help="The learning rate for ELBO constraint optimiser.")
+    parser.add_argument("--elbo_constraint_relation", default="eq", type=str,
+                        help="The relation for the ELBO constraint, valid options: [ge, le, eq] (default: eq)")
+
+    # Distortion constraint
+    parser.add_argument("--use_distortion_constraint", default=False,
+                        type=lambda x: bool(distutils.util.strtobool(x)),
+                        help="Whether or not use distortion as a constraint (default: False)")
+    parser.add_argument("--distortion_constraint_value", default=100.0, type=float,
+                        help="The distortion constraint value.")
+    parser.add_argument("--distortion_constraint_alpha", default=0.5, type=float,
+                        help="The distortion constraint alpha.")
+    parser.add_argument("--distortion_constraint_lr", default=0.001, type=float,
+                        help="The learning rate for distortion constraint optimiser.")
+    parser.add_argument("--distortion_constraint_relation", default="eq", type=str,
+                        help="The relation for the distortion constraint, valid options: [ge, le, eq] (default: eq)")
 
     # MMD constraint
+    parser.add_argument("--use_mmd_constraint", default=False,
+                        type=lambda x: bool(distutils.util.strtobool(x)),
+                        help="Whether or not use MMD as a constraint (default: False)")
     parser.add_argument("--mmd_constraint_value", default=0.01, type=float,
-                        help="The ELBO constraint value. The ELBO should be above this level.")
+                        help="The MMD constraint value. ")
     parser.add_argument("--mmd_constraint_alpha", default=0.5, type=float,
-                        help="The ELBO constraint alpha.")
+                        help="The MMD constraint alpha.")
     parser.add_argument("--mmd_constraint_lr", default=0.001, type=float,
-                        help="The learning rate for ELBO constraint optimiser.")
+                        help="The learning rate for MMD constraint optimiser.")
+    parser.add_argument("--mmd_constraint_relation", default="le", type=str,
+                        help="The relation for the MMD constraint, valid options: [ge, le, eq] (default: le)")
 
     # Rate
+    parser.add_argument("--use_rate_constraint", default=True,
+                        type=lambda x: bool(distutils.util.strtobool(x)),
+                        help="Whether or not use rate as a constraint (default: False)")
     parser.add_argument("--rate_constraint_value", default=16, type=float,
-                        help="The rate constraint value. The ELBO should be above this level.")
+                        help="The rate constraint value.")
     parser.add_argument("--rate_constraint_alpha", default=0.5, type=float,
                         help="The rate constraint alpha.")
     parser.add_argument("--rate_constraint_lr", default=0.001, type=float,
-                        help="The learning rate for ELBO constraint optimiser.")
+                        help="The learning rate for rate constraint optimiser.")
+    parser.add_argument("--rate_constraint_relation", default="ge", type=str,
+                        help="The relation for the rate constraint, valid options: [ge, le, eq] (default: ge)")
 
-    # -----------------------------------
-    # MIN MMD, s.t. Distortion and Rate constraints
-    # -----------------------------------
-
-    # Distortion constraint
-    parser.add_argument("--distortion_constraint_value", default=90, type=float,
-                        help="The Distortion constraint value. The Distortion should be below this level.")
-    parser.add_argument("--distortion_constraint_alpha", default=0.5, type=float,
-                        help="The Distortion constraint alpha.")
-    parser.add_argument("--distortion_constraint_lr", default=0.001, type=float,
-                        help="The learning rate for Distortion constraint optimiser.")
-
-    # Rate, is defined with the previous objective
-    # parser.add_argument("--rate_constraint_value", default=16, type=float,
-    #                     help="The rate constraint value. The ELBO should be above this level.")
-    # parser.add_argument("--rate_constraint_alpha", default=0.5, type=float,
-    #                     help="The rate constraint alpha.")
-    # parser.add_argument("--rate_constraint_lr", default=0.001, type=float,
-    #                     help="The learning rate for ELBO constraint optimiser.")
+    # KDE 1D dim marginal KL constraint
+    parser.add_argument("--use_kde1d_constraint", default=True,
+                        type=lambda x: bool(distutils.util.strtobool(x)),
+                        help="Whether or not use KDE 1d dim marginal KL as a constraint (default: False)")
+    parser.add_argument("--kde1d_constraint_value", default=10, type=float,
+                        help="The KDE 1d dim marginal KL constraint value.")
+    parser.add_argument("--kde1d_constraint_alpha", default=0.5, type=float,
+                        help="The KDE 1d dim marginal KL constraint alpha.")
+    parser.add_argument("--kde1d_constraint_lr", default=0.001, type=float,
+                        help="The learning rate for KDE 1d dim marginal KL constraint optimiser.")
+    parser.add_argument("--kde1d_constraint_relation", default="le", type=str,
+                        help="The relation for the KDE 1d dim marginal KL constraint, valid options: [ge, le, eq] (default: le)")
 
 
     # ---------------------
@@ -546,10 +568,18 @@ def preprare_parser(jupyter=False, print_settings=True):
     #        - lambda * mmd
     #           - lambda constant
 
-    assert args.objective in ["evaluation", "autoencoder", "vae", "beta-vae", "hoffman", "mmd-distortion-rate",
-                              "mmd-elbo-rate",
-                              "free-bits-beta-vae", "beta-tc-vae", "mmd-vae", "distortion-constraint-optim"],\
-        "Invalid objective, see options. Quit!"
+    assert args.objective in ["evaluation", "autoencoder", "vae", "beta-vae", "hoffman", "mmd-constraint-optim",
+                              "free-bits-beta-vae", "beta-tc-vae", "mmd-vae", "elbo-constraint-optim"],\
+        f"Invalid objective {args.objective}, see options. Quit!"
+
+    assert args.kde1d_constraint_relation in ["le", "eq", "ge"], \
+        "invalid constraint relation for kde1d_dim_margkl, must be one of eq, ge, le"
+    assert args.mmd_constraint_relation in ["le", "eq", "ge"], \
+        "invalid constraint relation mmd, must be one of eq, ge, le"
+    assert args.distortion_constraint_relation in ["le", "eq", "ge"], \
+        "invalid constraint relation distortion, must be one of eq, ge, le"
+    assert args.rate_constraint_relation in ["le", "eq", "ge"], \
+        "invalid constraint relation for rate, must be one of eq, ge, le"
 
     if args.pareto_check_use_iw_ll_x_gen_p_w or args.pareto_check_use_D_ks:
         assert args.eval_iw_ll_x_gen, "if pareto_check_use_iw_ll_x_gen_p_w or pareto_check_use_D_ks is set to True, " \
@@ -568,3 +598,6 @@ def preprare_parser(jupyter=False, print_settings=True):
         print("-" * 70)
 
     return args
+
+if __name__=="__main__":
+    preprare_parser(print_settings=True)

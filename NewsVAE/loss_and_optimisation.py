@@ -6,6 +6,9 @@ import numpy as np
 import math
 import copy
 import torch_two_sample
+import torch
+from utils_latent_analysis_optimisation import GaussianKDE
+from torch.distributions.distribution import Distribution
 
 
 def kl_divergence(mu, logvar, hinge_kl_loss_lambda=0.5, average_batch=True, sum_latent=True):
@@ -133,7 +136,8 @@ def approximate_total_correlation(mu, logvar, latent_z, method="chen", dataset_s
     return total_correlation
 
 
-def approximate_log_q_z(mu, logvar, latent_z, method="chen", dataset_size=42068, prod_marginals=False, reduce_mean=True):
+def approximate_log_q_z(mu, logvar, latent_z, method="chen", dataset_size=42068, prod_marginals=False,
+                        reduce_mean=True):
     """
     Approximate E_q(z) [ log q (z) ]. This evaluates all samples x->z under q(z), which on itself
     relies on all data points. The "ideal" estimator would be:
@@ -249,9 +253,9 @@ class LossTermManager(torch.nn.Module):
         self.manager = dict()
         self.free_bits_pd = config.fb_b_vae_free_bits_pd
 
-        print("*"*80)
+        print("*" * 80)
         print("Free bits pd", config.fb_b_vae_free_bits_pd)
-        print("*"*80)
+        print("*" * 80)
 
         # Automatic Mixed Precision scaler
         self.scaler = GradScaler(enabled=config.use_amp)
@@ -421,96 +425,96 @@ class LossTermManager(torch.nn.Module):
                     f"alpha = {config.hoffman_vae_marg_KL_lagrangian_alpha}"
                     f"and lr = {config.hoffman_vae_marg_KL_lagrangian_lr}")
 
-        elif self.objective == "distortion-constraint-optim":
+        # ELBO minimisation with several options for constraints: MMD, distortion, rate & 1D KDE marginal KL proxy
+        elif self.objective == "elbo-constraint-optim":
             # ELBO constraint
-            elbo_constraint = Constraint(config.elbo_constraint_value,
-                                         'ge', alpha=config.elbo_constraint_alpha)
-            elbo_optimiser = ConstraintOptimizer(torch.optim.RMSprop, elbo_constraint.parameters(),
-                                                config.elbo_constraint_lr)
-            self.manager["alpha_elbo"] = {
-                "constraint": elbo_constraint,
-                "optimiser": elbo_optimiser
-            }
+            if config.use_elbo_constraint:
+                elbo_constraint = Constraint(config.elbo_constraint_value,
+                                             config.elbo_constraint_relation,
+                                             alpha=config.elbo_constraint_alpha)
+                elbo_optimiser = ConstraintOptimizer(torch.optim.RMSprop, elbo_constraint.parameters(),
+                                                     config.elbo_constraint_lr)
+                self.manager["elbo_constraint"] = {
+                    "constraint": elbo_constraint,
+                    "optimiser": elbo_optimiser
+                }
+                print(f"Setting distortion constraint with values:"
+                      f"constraint val: {config.elbo_constraint_value}"
+                      f"lr {config.elbo_constraint_lr}, alpha {config.elbo_constraint_alpha}, "
+                      f"rel: {config.elbo_constraint_relation}")
 
-            # MMD constraint (for marginal KL)
-            mmd_constraint = Constraint(config.mmd_constraint_value,
-                                        'le', alpha=config.mmd_constraint_alpha)
-            mmd_optimiser = ConstraintOptimizer(torch.optim.RMSprop, mmd_constraint.parameters(),
-                                                config.mmd_constraint_lr)
-            self.manager["beta_mmd"] = {
-                "constraint": mmd_constraint,
-                "optimiser": mmd_optimiser
-            }
-
-            # Rate constraint
-            rate_constraint = Constraint(config.rate_constraint_value,
-                                         'ge', alpha=config.rate_constraint_alpha)
-            rate_optimiser = ConstraintOptimizer(torch.optim.RMSprop, rate_constraint.parameters(),
-                                                 config.rate_constraint_lr)
-
-            self.manager["gamma_rate"] = {
-                "constraint": rate_constraint,
-                "optimiser": rate_optimiser
-            }
-
-            print(f"Setting Lagrangian for ELBO (>= relation), MMD (<= relation), Rate (>= relation):"
-                  f"\nELBO: target val: {config.elbo_constraint_value}, alpha: {config.elbo_constraint_alpha}, lr: {config.elbo_constraint_lr}"
-                  f"\nMMD:  target val: {config.mmd_constraint_value}, alpha: {config.mmd_constraint_alpha}, lr: {config.mmd_constraint_lr}"
-                  f"\nRate:  target val: {config.rate_constraint_value}, alpha: {config.rate_constraint_alpha}, lr: {config.rate_constraint_lr}")
-
-        elif self.objective == "mmd-distortion-rate":
-            # Distortion constraint LE relation
-            distortion_constraint = Constraint(config.distortion_constraint_value,
-                                               'le', alpha=config.distortion_constraint_alpha)
-            distortion_optimiser = ConstraintOptimizer(torch.optim.RMSprop, distortion_constraint.parameters(),
-                                                       config.distortion_constraint_lr)
-            self.manager["alpha_distortion"] = {
-                "constraint": distortion_constraint,
-                "optimiser": distortion_optimiser
-            }
+            # Distortion constraint
+            if config.use_distortion_constraint:
+                distortion_constraint = Constraint(config.distortion_constraint_value,
+                                                   config.distortion_constraint_relation,
+                                                   alpha=config.distortion_constraint_alpha)
+                distortion_optimiser = ConstraintOptimizer(torch.optim.RMSprop, distortion_constraint.parameters(),
+                                                           config.distortion_constraint_lr)
+                self.manager["distortion_constraint"] = {
+                    "constraint": distortion_constraint,
+                    "optimiser": distortion_optimiser
+                }
+                print(f"Setting distortion constraint with values:"
+                      f"constraint val: {config.distortion_constraint_value}"
+                      f"lr {config.distortion_constraint_lr}, alpha {config.distortion_constraint_alpha}, "
+                      f"rel: {config.distortion_constraint_relation}")
 
             # Rate constraint
-            rate_constraint = Constraint(config.rate_constraint_value,
-                                         'ge', alpha=config.rate_constraint_alpha)
-            rate_optimiser = ConstraintOptimizer(torch.optim.RMSprop, rate_constraint.parameters(),
-                                                 config.rate_constraint_lr)
+            if config.use_rate_constraint:
+                rate_constraint = Constraint(config.rate_constraint_value,
+                                             config.rate_constraint_relation,
+                                             alpha=config.rate_constraint_alpha)
+                rate_optimiser = ConstraintOptimizer(torch.optim.RMSprop, rate_constraint.parameters(),
+                                                     config.rate_constraint_lr)
+                self.manager["rate_constraint"] = {
+                    "constraint": rate_constraint,
+                    "optimiser": rate_optimiser
+                }
 
-            self.manager["beta_rate"] = {
-                "constraint": rate_constraint,
-                "optimiser": rate_optimiser
-            }
-            print(f"Setting Lagrangian for Distortion (<= relation), Rate (>= relation):"
-                  f"\nDistortion: target val: {config.distortion_constraint_value}, alpha: {config.distortion_constraint_alpha}, lr: {config.distortion_constraint_lr}"
-                  f"\nRate:  target val: {config.rate_constraint_value}, alpha: {config.rate_constraint_alpha}, lr: {config.rate_constraint_lr}")
+                print(f"Setting rate constraint with values:"
+                      f"constraint val: {config.rate_constraint_value}"
+                      f"lr {config.rate_constraint_lr}, alpha {config.rate_constraint_alpha}, "
+                      f"rel: {config.rate_constraint_relation}")
 
-        elif self.objective == "mmd-elbo-rate":
-            # ELBO constraint
-            elbo_constraint = Constraint(config.elbo_constraint_value,
-                                         'ge', alpha=config.elbo_constraint_alpha)
-            elbo_optimiser = ConstraintOptimizer(torch.optim.RMSprop, elbo_constraint.parameters(),
-                                                 config.elbo_constraint_lr)
-            self.manager["alpha_elbo"] = {
-                "constraint": elbo_constraint,
-                "optimiser": elbo_optimiser
-            }
+            # MMD constraint
+            if config.use_mmd_constraint:
+                mmd_constraint = Constraint(config.mmd_constraint_value,
+                                            config.mmd_constraint_relation,
+                                            alpha=config.mmd_constraint_alpha)
+                mmd_optimiser = ConstraintOptimizer(torch.optim.RMSprop, mmd_constraint.parameters(),
+                                                    config.mmd_constraint_lr)
+                self.manager["mmd_constraint"] = {
+                    "constraint": mmd_constraint,
+                    "optimiser": mmd_optimiser
+                }
 
-            # Rate constraint
-            rate_constraint = Constraint(config.rate_constraint_value,
-                                         'ge', alpha=config.rate_constraint_alpha)
-            rate_optimiser = ConstraintOptimizer(torch.optim.RMSprop, rate_constraint.parameters(),
-                                                 config.rate_constraint_lr)
+                print(f"Setting MMD constraint with values:"
+                      f"constraint val: {config.mmd_constraint_value}"
+                      f"lr {config.mmd_constraint_lr}, alpha {config.mmd_constraint_alpha}, "
+                      f"rel: {config.mmd_constraint_relation}")
 
-            self.manager["beta_rate"] = {
-                "constraint": rate_constraint,
-                "optimiser": rate_optimiser
-            }
-            print(f"Setting Lagrangian for ELBO (>= relation), Rate (>= relation):"
-                  f"\nELBO: target val: {config.elbo_constraint_value}, alpha: {config.elbo_constraint_alpha}, lr: {config.elbo_constraint_lr}"
-                  f"\nRate:  target val: {config.rate_constraint_value}, alpha: {config.rate_constraint_alpha}, lr: {config.rate_constraint_lr}")
+            # KDE 1D dim marginal KL constraint
+            if config.use_kde1d_constraint:
+                kde1d_constraint = Constraint(config.kde1d_constraint_value,
+                                              config.kde1d_constraint_relation,
+                                              alpha=config.kde1d_constraint_alpha)
+                kde1d_optimiser = ConstraintOptimizer(torch.optim.RMSprop, kde1d_constraint.parameters(),
+                                                      config.kde1d_constraint_lr)
+                self.manager["kde1d_constraint"] = {
+                    "constraint": kde1d_constraint,
+                    "optimiser": kde1d_optimiser
+                }
+                print(f"Setting 1D KDE dim marginal KL constraint with values:"
+                      f"constraint val: {config.kde1d_constraint_value}"
+                      f"lr {config.kde1d_constraint_lr}, alpha {config.kde1d_constraint_alpha}, "
+                      f"rel: {config.kde1d_constraint_relation}")
+
+            # print(f"Setting Lagrangian for ELBO (>= relation), Rate (>= relation):"
+            #       f"\nELBO: target val: {config.elbo_constraint_value}, alpha: {config.elbo_constraint_alpha}, lr: {config.elbo_constraint_lr}"
+            #       f"\nRate:  target val: {config.rate_constraint_value}, alpha: {config.rate_constraint_alpha}, lr: {config.rate_constraint_lr}")
 
     def multi_sample_vae_forward(self, input_ids, attention_mask, return_exact_match=False,
                                  n_samples=100, return_attention_to_latent=False):
-
 
         # Encode these input ids and sample <n_samples> for each x
         enc_out = self.vae_model.encoder.encode(input_ids, attention_mask,
@@ -605,15 +609,23 @@ class LossTermManager(torch.nn.Module):
         print(alpha)
         """
 
-        #print(prior_sample.shape, latent_z.shape)
+        # print(prior_sample.shape, latent_z.shape)
 
         n_1, n_2 = len(latent_z), len(prior_sample)
         MMD_stat = torch_two_sample.statistics_diff.MMDStatistic(n_1, n_2)
         tts_mmd = MMD_stat(latent_z, prior_sample, alphas, ret_matrix=False)
 
-        #print("**** TORCH TWO SAMPLE MMD", tts_mmd)
+        # print("**** TORCH TWO SAMPLE MMD", tts_mmd)
 
         return tts_mmd
+
+    @staticmethod
+    def get_1d_kde_dim_marg_kl_estimate(latents, log_p_z, bw="scott", device="cuda:0"):
+        latents_1D = latents.reshape(-1, 1)
+        kde = GaussianKDE(X=latents_1D, bw=bw, device=device)
+        log_q_z_kde = kde.score_samples(Y=latents_1D).mean()
+        dim_marg_kl = log_q_z_kde - log_p_z
+        return dim_marg_kl
 
     def forward(self, input_ids, attention_mask, return_exact_match=False, decoder_only=False, eval_iw_ll_x_gen=False,
                 return_posterior_stats=True, device_name="cuda:0", iw_ll_n_samples=10,
@@ -643,11 +655,18 @@ class LossTermManager(torch.nn.Module):
                                                     return_exact_match=return_exact_match, n_samples=iw_ll_n_samples,
                                                     return_attention_to_latent=return_attention_to_latent)
 
-            if self.objective == "distortion-constraint-optim" or self.objective == "mmd-distortion-rate" \
-                    or self.objective == "mmd-elbo-rate":
-                tts_mmd = self.get_tts_mmmd(vae_out["latent_z"])
+            if self.objective == "elbo-constraint-optim" or "mmd-constraint-optim":
+                if vae_out["latent_z"].dim() == 3:
+                    latents = vae_out["latent_z"][:, 0, :]
+                else:
+                    latents = vae_out["latent_z"]
+                tts_mmd = self.get_tts_mmmd(latents)
+                kde_1d_marginal_kl = self.get_1d_kde_dim_marg_kl_estimate(latents=latents,
+                                                                          log_p_z=vae_out["log_p_z"].mean(),
+                                                                          bw="scott", device=device_name)
             else:
                 tts_mmd = None
+                kde_1d_marginal_kl = None
 
             if return_posterior_stats:
                 post_stats = self.vae_model.calc_posterior_stats(mu=vae_out["mu"], logvar=vae_out["logvar"])
@@ -663,8 +682,8 @@ class LossTermManager(torch.nn.Module):
                                            log_q_z=vae_out["log_q_z"],
                                            tts_mmd=tts_mmd,
                                            log_q_z_prod_marg=vae_out["log_q_z_prod_marg"],
-                                           mmd=None)
-
+                                           mmd=None,
+                                           kde_1d_marginal_kl=kde_1d_marginal_kl)
 
             vae_out = {**vae_out, **loss_dict}
 
@@ -765,10 +784,9 @@ class LossTermManager(torch.nn.Module):
         iw_likelihood = torch.logsumexp(iw_frac, dim=-1) - np.log(n_samples)
         return iw_likelihood
 
-
     def assemble_loss(self, reconstruction_loss, mu, logvar,
                       log_p_z=None, log_q_z_x=None, tts_mmd=None,
-                      log_q_z=None, log_q_z_prod_marg=None, mmd=None):
+                      log_q_z=None, log_q_z_prod_marg=None, mmd=None, kde_1d_marginal_kl=None):
         """
         # log_p_x_z, log_q_z_x, log_p_z = [batch, n_samples]
         # log_q_z, log_q_z_prod_marg = 0-dim (numbers)
@@ -804,68 +822,46 @@ class LossTermManager(torch.nn.Module):
         elif self.objective == "vae":
             total_loss = -elbo
 
-        elif self.objective == "mmd-distortion-rate":
-            distortion_multiplier = self.manager["alpha_distortion"]["constraint"].multiplier
-            distortion_lagrange_loss = self.manager["alpha_distortion"]["constraint"](reconstruction_loss)
+        # ELBO with constraints
+        elif self.objective == "elbo-constraint-optim" or self.objective == "mmd-constraint-optim":
+            if self.objective == "elbo-constraint-optim":
+                total_loss = -elbo
+            else:
+                total_loss = tts_mmd
 
-            rate_multiplier = self.manager["beta_rate"]["constraint"].multiplier
-            rate_lagrange_loss = self.manager["beta_rate"]["constraint"](kl_analytical)
+            loss_dict["tts_mmd_loss"] = tts_mmd
+            loss_dict["kde1d_loss"] = kde_1d_marginal_kl
 
-            total_loss = tts_mmd + distortion_lagrange_loss + rate_lagrange_loss
+            if "elbo_constraint" in self.manager:
+                loss_dict["elbo_multiplier"] = self.manager["elbo_constraint"]["constraint"].multiplier
+                elbo_lagrange_loss = self.manager["elbo_constraint"]["constraint"](elbo)
+                loss_dict["elbo_lagrange_loss"] = elbo_lagrange_loss
+                total_loss = total_loss + elbo_lagrange_loss
 
-            loss_dict["tts_mmd_loss"] = tts_mmd.item()
+            if "distortion_constraint" in self.manager:
+                loss_dict["distortion_multiplier"] = self.manager["distortion_constraint"]["constraint"].multiplier
+                distortion_lagrange_loss = self.manager["distortion_constraint"]["constraint"](reconstruction_loss)
+                loss_dict["distortion_lagrange_loss"] = distortion_lagrange_loss
+                total_loss = total_loss + distortion_lagrange_loss
 
-            loss_dict["distortion_multiplier"] = distortion_multiplier
-            loss_dict["distortion_lagrange_loss"] = distortion_lagrange_loss
+            if "mmd_constraint" in self.manager:
+                loss_dict["mmd_multiplier"] = self.manager["mmd_constraint"]["constraint"].multiplier
+                mmd_lagrange_loss = self.manager["mmd_constraint"]["constraint"](tts_mmd)
 
-            loss_dict["rate_multiplier"] = rate_multiplier
-            loss_dict["rate_lagrange_loss"] = rate_lagrange_loss
+                loss_dict["mmd_lagrange_loss"] = mmd_lagrange_loss
+                total_loss = total_loss + mmd_lagrange_loss
 
-        elif self.objective == "mmd-elbo-rate":
-            elbo_multiplier = self.manager["alpha_elbo"]["constraint"].multiplier
-            elbo_lagrange_loss = self.manager["alpha_elbo"]["constraint"](reconstruction_loss)
+            if "rate_constraint" in self.manager:
+                loss_dict["rate_multiplier"] = self.manager["rate_constraint"]["constraint"].multiplier
+                rate_lagrange_loss = self.manager["rate_constraint"]["constraint"](kl_analytical)
+                loss_dict["rate_lagrange_loss"] = rate_lagrange_loss
+                total_loss = total_loss + rate_lagrange_loss
 
-            rate_multiplier = self.manager["beta_rate"]["constraint"].multiplier
-            rate_lagrange_loss = self.manager["beta_rate"]["constraint"](kl_analytical)
-
-            total_loss = tts_mmd + elbo_lagrange_loss + rate_lagrange_loss
-
-            loss_dict["tts_mmd_loss"] = tts_mmd.item()
-
-            loss_dict["elbo_multiplier"] = elbo_multiplier
-            loss_dict["elbo_lagrange_loss"] = elbo_lagrange_loss
-
-            loss_dict["rate_multiplier"] = rate_multiplier
-            loss_dict["rate_lagrange_loss"] = rate_lagrange_loss
-
-        elif self.objective == "distortion-constraint-optim":
-
-            # print("elbo", elbo)
-            # print("tts_mmd", tts_mmd)
-            # print("reconstruction loss", reconstruction_loss)
-            # print("rate", kl_analytical)
-
-            elbo_multiplier = self.manager["alpha_elbo"]["constraint"].multiplier
-            elbo_lagrange_loss = self.manager["alpha_elbo"]["constraint"](elbo)
-
-            mmd_multiplier = self.manager["beta_mmd"]["constraint"].multiplier
-            mmd_lagrange_loss = self.manager["beta_mmd"]["constraint"](tts_mmd)
-
-            rate_multiplier = self.manager["gamma_rate"]["constraint"].multiplier
-            rate_lagrange_loss = self.manager["gamma_rate"]["constraint"](kl_analytical)
-
-            # putting it together
-            total_loss = reconstruction_loss + elbo_lagrange_loss + mmd_lagrange_loss + rate_lagrange_loss
-
-            loss_dict["elbo_multiplier"] = elbo_multiplier
-            loss_dict["mmd_multiplier"] = mmd_multiplier
-            loss_dict["rate_multiplier"] = rate_multiplier
-
-            loss_dict["elbo_lagrange_loss"] = elbo_lagrange_loss
-            loss_dict["mmd_lagrange_loss"] = mmd_lagrange_loss
-            loss_dict["rate_lagrange_loss"] = rate_lagrange_loss
-
-            loss_dict["tts_mmd_loss"] = tts_mmd.item()
+            if "kde1d_constraint" in self.manager:
+                loss_dict["kde1d_multiplier"] = self.manager["kde1d_constraint"]["constraint"].multiplier
+                kde1d_lagrange_loss = self.manager["kde1d_constraint"]["constraint"](kde_1d_marginal_kl)
+                loss_dict["kde1d_lagrange_loss"] = kde1d_lagrange_loss
+                total_loss = total_loss + kde1d_lagrange_loss
 
         # (Free bits) Beta-VAE
         elif self.objective == "beta-vae" or self.objective == "free-bits-beta-vae":

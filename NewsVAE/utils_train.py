@@ -8,10 +8,11 @@ import arguments
 import numpy as np
 from scipy import stats
 import pandas as pd
-
+import pickle
 import torch
 import torch.backends.cudnn as cudnn
 from torch.utils.data import DataLoader
+from torch.distributions import Normal
 from torch.utils.data.distributed import DistributedSampler
 
 from scipy import stats
@@ -515,13 +516,59 @@ def determine_pareto_checkpoint(val_epoch_stats, epoch_pareto_effiency_dict, epo
     return epoch_pareto_effiency_dict, efficient_epochs
 
 
-def save_latents(latents, global_step, epoch, run_name, code_dir_path, run_dir_name):
-    latents = torch.cat(latents, dim=0).cpu()
+# def save_latents(latents, global_step, epoch, run_name, code_dir_path, run_dir_name):
+#     latents = torch.cat(latents, dim=0).cpu()
+#     d = f'{code_dir_path}/{run_dir_name}/{run_name}/latents'
+#     os.makedirs(d, exist_ok=True)
+#     p = f'{d}/latents-epoch-{epoch}-global-step-{global_step}.pt'
+#     print("Saving latents:", p)
+#     torch.save(latents, p)
+
+def analyse_save_latents(val_loader, model, stats_dict, code_dir_path, run_dir_name, run_name,
+                         global_step, epoch, device_name="cuda:0"):
+    latents, mus, logvars = [], [], []
+
+    for batch_i, batch in enumerate(val_loader):
+        print(f"--> Collecting latents {batch_i+1:2d}/{len(val_loader)}", end="\r")
+        batch = transfer_batch_to_device(batch, device_name)
+        with torch.no_grad():
+            enc_out = model.encoder.encode(batch["input_ids"], batch["attention_mask"], n_samples=1,
+                                           return_log_q_z_x=False, return_log_p_z=False,
+                                           return_log_q_z=False, return_embeddings=False)
+        latents.append(enc_out["latent_z"].squeeze(1))
+        mus.append(enc_out["mu"])
+        logvars.append(enc_out["logvar"])
+
+    latents = torch.cat(latents, dim=0)
+    mus = torch.cat(mus, dim=0)
+    logvars = torch.cat(logvars, dim=0)
+    stds = logvars.mul(0.5).exp_()
+
+    posts = Normal(loc=mus, scale=stds)
+    prior = Normal(loc=0.0, scale=1.0)
+    log_q_z_x = posts.log_prob(latents).sum(dim=-1)
+    log_p_z = prior.log_prob(latents).sum(dim=-1)
+
+    encoding_dict = dict(
+        latents=latents.cpu(),
+        mus=mus.cpu(),
+        logvars=logvars.cpu(),
+        stds=stds.cpu(),
+        log_q_z_x=log_q_z_x.cpu(),
+        log_p_z=log_p_z.cpu()
+    )
+
+    keys = ["elbo", "tts_mmd_loss", "kde1d_loss"]
+    for k in keys:
+        if k in stats_dict[epoch]['train']:
+            last_5_batch_vals = stats_dict[epoch]['train'][k][-5:]
+            encoding_dict[k] = np.mean(last_5_batch_vals)
+
     d = f'{code_dir_path}/{run_dir_name}/{run_name}/latents'
     os.makedirs(d, exist_ok=True)
-    p = f'{d}/latents-epoch-{epoch}-global-step-{global_step}.pt'
-    print("Saving latents:", p)
-    torch.save(latents, p)
+    p = f'{d}/encodings-epoch-{epoch}-global-step-{global_step}.p'
+    print("Saving encodings:", p)
+    pickle.dump(encoding_dict, open(p, "wb"))
 
 
 def save_checkpoint_model(vae_model, run_name, code_dir_path, global_step,
