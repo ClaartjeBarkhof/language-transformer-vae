@@ -558,7 +558,7 @@ def analyse_save_latents(val_loader, model, stats_dict, code_dir_path, run_dir_n
         log_p_z=log_p_z.cpu()
     )
 
-    keys = ["elbo", "tts_mmd_loss", "kde1d_loss"]
+    keys = ["elbo", "tts_mmd_loss", "kde1d_loss", "reconstruction_loss"]
     for k in keys:
         if k in stats_dict[epoch]['train']:
             last_5_batch_vals = stats_dict[epoch]['train'][k][-5:]

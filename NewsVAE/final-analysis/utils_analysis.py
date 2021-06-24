@@ -578,7 +578,16 @@ def get_pareto_efficient_dict(run_name, exp_name="Runs"):
     pareto_dict = pickle.load(open(pareto_pickle, "rb"))
     pareto_eff_dict = {"efficient_epochs": pareto_dict["efficient_epochs"]}
 
-    for i, name in enumerate(["iw_ll_mean", "iw_ll_x_gen_mean", "-D_ks", "rate", "-distortion"]):
+    # print("run_name", run_name)
+    # print("pareto_eff_dict", pareto_eff_dict)
+
+    if "decoder" in run_name.lower() or " ae " in run_name.lower():
+        keys = ["-distortion"]
+    else:
+        keys = ["iw_ll_mean", "iw_ll_x_gen_mean", "-D_ks", "rate", "-distortion"]
+
+    for i, name in enumerate(keys):
+        #print(name)
         pareto_eff_dict[name] = []
         for e in pareto_dict["efficient_epochs"]:
             pareto_eff_dict[name].append(pareto_dict[name][e])
