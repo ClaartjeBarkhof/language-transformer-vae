@@ -580,7 +580,7 @@ def save_checkpoint_model(vae_model, run_name, code_dir_path, global_step,
     # Check which checkpoints are saved, but no longer Pareto efficient
     rmv_ckpts = []
     epochs = []
-    for ckpt in os.listdir('{}/{}/{}'.format(code_dir_path, run_name, run_dir_name)):
+    for ckpt in os.listdir('{}/{}/{}'.format(code_dir_path, run_dir_name, run_name)):
         # format: name = "checkpoint-epoch-02-step-1000-iw-ll-100.pth"
         if not "checkpoint" in ckpt:
             continue

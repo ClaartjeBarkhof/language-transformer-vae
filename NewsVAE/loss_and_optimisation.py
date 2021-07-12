@@ -529,7 +529,10 @@ class LossTermManager(torch.nn.Module):
 
         # Multi sample decode
         log_p_x_z, dec_out = [], None
+        print()
         for i in range(n_samples):
+            print(f"{i:3d}/{n_samples}", end='\r')
+
             latent_z = post_samples[:, i, :]
 
             dec_out = self.vae_model.decoder(latent_z, input_ids, attention_mask,
@@ -623,8 +626,14 @@ class LossTermManager(torch.nn.Module):
     def get_1d_kde_dim_marg_kl_estimate(latents, log_p_z, bw="scott", device="cuda:0"):
         latents_1D = latents.reshape(-1, 1)
         kde = GaussianKDE(X=latents_1D, bw=bw, device=device)
-        log_q_z_kde = kde.score_samples(Y=latents_1D).mean()
+        log_q_z_kde = kde.score_samples(Y=latents_1D)
+        log_q_z_kde = log_q_z_kde.reshape(latents.shape)
+        log_q_z_kde = log_q_z_kde.sum(dim=1).mean(dim=0)
+
+        #print("log_q_z_kde", log_q_z_kde)
+
         dim_marg_kl = log_q_z_kde - log_p_z
+
         return dim_marg_kl
 
     def forward(self, input_ids, attention_mask, return_exact_match=False, decoder_only=False, eval_iw_ll_x_gen=False,
