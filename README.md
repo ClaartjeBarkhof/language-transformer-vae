@@ -1,1 +1,20 @@
-# Information imbalance in variational autoencoders leveraging large pre-trained transformer models for modelling language
+<p float="center" align="center" >
+  <kbd><img style="border:10px solid black;" height="300" align="center" src="https://user-images.githubusercontent.com/25668035/125297291-69038480-e327-11eb-8fca-5f7e4b3e49e7.png"></kbd>
+  <kbd><img height="300"  align="center" src="https://user-images.githubusercontent.com/25668035/125308698-6ad24580-e331-11eb-8f90-2c94d38e9323.png"></kbd>
+</p>
+
+# Taking a step back: assessing the TransformerVAE as a latent variable model first
+
+> :woman_technologist: **_Author_ Claartje Barkhof** </br>
+> :school: _MSc Thesis Artificial Intelligence, Univerity of Amsterdam_ </br> 
+> :spiral_calendar: June 28th 2021
+
+## Links
+* :blue_book: You can read the full thesis PDF [here](https://github.com/ClaartjeBarkhof/code-thesis/blob/master/Claartje_Barkhof_UvA_MSc_AI_Thesis_June_28_2021.pdf). </br>
+* :woman_teacher: You can view the slides of my final presentation [here](https://github.com/ClaartjeBarkhof/code-thesis/blob/master/Presentation%20Thesis%20AI%202021.pdf).
+
+
+## Abstract
+Deep generative latent variable modelling conceptually forms an exciting perspective on representation learning, by defining a hierarchical process in which latent variables are used to explain regularities in observed data. The resulting representations may therefore uncover high-level structures that are associated with intricate patterns in data space while also having the potential to generalise outside of the empirical data distribution. A Variational Autoencoder (VAE) is a probabilistic framework that prescribes a way how to learn such a model from (big) data according to the principles of variational inference, leveraging the power of deep neural networks to approximate complex probability distributions (Kingma & Welling, 2014). Because the qualitative goals of representation learning are not inherently aligned with the numerical goals of learning a latent variable model, optimisation in practice may lead to solutions where the latent representations are ignored by the generative model. This issue is known as posterior collapse (Bowman et al., 2016) and is especially likely to occur in the context of powerful generator networks, or strong decoders (Bowman et al., 2016; Alemi et al., 2018a).
+
+The field of representation learning in the context of language, which will be the topic of this thesis, has taken flight in an orthogonal direction: designing ever-larger Transformer architectures (Vaswani et al., 2017) that have shown to be effective in a wide variety of tasks, but often make for a form of black-box natural language processing (NLP) that does not exhibit the aforementioned properties generative latent variable models naturally possess. Li et al. (2020) have recently made an attempt to unify these two lines of research in a new architectural class of the VAE to model language that we refer to as the TransformerVAE. In this thesis, we take a step back and present a mode of analysis that deviates from what is common in NLP and aim at explicitly evaluating what we argue should be the very goal of this new line of research: learning statistically healthy models that expose a meaningful organisation of the latent space in the context of (very) powerful density estimators as large pre-trained Transformer networks are. In the process of doing so, we will zoom in with an information theoretic lens to arrive at the conclusion there is an axis of variation (i.e. marginal KL) not accounted for in a well-established rate-distortion view on VAEs (Alemi et al., 2018a) that is directly relevant to this goal. We analyse existing optimisation techniques that target a specific rate in the hope to circumvent posterior collapse with regards to this quantity and find notable differences that lead to practical recommendations. Additionally, we translate this analytical view into consequences for optimisation and conceptually identify potential pathological optimisation directions concerning marginal KL that pose a hazard especially when aiming for solutions with high rate.
